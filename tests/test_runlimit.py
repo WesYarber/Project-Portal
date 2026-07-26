@@ -447,6 +447,71 @@ async def test_a_greedy_tool_dies_and_the_run_carries_on(tmp_path, monkeypatch):
     assert result.peak_memory_bytes <= 256 * 1024**2
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not runlimit.available(refresh=True),
+    reason="no user systemd manager to make a transient scope in",
+)
+async def test_cancelling_a_scoped_run_still_kills_all_of_it():
+    """The cancel button and the timeout both go through `_kill_group`, which
+    SIGKILLs the spawn's *process group*. Wrapping the spawn in `systemd-run`
+    puts another process between the portal and the CLI, so this checks the kill
+    still reaches everything - a silently-broken cancel would leave runs
+    unstoppable from the UI, and the timeout path would hang on descendants
+    holding stdout open.
+
+    Two properties, and both were nearly wrong:
+
+    - `--scope` execs the command in place, so the spawn's pid *is* the command
+      and its descendants inherit the process group. (`--service` would detach
+      it and break this, which is why `wrap` does not use it.)
+    - `start_new_session=True` on the spawn is load-bearing: without it
+      `getpgid(child)` is the *portal's own* group and the portal would SIGKILL
+      itself on every cancel. Writing this test without that flag did exactly
+      that - the check killed its own interpreter.
+
+    Membership is read from the scope's `cgroup.procs` rather than with
+    `pgrep -f`, because `pgrep -f` matches the harness running the test as well
+    as the processes under test.
+    """
+    unit = f"portal-killtest-{os.getpid()}.scope"
+    cg = runlimit.CGROUP_ROOT / (
+        f"user.slice/user-{os.getuid()}.slice/user@{os.getuid()}.service/app.slice/{unit}"
+    )
+
+    def in_scope() -> list[str]:
+        try:
+            return (cg / "cgroup.procs").read_text(encoding="utf-8").split()
+        except OSError:
+            return []
+
+    proc = await asyncio.create_subprocess_exec(
+        "systemd-run", "--user", "--scope", "--quiet", "--collect", f"--unit={unit}",
+        "-p", "MemoryMax=512M", "-p", "OOMPolicy=continue", "--",
+        "/bin/sh", "-c", "sleep 120 & sleep 121 & sleep 122",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        await asyncio.sleep(1.5)
+        assert os.getpgid(proc.pid) != os.getpgid(os.getpid()), (
+            "the spawn shares the portal's process group; killpg would kill the portal"
+        )
+        before = in_scope()
+        assert len(before) >= 2, f"expected the shell and its sleeps in the scope, got {before}"
+
+        await agent_runner._kill_group(proc)  # noqa: SLF001
+
+        await asyncio.sleep(1.0)
+        assert in_scope() == [], f"survivors after cancel: {in_scope()}"
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+        subprocess.run(
+            ["systemctl", "--user", "stop", unit], capture_output=True, timeout=10
+        )
+
+
 # --- the unit file, which is half the fix ---------------------------------
 
 
@@ -455,6 +520,16 @@ def test_the_service_unit_refuses_to_die_with_its_children():
     process in the unit's cgroup stops the whole unit. Every agent run is a
     descendant, so without this line one project's runaway test command takes
     the portal and every other run down with it - which is exactly what
-    happened, five times."""
+    happened, seven times."""
     unit = (Path(__file__).resolve().parent.parent / "deploy" / "project-portal.service")
     assert "OOMPolicy=continue" in unit.read_text(encoding="utf-8")
+
+
+def test_the_spawn_isolates_its_process_group():
+    """The flag the cancel test above proves is load-bearing. Pinned separately
+    because it lives in `run_claude`, far from anything about memory, and its
+    removal would present as the portal killing itself on cancel."""
+    import inspect
+
+    src = inspect.getsource(agent_runner.run_claude)
+    assert "start_new_session=True" in src
