@@ -37,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from app import config, db
+from app import config, db, spawnauth
 
 log = logging.getLogger("portal.limits")
 
@@ -369,6 +369,28 @@ def cached(max_age_sec: Optional[int] = None) -> dict:
     Always returns a dict with an `ok` key, so callers never have to guard for
     "the portal has never managed a fetch". `stale` says whether to trust it.
     """
+    # An API-key install has no subscription window, and this is the choke
+    # point where that fact has to land - not the fetch. An API-key user very
+    # likely *also* has the CLI logged in (they installed it), so the endpoint
+    # answers happily with figures about a subscription their runs are not
+    # spending. Everything downstream keys off `ok`, so answering here keeps
+    # pacing from holding runs against a window that is not theirs, and keeps
+    # a snapshot cached during some earlier subscription-mode life from being
+    # served long after the mode changed.
+    if not spawnauth.paces_on_subscription():
+        return {
+            "ok": False,
+            "not_applicable": True,
+            "error": (
+                "runs are billed to an Anthropic API key, so there is no "
+                "subscription window to read"
+            ),
+            "windows": [],
+            "scoped": [],
+            "age_sec": None,
+            "stale": True,
+        }
+
     now = datetime.now(timezone.utc)
     blob = db.get_setting(CACHE_KEY) or ""
     try:
@@ -432,6 +454,12 @@ def refresh(timeout: float = 15.0) -> dict:
     """Fetch and store. Blocking - the poller calls it in a thread."""
     from app import cadence
 
+    # Nothing to fetch on an API-key install, and fetching anyway would be
+    # worse than useless: it would store a reading about somebody's untouched
+    # subscription as though it described this portal's spending.
+    if not spawnauth.paces_on_subscription():
+        return cached()
+
     parsed = parse(fetch_raw(timeout=timeout))
     stored = store(parsed)
     # Learn the real reset cadence only from a reading that actually came back -
@@ -462,6 +490,17 @@ async def poll_loop(interval_sec: int = 60, startup_delay_sec: int = 5) -> None:
     meta-project commits, and a run of restarts should not become a run of
     requests to someone else's API before the process has even settled.
     """
+    if not spawnauth.paces_on_subscription():
+        # Returning rather than looping-and-skipping: there is no state that
+        # could make this applicable later without a config change and a
+        # restart, so a task that ticks forever to do nothing is just a line
+        # of noise in every log.
+        log.info(
+            "Usage-limit poller not started: auth_mode is %s, so there is no "
+            "subscription window to track",
+            spawnauth.mode(),
+        )
+        return
     log.info("Usage-limit poller started")
     await asyncio.sleep(startup_delay_sec)
     while True:

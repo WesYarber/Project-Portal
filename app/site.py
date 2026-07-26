@@ -120,6 +120,14 @@ class Site:
 
     owner: str
     pronouns: str
+    # How spawned runs pay for themselves: "subscription" (the Claude Code
+    # login, which bills nothing and is paced against the usage window) or
+    # "api_key". Deliberately explicit rather than sniffed from the
+    # environment - see the module docstring of app/spawnauth.py, which owns
+    # everything that follows from this value. The key itself is NOT kept
+    # here: `Site` is a Jinja global on every page, and a secret on it would
+    # be one stray `{{ SITE.… }}` from being served to a browser.
+    auth_mode: str
     host: str
     port: int
     preview_port: int
@@ -230,6 +238,11 @@ def defaults() -> dict[str, Any]:
         # Nothing on a Unix box records this, and guessing it from a name is
         # exactly the mistake this field exists to stop. See PRONOUNS.
         "pronouns": DEFAULT_PRONOUNS,
+        # The mode that cannot spend money is the one to default to. A fresh
+        # clone with the CLI logged in works with no configuration; an
+        # API-key install opts in with one line. app/spawnauth.py explains
+        # why this is never inferred from a key being present.
+        "auth_mode": "subscription",
         "host": _default_host(),
         "port": 8500,
         # The preview server (app/preview.py) gets a *separate port* rather

@@ -91,9 +91,20 @@
     </span>
     {% endfor %}
   </span>
+  {# An API-key install has no window to show, which is a fact about how it is
+     configured rather than a failure to read something - so it says so, in
+     place of the "unavailable" that would otherwise imply the portal is
+     broken. Its per-run ceiling is the budget that actually applies there. #}
+  {% elif usage.auth and usage.auth.api_key %}
+  <span class="muted small claude-limits" title="{{ usage.auth.label }}">
+    billing: api key<span class="muted"> (no subscription window to pace against)</span>
+  </span>
   {% elif usage.limits and usage.limits.error %}
   <span class="muted small claude-limits" title="{{ usage.limits.error }}">claude limits: unavailable</span>
   {% endif %}
+  {% for problem in (usage.auth.problems if usage.auth else []) %}
+  <span class="small"><span class="dot warn"></span>{{ problem }}</span>
+  {% endfor %}
   <a class="small" href="/settings#budget">adjust budget</a>
   </div>
   {# The last quarter of activity across every project, sat at the end of the

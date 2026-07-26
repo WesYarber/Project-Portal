@@ -174,8 +174,17 @@
         </div>
         <div class="field">
           <label for="run_max_budget_usd">Per-run $ ceiling</label>
-          <input type="number" id="run_max_budget_usd" name="run_max_budget_usd" value="{{ settings.run_max_budget_usd or '' }}" min="0" max="1000" step="0.5" placeholder="none">
+          <input type="number" id="run_max_budget_usd" name="run_max_budget_usd" value="{{ settings.run_max_budget_usd or '' }}" min="0" max="1000" step="0.5" placeholder="{{ '%g'|format(auth.default_budget_usd) if auth and auth.api_key else 'none' }}">
+          {# What "blank" means differs by auth mode, and getting it wrong in
+             either direction is expensive: a subscription user told there is a
+             default would go hunting for a cap that does not exist, and an
+             API-key user told blank means "no ceiling" would believe an
+             unattended scheduler has none. #}
+          {% if auth and auth.api_key %}
+          <p class="hint">A hard --max-budget-usd cap. Runs are billed to an API key here, so blank is not unlimited &mdash; it means the ${{ '%g'|format(auth.default_budget_usd) }} default.</p>
+          {% else %}
           <p class="hint">A hard --max-budget-usd cap. Subscription runs bill $0, so this is a backstop against a leaked API key. Blank = no ceiling.</p>
+          {% endif %}
         </div>
         <div class="field">
           <label for="learnings_cap_lines">Learnings auto-compact at</label>

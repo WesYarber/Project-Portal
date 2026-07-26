@@ -48,6 +48,8 @@ from app import (
     quoting,
     runlog,
     settings_form,
+    site,
+    spawnauth,
     subprojects,
     telegram_bot,
     usage,
@@ -194,6 +196,11 @@ def usage_snapshot() -> dict:
         # keeps warm - never fetched here, so a page render can't hang on
         # api.anthropic.com being slow.
         "limits": limits.cached(),
+        # How runs are paid for. Carries no key - see app/spawnauth.status().
+        # On a subscription install this is the ordinary case and the UI says
+        # nothing; on an API-key one it is why the usage windows are blank,
+        # which otherwise reads as the portal being broken.
+        "auth": spawnauth.status(),
         # When the default model's own window is exhausted, what runs actually
         # use instead (Fable -> Opus), so the dashboard says it out loud
         # rather than the run rows quietly wearing a different model name.
@@ -407,6 +414,13 @@ _BACKGROUND_TASKS: list[asyncio.Task] = []
 @app.on_event("startup")
 async def on_startup() -> None:
     db.init_db()
+    # Say the configuration problems out loud. Both of these otherwise present
+    # only as something quietly not working - every printed link dead on the
+    # phone that reads it, or every run failing inside the CLI with an auth
+    # error - and the log at boot is where somebody standing up a fresh clone
+    # is actually looking.
+    for warning in site.warnings() + spawnauth.problems():
+        log.warning("%s", warning)
     # The memory files on disk at boot are copied into the history if they are
     # not there already, so a version always survives whatever the next agent
     # does to them. Cheap and idempotent - identical content is not re-stored.
@@ -1677,6 +1691,9 @@ async def settings_page(request: Request) -> HTMLResponse:
         {
             "settings": settings,
             "usage": usage_snapshot(),
+            # How runs are paid for: this is the page that owns the per-run
+            # ceiling, and what an unset ceiling *means* depends on the mode.
+            "auth": spawnauth.status(),
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
             "push_sent": request.query_params.get("push_sent"),

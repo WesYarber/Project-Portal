@@ -31,7 +31,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from app import cadence, config, db, limits, quickreplies
+from app import cadence, config, db, limits, quickreplies, spawnauth
 
 log = logging.getLogger("portal.pacing")
 
@@ -628,6 +628,15 @@ def should_offer(snapshot: Optional[dict] = None, now: Optional[datetime] = None
     list), and neither is an answered one, whichever way he answered.
     """
     now = now or datetime.now(timezone.utc)
+    # Belt to `limits.cached()`'s braces. That guard already starves this
+    # function of a candidate on an API-key install, but this is the one
+    # pacing decision that *writes to the owner* - "your weekly window resets
+    # in 6h with 47% unused, shall I spend it?" is a nonsense question to put
+    # in front of somebody whose runs bill a card and whose allowance expiring
+    # costs them nothing. A wrong hold wastes a run; a wrong question wastes
+    # their attention and teaches them to ignore the next one.
+    if not spawnauth.paces_on_subscription():
+        return None
     if spending_down(now):
         return None
     pending = pending_question()

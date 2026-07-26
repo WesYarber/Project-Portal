@@ -30,14 +30,45 @@ file. It is meant to run on a home server and be read on a phone.
 ## Requirements
 
 - Python 3.11+ and `pip install -r requirements.txt`
-- The [Claude Code CLI](https://claude.com/claude-code), logged in. A Max
-  subscription means headless runs cost no API billing; that is what the
-  pacing logic is built around.
+- The [Claude Code CLI](https://claude.com/claude-code) — either logged into a
+  subscription, or pointed at an Anthropic API key (see below).
 - `git` for the per-project workspaces.
 
 Other model providers are **not** supported. The design leans on the Claude
 CLI specifically — its hooks, `--json-schema` structured output, `--max-turns`
 and the subscription usage endpoint.
+
+## How runs get paid for
+
+Two arrangements, set by `auth_mode` in `portal.toml`.
+
+**`subscription`** (the default, and what the portal was built for). The CLI's
+own login. Headless runs bill nothing, so the real budget is the account's
+usage window — which the portal reads live and paces itself against, spreading
+work across the window instead of burning a week by Tuesday, and offering to
+spend headroom that would otherwise expire unused.
+
+**`api_key`**. Runs are billed per token. Two things change automatically:
+
+- **A per-run dollar ceiling applies by default** ($5.00, changeable on the
+  Settings page). An unattended scheduler with no cap is how a runaway loop
+  becomes an invoice, so "unset" here means the default rather than infinity.
+- **Subscription pacing switches off entirely.** Those windows describe a
+  subscription your runs are not spending, so pacing against them would hold
+  work back for no reason — and it would happen, because an API-key user
+  usually has the CLI logged in too and the usage endpoint answers happily.
+
+Put the key in `secrets/anthropic_key.txt` (gitignored, alongside the portal's
+other credentials) or in `$PORTAL_ANTHROPIC_API_KEY`. `$ANTHROPIC_API_KEY` is
+used if neither is set — but only once you have opted in.
+
+> **The key is never auto-detected, on purpose.** In subscription mode
+> `ANTHROPIC_API_KEY` is *stripped from every spawn*, so a key that leaks into
+> the portal's environment — a sourced `.env`, a CI variable, a shell profile —
+> can never quietly start billing your card mid-run. Switching modes is one
+> config line and cannot happen by accident. If you have a key set but are in
+> subscription mode, the portal says so on the dashboard rather than leaving
+> you to wonder why it "isn't working".
 
 ## Install
 

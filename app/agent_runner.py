@@ -13,7 +13,8 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, limits, memory, notes, orphans, qdedupe, runlog, subprojects, todos,
+    attachments, config, db, limits, memory, notes, orphans, qdedupe, runlog, spawnauth,
+    subprojects, todos,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -713,46 +714,52 @@ def _orphan_section(slug: str) -> str:
 
 
 # Environment variables that would route a spawned run onto pay-as-you-go API
-# billing (or a third-party gateway) instead of Wes's Max subscription. A stray
-# one of these is the single cause behind every large surprise-bill story, so we
-# strip them from every run unconditionally - the CLI then falls back to the
-# OAuth credentials in ~/.claude/.credentials.json, which bill nothing. This is
-# defence in depth beside --max-budget-usd: the key can never leak in, and even
-# if it did the budget flag caps the damage.
-_BILLING_ENV_VARS = (
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "CLAUDE_CODE_USE_BEDROCK",
-    "CLAUDE_CODE_USE_VERTEX",
-)
+# billing (or a third-party gateway) instead of the configured arrangement. A
+# stray one of these is the single cause behind every large surprise-bill
+# story, so they are stripped from every run in both modes - see
+# `app/spawnauth.py`, which owns the list and puts the *configured* key back
+# afterwards on an API-key install. On a subscription install nothing is put
+# back and the CLI falls through to the OAuth credentials in
+# ~/.claude/.credentials.json, which bill nothing.
+#
+# Kept as a module attribute because it has been the name this guard is known
+# by since #218, and tests and hooks reference it.
+_BILLING_ENV_VARS = spawnauth.BILLING_ENV_VARS
 
 
 def _extra_env() -> dict[str, str]:
     env = os.environ.copy()
     local_bin = str(Path.home() / ".local" / "bin")
     env["PATH"] = f"{local_bin}:{env.get('PATH', '')}"
-    for var in _BILLING_ENV_VARS:
-        env.pop(var, None)
-    return env
+    return spawnauth.spawn_env(env)
 
 
 def _configured_budget_usd() -> Optional[float]:
-    """The per-run dollar ceiling from settings, or None if unset/disabled.
+    """The per-run dollar ceiling: the setting, else the mode's default.
 
-    Subscription runs bill $0, so this never fires in normal operation; it is a
-    hard backstop for the leaked-key case that pairs with `_extra_env` stripping
-    the key in the first place. Blank, zero, negative or unparseable all mean
-    "no ceiling" so a bad value fails open rather than blocking every run.
+    On a subscription install runs bill $0, so an unset ceiling means no
+    ceiling - this is only a backstop for the leaked-key case that pairs with
+    `_extra_env` stripping the key in the first place.
+
+    On an API-key install every run bills real money and the ceiling is doing
+    actual work, so an unset one falls back to
+    `spawnauth.DEFAULT_API_KEY_BUDGET_USD` rather than to "unlimited". An
+    unattended scheduler with no per-run cap is how a runaway loop becomes an
+    invoice, and defaulting that to infinity would be a trap laid for whoever
+    installs this next.
+
+    An explicit setting always wins, in both modes. Blank, zero, negative or
+    unparseable mean "use the mode's default" so a bad value degrades to the
+    safe answer rather than blocking every run.
     """
     raw = (db.get_setting("run_max_budget_usd") or "").strip()
     if not raw:
-        return None
+        return spawnauth.default_budget_usd()
     try:
         value = float(raw)
     except ValueError:
-        return None
-    return value if value > 0 else None
+        return spawnauth.default_budget_usd()
+    return value if value > 0 else spawnauth.default_budget_usd()
 
 
 def _looks_rate_limited(text: str) -> bool:

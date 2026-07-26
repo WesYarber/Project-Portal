@@ -28,6 +28,33 @@
 # guessing.
 # pronouns = "they"
 
+# How runs pay for themselves. Two values:
+#
+#   "subscription" (default) - the Claude Code CLI's own login. Headless runs
+#       bill nothing, and the portal paces itself against the account's real
+#       usage windows so it spreads work across them instead of burning a week
+#       by Tuesday. This is what the portal was built for.
+#
+#   "api_key" - an Anthropic API key. Runs are billed per token, so the portal
+#       applies a per-run dollar ceiling by default (5.00, changeable on the
+#       Settings page) and switches the subscription pacing OFF entirely: those
+#       windows describe a subscription your runs are not spending, and pacing
+#       against them would hold work back for no reason.
+#
+# THE KEY IS NEVER AUTO-DETECTED. Having ANTHROPIC_API_KEY in the environment
+# does not switch modes - in subscription mode it is stripped from every spawn,
+# deliberately, so a key that leaks into the portal's environment (a sourced
+# .env, a CI variable, a shell profile) can never quietly start billing your
+# card. Turning it on is this one line, and it cannot happen by accident.
+#
+# Set the key in `secrets/anthropic_key.txt` (gitignored, alongside the
+# portal's other credentials) or as $PORTAL_ANTHROPIC_API_KEY. If neither is
+# set, $ANTHROPIC_API_KEY is used - but only once you have opted in here.
+#
+# Other providers (Bedrock, Vertex, a gateway base URL) are not supported;
+# those environment variables stay stripped in both modes.
+# auth_mode = "subscription"
+
 # The hostname you actually open the portal at, FROM ANOTHER DEVICE. This is
 # the one setting worth checking: every URL the portal and its agents print is
 # read on your phone or laptop, never on the machine serving it, so a name that
