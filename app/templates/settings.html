@@ -41,7 +41,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,run_memory_max,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -184,6 +184,15 @@
           <p class="hint">A hard --max-budget-usd cap. Runs are billed to an API key here, so blank is not unlimited &mdash; it means the ${{ '%g'|format(auth.default_budget_usd) }} default.</p>
           {% else %}
           <p class="hint">A hard --max-budget-usd cap. Subscription runs bill $0, so this is a backstop against a leaked API key. Blank = no ceiling.</p>
+          {% endif %}
+        </div>
+        <div class="field">
+          <label for="run_memory_max">Per-run memory cap</label>
+          <input type="text" id="run_memory_max" name="run_memory_max" value="{{ settings.run_memory_max or '' }}" placeholder="{{ runmem.default_human }}">
+          {% if runmem.available %}
+          <p class="hint">Each run gets its own cgroup this big ("6G", "512M"). A tool that asks for more is killed on its own &mdash; the run keeps going. Blank = {{ runmem.default_human }} (derived from this machine's {{ runmem.total_human }}); <code>off</code> = no cap.</p>
+          {% else %}
+          <p class="hint">Not available on this machine (no user systemd manager), so runs are uncapped: a tool that exhausts memory can take the portal down with it.</p>
           {% endif %}
         </div>
         <div class="field">

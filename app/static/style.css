@@ -1908,6 +1908,22 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .todo-item.done .todo-text { text-decoration: line-through; color: var(--terminal-dim); }
 .todo-toggle input { cursor: pointer; }
 
+/* Everything on the row that is not the text: tag chips, "+tag", the delete
+   cross. Grouped into one flex item purely so a phone can hand it its own line
+   (see the max-width: 560px block) - on desktop the text's flex-grow pushes
+   this to the right exactly as the ungrouped chips used to sit. */
+.todo-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  /* 0.3rem matches the margin-left .todo-tag used to carry, so desktop spacing
+     between chips is unchanged. */
+  gap: 0.15rem 0.3rem;
+  /* A flex item's default min-width is auto, which here would be the whole
+     unwrapped chip run and would set a floor wider than a phone. */
+  min-width: 0;
+}
+
 /* Always present, just quiet. This used to be hover-only, which failed both
    ways: on a phone there is no hover, so the only way to reach it was a tap
    that left it stuck visible; and on desktop a click left it lit by :focus
@@ -1937,7 +1953,9 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   font-size: 0.7rem;
   color: var(--terminal-dim);
   white-space: nowrap;
-  margin-left: 0.3rem;
+  /* No margin-left: .todo-meta's `gap` spaces these now. The old margin was
+     also the reason the chips hung 5px past the text on a phone, since it
+     applies inside the indented group. */
 }
 .todo-tag::before { content: "["; opacity: 0.55; }
 .todo-tag::after { content: "]"; opacity: 0.55; }
@@ -2015,6 +2033,30 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
      controls drop under it rather than crushing it. */
   .todo-add { flex-wrap: wrap; }
   .todo-add input[type="text"] { flex-basis: 100%; }
+
+  /* Wes's 2026-07-26 note: "allow the todo item to take up the full width of
+     that section and then add the tags underneath each line item for mobile".
+     His screenshot showed a tagged todo rendered as a 3-character-wide column
+     of text with the chips stacked beside it.
+
+     The cause is not overflow. `.todo-text` is `flex: 1` (basis 0) with
+     `overflow-wrap: anywhere`, so its min-content width is a single character -
+     which means the chips and the text always "fit" on one flex line together,
+     and `flex-wrap: wrap` never had a reason to fire. Flex resolved it the only
+     other way it can: crush the flexible item.
+
+     So the fix is to stop them sharing a line at all, rather than to nudge a
+     width. `flex-basis: 100%` on the group cannot share a line with anything. */
+  .todo-meta {
+    flex-basis: 100%;
+    /* Line up under the text rather than under the checkbox. Measured, not
+       guessed: at 390px the text's left edge sits 22px inside the row (a ~13px
+       native checkbox plus .todo-item's 0.55rem column gap). */
+    padding-left: 1.375rem;
+  }
+  /* With the chips gone from its line the text has the row to itself, so it can
+     have a real minimum again - belt and braces against the collapse above. */
+  .todo-text { min-width: 8rem; }
 }
 
 /* Access panel (Settings > access) -----------------------------------------

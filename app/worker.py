@@ -14,8 +14,8 @@ from typing import Optional
 
 from app import (
     agent_runner, config, daycycle, db, hookguard, limits, memory, modelwatch, notify,
-    oneoff, orphans, pacing, preview, proof, quickreplies, report_schema, runlog,
-    selfreview, subprojects, todos,
+    oneoff, orphans, pacing, preview, proof, quickreplies, report_schema, runlimit,
+    runlog, selfreview, subprojects, todos,
 )
 
 log = logging.getLogger("portal.worker")
@@ -396,9 +396,20 @@ async def _tick() -> None:
     await _maybe_compact()
 
 
+def scheduled_work_enabled() -> bool:
+    """The "run agents automatically" switch, as every scheduled job must read it.
+
+    One definition, because there are three kinds of scheduled work now (project
+    runs, the daily reflect, the learnings compaction) and two of them were
+    reading nothing at all. A manual run from the UI deliberately does not
+    consult this - pressing the button is the request.
+    """
+    return (db.get_setting("worker_enabled") or "1") == "1"
+
+
 async def _start_one() -> bool:
     """Try to launch a single run. Returns True if one was started."""
-    worker_enabled = (db.get_setting("worker_enabled") or "1") == "1"
+    worker_enabled = scheduled_work_enabled()
 
     manual_project_id: Optional[int] = None
     if not manual_queue.empty():
@@ -587,6 +598,8 @@ async def run_project_task(
     finally:
         hookguard.end(run_id)
 
+    _note_memory_kill(project, task, result)
+
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Cancelled from the portal.")
         db.add_journal(project["id"], "system", "status", f"Run ({task}) cancelled from the portal.")
@@ -667,9 +680,38 @@ def _failure_detail(result: agent_runner.RunResult, max_turns: int) -> str:
             f"by the CLI. Whatever it had finished is in the working tree. If "
             f"this keeps happening, raise `run_max_turns` on the settings page."
         )
+    if result.oom_killed:
+        return runlimit.kill_note()
     if result.subtype:
         return f"the CLI reported `{result.subtype}` with no message"
     return "(no output)"
+
+
+def _note_memory_kill(
+    project: Optional[db.sqlite3.Row],
+    task: str,
+    result: agent_runner.RunResult,
+) -> None:
+    """Journal the fact that this run's memory cap fired.
+
+    Deliberately on every path, including the successful one. The cap kills only
+    the greedy process, so a run can hit it, watch its test command die with an
+    unexplained `Killed`, work around it and report success - and Wes would
+    never learn that a tool in his project wants more memory than the machine
+    can give it. That was the shape of the bug this whole mechanism came from:
+    the *effect* was loud (the portal restarting) and the *cause* was silent.
+    """
+    if not result.oom_killed or project is None:
+        return
+    peak = (
+        f" Its peak was {runlimit.human(result.peak_memory_bytes)}."
+        if result.peak_memory_bytes
+        else ""
+    )
+    db.add_journal(
+        project["id"], "system", "status",
+        f"Run ({task}): {runlimit.kill_note()}{peak}",
+    )
 
 
 def _note_orphaned_work(project: db.sqlite3.Row, task: str, how: str) -> None:
@@ -1684,6 +1726,14 @@ REFLECT_SLOT = -1
 
 
 async def _maybe_reflect() -> None:
+    # "Run agents automatically" off means off. This gate used to live only in
+    # `_start_one`, which covers scheduled *project* runs - so the two
+    # sleep-time jobs (this and `_maybe_compact`) still spawned a real `claude`
+    # run with the switch off, spending window allowance and rewriting
+    # profile.md. Found on 2026-07-26 by booting a throwaway instance with the
+    # worker disabled and watching it start a reflect anyway.
+    if not scheduled_work_enabled():
+        return
     # The reflect summarises the whole day across every project, so it waits
     # for a genuinely quiet moment rather than running alongside a build.
     if db.is_run_running() or REFLECT_SLOT in _inflight:
@@ -1813,6 +1863,8 @@ async def _maybe_compact() -> None:
     The date is stamped up front, at kick time, precisely because compaction is
     a real agent run that spends allowance: at most one attempt a day.
     """
+    if not scheduled_work_enabled():  # see _maybe_reflect
+        return
     if learnings_cap() == 0:
         return
     if db.is_run_running() or compaction_running():

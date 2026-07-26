@@ -16,6 +16,15 @@
 ;   Restart=always     `on-failure` does not cover a clean-but-unintended exit,
 ;                      which would otherwise leave the portal simply gone.
 ;   RestartSec=2       The default 10s is 10s of error page after a crash.
+;   OOMPolicy=continue The default is `stop`: if the kernel OOM-kills ANY
+;                      process in this unit's cgroup, systemd stops the whole
+;                      unit. Every agent run is a descendant of this unit, so
+;                      one project's runaway `bun test` (17 GB on an 18 GB box,
+;                      five times on 2026-07-26) killed the portal and orphaned
+;                      every run in flight. A greedy grandchild is never a
+;                      reason to stop the portal; app/runlimit.py caps the runs
+;                      themselves so it should not get that far in the first
+;                      place.
 [Unit]
 Description=Project Portal - agentic project idea tracker
 After=network-online.target
@@ -27,6 +36,7 @@ Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
 RestartSec=2
 TimeoutStopSec=10
+OOMPolicy=continue
 
 [Install]
 WantedBy=default.target

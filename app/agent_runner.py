@@ -13,8 +13,8 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, limits, memory, notes, orphans, qdedupe, runlog, spawnauth,
-    subprojects, todos,
+    attachments, config, db, limits, memory, notes, orphans, qdedupe, runlimit, runlog,
+    spawnauth, subprojects, todos,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -374,6 +374,12 @@ class RunResult:
     # .portal/report.json, None when the run reported nothing.
     report_source: Optional[str] = None
     is_rate_limited: bool = False
+    # True when the kernel OOM-killed something inside this run's memory-capped
+    # scope (app/runlimit.py). The run itself usually survives - the cap kills
+    # the greedy process only - so this can be set on a run that otherwise
+    # succeeded, and is a fact worth reporting either way.
+    oom_killed: bool = False
+    peak_memory_bytes: Optional[int] = None
     # The result event's subtype ("success", "error_max_turns",
     # "error_during_execution"). On failures with an empty `result` string this
     # is the only thing the CLI says about *why* - dropping it is how eight
@@ -931,9 +937,14 @@ async def run_claude(
         max_budget_usd=_configured_budget_usd(), json_schema=json_schema,
         settings_json=settings_json,
     )
+    # Each run gets its own memory-capped cgroup scope where the machine
+    # supports it, so a runaway tool inside the run cannot OOM the box - and
+    # therefore cannot take the portal (and every other run) down with it.
+    # See app/runlimit.py.
+    argv = runlimit.wrap(cmd, run_id)
     try:
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *argv,
             cwd=str(cwd),
             env=_extra_env(),
             stdout=asyncio.subprocess.PIPE,
@@ -955,6 +966,7 @@ async def run_claude(
         return await _supervise(proc, cwd, run_id, on_event, timeout_min)
     finally:
         _forget(run_id)
+        runlimit.forget_scope(run_id)
 
 
 async def _supervise(
@@ -967,6 +979,8 @@ async def _supervise(
     parsed: dict = {}
     raw_parts: list[str] = []
     raw_len = 0
+    mem = _MemoryWatch(proc.pid, run_id, on_event)
+    watcher = asyncio.create_task(mem.poll_forever())
 
     async def pump_stdout() -> None:
         nonlocal parsed, raw_len
@@ -1000,9 +1014,19 @@ async def _supervise(
             asyncio.gather(pump_stdout(), read_stderr()), timeout=timeout_min * 60
         )
     except asyncio.TimeoutError:
+        watcher.cancel()
         await _kill_group(proc)
-        return RunResult(ok=False, timed_out=True, result_text="Run timed out")
+        return RunResult(
+            ok=False, timed_out=True, result_text="Run timed out",
+            oom_killed=mem.oom_killed, peak_memory_bytes=mem.peak_bytes,
+        )
 
+    # Read the scope one last time before anything is reaped. Without this the
+    # answer depends on where the poll interval happened to fall: a run whose
+    # last act was a memory kill would report a clean bill of health simply
+    # because it ended between two polls.
+    watcher.cancel()
+    mem.read_once()
     await proc.wait()
 
     # A cancel SIGKILLs the group, which closes stdout and lands us here with a
@@ -1046,8 +1070,75 @@ async def _supervise(
         report=report,
         report_source=report_source,
         is_rate_limited=rate_limited,
+        oom_killed=mem.oom_killed,
+        peak_memory_bytes=mem.peak_bytes,
         subtype=str(parsed.get("subtype")) if parsed.get("subtype") else None,
     )
+
+
+class _MemoryWatch:
+    """Polls a run's cgroup while it runs, so the portal can say "a command in
+    this run was killed for using too much memory" instead of leaving the agent
+    holding an unexplained `Killed`.
+
+    Polled rather than read once at the end because the cgroup is gone the
+    moment the last process in it exits - by the time `proc.wait()` returns
+    there is nothing left to read. Two small file reads every 15s is a price
+    worth paying to never lose the fact.
+
+    The kill is announced into the run's live event stream the first time it is
+    seen, not only in the final result: on a run that goes on to succeed the
+    result never mentions it, and a swallowed OOM is exactly the silent failure
+    that made this bug take five service restarts to notice.
+    """
+
+    INTERVAL_S = 5
+
+    def __init__(
+        self,
+        pid: int,
+        run_id: Optional[int],
+        on_event: Optional[EventCallback] = None,
+    ) -> None:
+        self.pid = pid
+        self.run_id = run_id
+        self.on_event = on_event
+        self.oom_killed = False
+        self.peak_bytes: Optional[int] = None
+        self._announced = False
+        self._cgroup: Optional[Path] = None
+
+    def read_once(self) -> Optional[runlimit.Sample]:
+        # The path is resolved through /proc/<pid> once and then kept: /proc
+        # stops answering the moment the process is reaped, and the last read -
+        # the one that catches a kill in a run's final seconds - happens after
+        # that.
+        if self._cgroup is None:
+            self._cgroup = runlimit.cgroup_for(self.pid, self.run_id)
+        if self._cgroup is None:
+            return None
+        got = runlimit.read_sample(self._cgroup)
+        if got is None:
+            return None
+        if got.peak_bytes is not None:
+            self.peak_bytes = got.peak_bytes
+        if got.oom_kills > 0:
+            self.oom_killed = True
+        return got
+
+    async def poll_forever(self) -> None:
+        while True:
+            try:
+                self.read_once()
+            except Exception:  # noqa: BLE001 - diagnostics must never kill a run
+                log.exception("Memory watch failed for run %s", self.run_id)
+                return
+            if self.oom_killed and not self._announced:
+                self._announced = True
+                note = runlimit.kill_note()
+                log.warning("Run %s: %s", self.run_id, note)
+                await _emit(self.on_event, {"type": "portal_oom"}, [f"! {note}"])
+            await asyncio.sleep(self.INTERVAL_S)
 
 
 def _pick_report(parsed: dict, cwd: Path) -> tuple[Optional[dict], Optional[str]]:

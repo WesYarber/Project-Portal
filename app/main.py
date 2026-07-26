@@ -46,6 +46,7 @@ from app import (
     pacing,
     preview,
     quoting,
+    runlimit,
     runlog,
     settings_form,
     site,
@@ -1694,6 +1695,14 @@ async def settings_page(request: Request) -> HTMLResponse:
             # How runs are paid for: this is the page that owns the per-run
             # ceiling, and what an unset ceiling *means* depends on the mode.
             "auth": spawnauth.status(),
+            # Same reasoning one field down: a blank memory cap is not "no cap",
+            # it is a number derived from this machine, so the page has to say
+            # which number rather than let someone guess.
+            "runmem": {
+                "available": runlimit.available(),
+                "default_human": runlimit.human(runlimit.default_max_bytes()),
+                "total_human": runlimit.human(runlimit.total_memory_bytes()),
+            },
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
             "push_sent": request.query_params.get("push_sent"),

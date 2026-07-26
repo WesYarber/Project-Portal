@@ -119,6 +119,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # Subscription runs bill $0 so this normally never fires; it is a backstop
     # for a leaked API key. Blank means no ceiling. See app/agent_runner.py.
     "run_max_budget_usd": "",
+    # Memory ceiling for one run's cgroup ("6G", "512M", ...). Blank means a
+    # fraction of this machine's RAM; "0" or "off" disables the cap. A runaway
+    # tool inside a run used to OOM the whole box and take the portal with it.
+    # See app/runlimit.py.
+    "run_memory_max": "",
     # Percentage of a real Claude window at which scheduled runs stop, so the
     # portal stops just short of the wall instead of discovering it mid-run.
     # Manual runs ignore it. See app/pacing.py.

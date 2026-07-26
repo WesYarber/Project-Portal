@@ -477,6 +477,12 @@
       {# Chips sit beside the text, not inside it: .done strikes .todo-text
          with a line-through no descendant could cancel. #}
       <span class="todo-text">{{ t.text }}</span>
+      {# One group for everything that is not the text, so a phone can give it
+         its own flex line (`flex-basis: 100%`) and the text the full row width.
+         Ungrouped, these competed with the text on one line and - because
+         `overflow-wrap: anywhere` lets the text shrink to a single character -
+         flex crushed it into a 3-character column instead of ever wrapping. #}
+      <span class="todo-meta">
       {%- for tag in todo_tags(t) %}
       <span class="todo-tag{{ ' tag-blocked' if tag == 'blocked' }}{{ ' tag-ready' if tag.startswith('ready') }}">{{ tag }}<form method="post" action="/todo/{{ t.id }}/tag" class="inline-form"><input type="hidden" name="remove" value="{{ tag }}"><button type="submit" class="tag-x" title="remove tag '{{ tag }}'">&times;</button></form></span>
       {%- endfor %}
@@ -496,6 +502,7 @@
             data-confirm="Delete this todo?">
         <button type="submit" class="todo-del" title="delete">&times;</button>
       </form>
+      </span>
     </li>
     {% endfor %}
   </ul>

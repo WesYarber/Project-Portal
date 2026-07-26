@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from . import config, daycycle, usage
+from . import config, daycycle, runlimit, usage
 
 # The hidden input a section form uses to declare the settings it owns.
 FIELDS_INPUT = "_fields"
@@ -83,6 +83,22 @@ def _decimal_or_blank(default: str = "", high: float = 1000.0) -> Callable[[str]
     return clean
 
 
+def _memory_size(value: str) -> str:
+    """A memory ceiling: blank (the derived default), an off-switch, or a size
+    like "6G".
+
+    Junk is rejected back to blank rather than stored, because a stored typo
+    would sit on the settings page looking like a cap that is in force while
+    `runlimit` quietly ignores it - the field is the only place anyone would
+    look to find out what the cap is.
+    """
+    value = value.strip()
+    if not value or value.lower() in {"0", "off", "none", "no", "unlimited"}:
+        return value.lower()
+    parsed = runlimit.parse_size(value)
+    return value if parsed and parsed > 0 else ""
+
+
 def _ratio(default: str, low: float = 0.0, high: float = 1.0) -> Callable[[str], str]:
     """A fraction in (low, high], e.g. the front-load gamma. Junk or an
     out-of-range value falls back to `default` rather than inverting the curve."""
@@ -126,6 +142,7 @@ def _build_registry() -> dict[str, Field]:
         Field("run_timeout_min", _positive_int("30", low=1, high=1440)),
         Field("run_max_turns", _positive_int("400", low=10, high=2000)),
         Field("run_max_budget_usd", _decimal_or_blank()),
+        Field("run_memory_max", _memory_size),
         Field("learnings_cap_lines", _positive_int("200", low=0, high=5000)),
         Field("limit_hold_percent", _positive_int("90", low=1, high=100)),
         Field("spend_down_session_hold", _positive_int("70", low=1, high=100)),
