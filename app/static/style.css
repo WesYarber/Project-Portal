@@ -1,0 +1,2463 @@
+/* Project Portal - retro terminal theme.
+   The blue and orange accents are the two portals from the wordmark. */
+
+:root {
+  --terminal-fg: hsl(215, 25%, 80%);
+  --terminal-dim: hsl(215, 15%, 55%);
+  --terminal-glow: rgba(148, 163, 184, 0.12);
+  --bg-color: hsl(220, 25%, 7%);
+  --window-bg: rgba(15, 20, 28, 0.85);
+  --window-border: rgba(148, 163, 184, 0.22);
+  --header-bg: rgba(22, 28, 38, 0.9);
+  --panel-bg: rgba(0, 0, 0, 0.3);
+  --font-mono: 'Fira Code', ui-monospace, 'SF Mono', 'Cascadia Code', 'Courier New', monospace;
+  /* The proportional face is the system UI stack rather than a webfont: it
+     needs no network round trip, so switching typeface never leaves the page
+     briefly unstyled. */
+  --font-prose: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Font actually used for prose and form fields; `ui_font` reassigns it. */
+  --font-body: var(--font-mono);
+
+  /* ANSI/CLI accents */
+  --ansi-blue: hsl(205, 100%, 65%);
+  --ansi-cyan: hsl(180, 75%, 55%);
+  --ansi-green: hsl(120, 65%, 60%);
+  --ansi-yellow: hsl(45, 100%, 60%);
+  --ansi-red: hsl(0, 80%, 65%);
+  --ansi-magenta: hsl(290, 75%, 65%);
+
+  /* Portal gun */
+  --portal-blue: hsl(200, 100%, 60%);
+  --portal-orange: hsl(28, 100%, 58%);
+
+  /* One height for every interactive control - text inputs, selects and
+     buttons alike. Native selects size themselves off the font unless they are
+     told not to, which is why a row of a select and a text field used to sit
+     at two slightly different heights on every platform. */
+  --control-h: 2.3rem;
+
+  /* Scroll caps. Each list on the project page is capped at a whole number of
+     its own rows, so these read as "N items" rather than as a pixel guess. The
+     row heights below are pinned in the rules for those lists; changing one
+     without the other silently changes how many items fit.
+
+     Wes's numbers, and explicitly tunable: 10 files, 16 todos, and a journal
+     box that is most of a screen because the journal is what you came to
+     read. */
+  --files-rows: 10;
+  --files-row-h: 1.8rem;
+  --todo-rows: 16;
+  --todo-row-h: 2.05rem;
+  /* 95vh: 75 -> 90 -> 95, each step at Wes's ask. It is capped in viewport
+     units rather than rows because journal entries are whole run reports of
+     wildly different lengths, so "n items" would mean nothing. */
+  --journal-max-h: 95vh;
+  /* Every other panel that can grow without bound - the memory files, a stored
+     revision, any long <pre> - gets this instead. Wes's rule: nothing on a page
+     should be so tall that reaching what is underneath it means scrolling
+     forever. Deliberately a little shorter than the journal, because the
+     journal is the one thing you came to read and the rest are things you came
+     to look *past*. */
+  --panel-max-h: 60vh;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Any author display rule (button, .inline-form, ...) beats the UA
+   stylesheet's `[hidden] { display: none }` - author rules always win over UA
+   rules regardless of specificity - so an element carrying `hidden` could
+   still render. Restate what hidden means at author level, once. */
+[hidden] { display: none !important; }
+
+html { background-color: var(--bg-color); color-scheme: dark; }
+
+body {
+  background-color: var(--bg-color);
+  color: var(--terminal-fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  padding: 1.5rem 1rem;
+  overflow-x: hidden;
+}
+
+/* CRT layers ------------------------------------------------------------- */
+/* Three independent switches, driven by classes on <body> (see
+   config.APPEARANCE_CHOICES): scanlines, phosphor glow and animation. The
+   scanline texture is defined once and applied to whichever surfaces the
+   current mode calls for. */
+:root {
+  --scanlines:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+    linear-gradient(90deg, rgba(255, 0, 0, 0.05), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.05));
+  --scanlines-size: 100% 3px, 3px 100%;
+}
+
+/* scan-all: one fixed overlay across the whole screen (the original look). */
+body.scan-all::before {
+  content: " ";
+  position: fixed;
+  inset: 0;
+  background: var(--scanlines);
+  background-size: var(--scanlines-size);
+  z-index: 9999;
+  pointer-events: none;
+}
+
+/* scan-chrome: texture on the window furniture and the console, but never
+   over prose, tables or form fields - the places you actually read. */
+body.scan-chrome .terminal-header,
+body.scan-chrome .terminal-footer,
+body.scan-chrome .console-out { position: relative; }
+body.scan-chrome .terminal-header::after,
+body.scan-chrome .terminal-footer::after,
+body.scan-chrome .console-out::after {
+  content: " ";
+  position: absolute;
+  inset: 0;
+  background: var(--scanlines);
+  background-size: var(--scanlines-size);
+  pointer-events: none;
+}
+
+/* The ASCII wordmark keeps its scanlines in every mode, including scan-off.
+   Turning scanlines off is about the text you have to read; the banner is a
+   picture of a CRT, and stripping the texture from it just makes it look flat.
+   scan-all already covers it with the fixed overlay, so this only applies to
+   the other two modes - otherwise the texture would be drawn twice and read as
+   twice as dark. */
+body.scan-chrome .banner,
+body.scan-off .banner { position: relative; }
+body.scan-chrome .banner::after,
+body.scan-off .banner::after {
+  content: " ";
+  position: absolute;
+  inset: 0;
+  background: var(--scanlines);
+  background-size: var(--scanlines-size);
+  pointer-events: none;
+}
+
+/* Phosphor glow. `glow-prose` keeps it on body copy but strips it from
+   anything you type into or click, which is where it reads as blur. */
+body.glow-all, body.glow-prose { text-shadow: 0 0 5px var(--terminal-glow); }
+body.glow-off, body.glow-off * { text-shadow: none; }
+body.glow-prose input,
+body.glow-prose textarea,
+body.glow-prose select,
+body.glow-prose button,
+body.glow-prose table,
+body.glow-prose code,
+body.glow-prose pre { text-shadow: none; }
+
+/* Typeface. `hybrid` and `sans` swap the face used for prose and text fields;
+   the window chrome, wordmark, ASCII art, run console and anything else whose
+   layout depends on character cells stays monospaced in every mode, because
+   those break outright in a proportional face. */
+body.font-hybrid, body.font-sans { font-family: var(--font-prose); }
+body.font-hybrid { --font-body: var(--font-prose); }
+body.font-sans { --font-body: var(--font-prose); }
+body.font-hybrid .wordmark, body.font-sans .wordmark,
+body.font-hybrid .terminal-header, body.font-sans .terminal-header,
+body.font-hybrid .terminal-footer, body.font-sans .terminal-footer,
+body.font-hybrid .nav-tabs, body.font-sans .nav-tabs,
+body.font-hybrid .badge, body.font-sans .badge,
+body.font-hybrid button, body.font-sans button,
+body.font-hybrid pre, body.font-sans pre,
+body.font-hybrid code, body.font-sans code,
+body.font-hybrid .banner, body.font-sans .banner,
+body.font-hybrid .console-out, body.font-sans .console-out,
+body.font-hybrid .sparkline, body.font-sans .sparkline,
+body.font-hybrid .share-bar, body.font-sans .share-bar,
+body.font-hybrid .offline-art, body.font-sans .offline-art,
+body.font-hybrid table, body.font-sans table {
+  font-family: var(--font-mono);
+}
+/* `sans` goes further than `hybrid`: the one thing it also de-monospaces is
+   table text, which is the densest reading surface in the app. */
+body.font-sans table { font-family: var(--font-prose); }
+
+/* Density. One variable, so a card, a row and a journal entry all tighten by
+   the same amount rather than each guessing. */
+body.density-compact { font-size: 14px; line-height: 1.45; }
+body.density-compact .card { padding: 0.7rem 0.85rem; }
+body.density-compact .field { margin-bottom: 0.55rem; }
+body.density-compact td, body.density-compact th { padding: 0.28rem 0.5rem; }
+body.density-compact .journal-entry { padding: 0.6rem 0; }
+
+body.anim-off *, body.anim-off *::before, body.anim-off *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation: none !important; transition: none !important; }
+}
+
+/* Terminal window frame -------------------------------------------------- */
+.screen { max-width: 1080px; margin: 0 auto; }
+
+.terminal-window {
+  background: var(--window-bg);
+  border: 1px solid var(--window-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px var(--terminal-glow);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+.terminal-header {
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--window-border);
+  padding: 0.7rem 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  user-select: none;
+  flex-wrap: wrap;
+}
+
+/* The wordmark sits in the middle of the title bar. `space-between` alone put
+   it wherever the two side items happened to leave room, which is why it read
+   as off-centre: the traffic-light dots are a fixed 60px and the right-hand
+   stat is however long today's numbers are. Giving both sides an equal flex
+   basis of 0 makes them claim the same width whatever they contain, so the
+   wordmark is centred on the window rather than on the leftovers. */
+.window-controls, .window-stats { flex: 1 1 0; min-width: 0; }
+.window-stats { justify-content: flex-end; }
+.wordmark { flex: 0 0 auto; text-align: center; }
+
+.window-controls { display: flex; gap: 8px; flex-shrink: 0; }
+.window-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--terminal-fg); }
+.window-dot.close { background-color: rgba(255, 100, 100, 0.25); }
+.window-dot.minimize { background-color: rgba(255, 200, 100, 0.25); }
+.window-dot.maximize { background-color: rgba(100, 255, 100, 0.25); }
+
+.window-title { font-size: 0.85rem; opacity: 0.75; letter-spacing: 0.05em; }
+.window-stats { font-size: 0.78rem; opacity: 0.7; display: flex; gap: 1rem; flex-wrap: wrap; }
+/* The user@host label has no break points, so on a phone it used to overflow
+   its flex slot and draw underneath the wordmark - truncate it instead. */
+.window-stats span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.terminal-body { padding: 1.75rem; }
+
+/* Wordmark + ASCII banner ------------------------------------------------ */
+.wordmark {
+  text-decoration: none;
+  color: var(--terminal-fg);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 0.9rem;
+}
+.wordmark:hover { text-decoration: none; }
+.wordmark .o-blue { color: var(--portal-blue); text-shadow: 0 0 8px var(--portal-blue); }
+.wordmark .o-orange { color: var(--portal-orange); text-shadow: 0 0 8px var(--portal-orange); }
+
+.banner {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-bottom: 1.5rem;
+  overflow-x: auto;
+  max-width: 100%;
+}
+.banner-line { display: flex; align-items: flex-start; }
+.banner pre {
+  font-family: var(--font-mono);
+  font-size: 0.44rem;
+  line-height: 1.05;
+  white-space: pre;
+  letter-spacing: 0;
+  color: var(--ansi-cyan);
+  text-shadow: none;
+}
+@media (min-width: 640px) { .banner pre { font-size: 0.62rem; } }
+
+/* The O glyphs are the portals: blue on line 1, orange on line 2. */
+.banner pre.portal-blue {
+  color: var(--portal-blue);
+  text-shadow: 0 0 10px var(--portal-blue), 0 0 22px rgba(56, 189, 248, 0.45);
+  animation: portal-pulse 3.5s ease-in-out infinite;
+}
+.banner pre.portal-orange {
+  color: var(--portal-orange);
+  text-shadow: 0 0 10px var(--portal-orange), 0 0 22px rgba(255, 140, 40, 0.45);
+  animation: portal-pulse 3.5s ease-in-out infinite 1.75s;
+}
+@keyframes portal-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
+
+/* The banner now sits above the nav tabs rather than inside the dashboard's
+   content, so its bottom margin only has to clear the tabs. */
+.banner { margin-bottom: 1rem; }
+
+/* Navigation ------------------------------------------------------------- */
+.nav-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  border-bottom: 1px dashed var(--window-border);
+  padding-bottom: 1rem;
+  margin-bottom: 1.75rem;
+}
+
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--terminal-dim);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  transition: all 0.2s ease;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.tab-btn::before { content: "[ "; opacity: 0.5; }
+.tab-btn::after { content: " ]"; opacity: 0.5; }
+.tab-btn:hover, .tab-btn.active { color: var(--ansi-blue); text-shadow: 0 0 8px rgba(56, 189, 248, 0.3); text-decoration: none; }
+
+.tab-btn .nav-count { color: var(--ansi-yellow); font-size: 0.75rem; vertical-align: super; }
+
+/* Headings --------------------------------------------------------------- */
+h1, h2, h3 { font-weight: 700; letter-spacing: 0.02em; }
+
+h1 { font-size: 1.35rem; margin-bottom: 0.4rem; }
+
+/* Click-to-rename. The input is deliberately the same size and weight as the
+   heading it replaces, so the swap reads as the heading becoming editable
+   rather than as a form appearing - and the page does not jump by the
+   difference between an h1 and a text field when you click it. */
+.title-rename { margin-bottom: 0.4rem; }
+.title-rename h1 { margin-bottom: 0; }
+.project-title { cursor: text; }
+.project-title:hover { text-decoration: underline dotted var(--terminal-dim); }
+.title-rename input[name="title"] {
+  font-size: 1.35rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  padding: 0 0.3rem;
+  margin-left: -0.3rem;
+}
+.title-rename .hint { margin-top: 0.3rem; }
+
+h2 {
+  font-size: 1.05rem;
+  margin: 2rem 0 0.9rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed var(--window-border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+h2::before { content: "//"; color: var(--ansi-blue); opacity: 0.8; }
+
+h3 { font-size: 0.95rem; margin-bottom: 0.5rem; }
+
+a { color: var(--ansi-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.muted { color: var(--terminal-dim); }
+.small { font-size: 0.82rem; }
+
+/* Panels ----------------------------------------------------------------- */
+.card, .panel {
+  border: 1px solid var(--window-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  background: var(--panel-bg);
+  margin-bottom: 1rem;
+}
+
+.banner-alert {
+  border: 1px solid var(--ansi-yellow);
+  border-radius: 8px;
+  padding: 0.85rem 1.1rem;
+  background: rgba(255, 200, 60, 0.07);
+  color: var(--ansi-yellow);
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+}
+.banner-alert a { color: var(--ansi-yellow); text-decoration: underline; }
+
+/* The "update is ready, waiting to load" line under the nav - quieter than
+   banner-alert because it needs no action from Wes, just his patience. */
+.update-wait {
+  border: 1px dashed rgba(250, 204, 21, 0.45);
+  border-radius: 6px;
+  padding: 0.45rem 0.8rem;
+  color: var(--ansi-yellow);
+  opacity: 0.85;
+  margin-bottom: 1rem;
+}
+
+.status-line {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  font-size: 0.85rem;
+  padding: 0.75rem 1.1rem;
+}
+/* The text facts wrap among themselves at a text-sized line gap; the heatmap
+   sits beside them and its height no longer spreads the lines apart. */
+.status-items {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.3rem 1.5rem;
+}
+
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  background: var(--terminal-dim);
+}
+.dot.ok { background: var(--ansi-green); box-shadow: 0 0 8px var(--ansi-green); }
+.dot.err { background: var(--ansi-red); box-shadow: 0 0 8px var(--ansi-red); }
+.dot.warn { background: var(--ansi-yellow); box-shadow: 0 0 8px var(--ansi-yellow); }
+
+/* Project cells ---------------------------------------------------------- */
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.1rem;
+  margin: 1rem 0;
+}
+
+.project-cell {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  border: 1px solid var(--window-border);
+  border-radius: 8px;
+  padding: 1.1rem;
+  background: rgba(148, 163, 184, 0.02);
+  text-decoration: none;
+  color: inherit;
+  transition: all 0.2s ease;
+}
+.project-cell:hover {
+  background: rgba(56, 189, 248, 0.04);
+  border-color: var(--ansi-blue);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.15);
+  text-decoration: none;
+}
+/* Two grades of "this wants you", not one. A project that is actively blocked
+   on an answer gets the full yellow border; a project you have deliberately
+   paused gets a hint of the same colour and nothing else. Wes has a lot of
+   paused projects, and when every one of them shouted, none of them did. */
+.project-cell.needs-attention { border-color: var(--ansi-yellow); }
+.project-cell.needs-attention:hover {
+  border-color: var(--ansi-yellow);
+  box-shadow: 0 0 12px rgba(255, 200, 60, 0.2);
+}
+.project-cell.resting {
+  border-color: rgba(255, 200, 60, 0.22);
+  opacity: 0.72;
+}
+.project-cell.resting:hover {
+  opacity: 1;
+  border-color: rgba(255, 200, 60, 0.5);
+  box-shadow: none;
+}
+
+/* A sub-project sits directly under the project it was split out of. It stays
+   a full card - it has its own agent, its own runs and its own questions, and
+   collapsing it into a chip on the parent would hide work in flight - but the
+   left rule and the parent's name say at a glance that it belongs to something.
+   The grid puts it in the next cell rather than literally underneath, so the
+   label is doing the work the indent alone could not. */
+.project-cell.sub {
+  border-left: 3px solid var(--ansi-blue);
+  background: rgba(56, 189, 248, 0.03);
+}
+.cell-parent {
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  color: var(--terminal-dim);
+  opacity: 0.8;
+  margin-bottom: -0.3rem;
+}
+
+.cell-title { font-weight: 700; font-size: 0.95rem; line-height: 1.35; padding-right: 1.75rem; }
+.cell-desc {
+  font-size: 0.8rem;
+  color: var(--terminal-dim);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cell-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--terminal-dim);
+  margin-top: auto;
+  padding-top: 0.4rem;
+  flex-wrap: wrap;
+}
+
+/* Notification pip on a cell with open questions. */
+.cell-alert {
+  position: absolute;
+  top: 0.7rem;
+  right: 0.7rem;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 10px;
+  background: var(--ansi-yellow);
+  color: var(--bg-color);
+  font-size: 0.7rem;
+  font-weight: 700;
+  line-height: 20px;
+  text-align: center;
+  text-shadow: none;
+  box-shadow: 0 0 10px rgba(255, 200, 60, 0.55);
+  animation: pip-pulse 2s ease-in-out infinite;
+}
+@keyframes pip-pulse {
+  0%, 100% { box-shadow: 0 0 10px rgba(255, 200, 60, 0.55); }
+  50% { box-shadow: 0 0 18px rgba(255, 200, 60, 0.9); }
+}
+/* The pip on a paused project: still a count, no longer a pulse. */
+.cell-alert.quiet {
+  background: rgba(255, 200, 60, 0.4);
+  color: var(--terminal-fg);
+  box-shadow: none;
+  animation: none;
+}
+
+/* Badges ----------------------------------------------------------------- */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  border: 1px solid var(--window-border);
+  color: var(--terminal-dim);
+  text-shadow: none;
+  white-space: nowrap;
+}
+/* A project whose next step is code, held for Wes's OK - the same amber as the
+   approval panel on the project page, so the two read as one thing. */
+.badge.needs-ok { color: var(--ansi-yellow); border-color: rgba(250, 204, 21, 0.45); }
+.badge::before { content: "["; opacity: 0.55; }
+.badge::after { content: "]"; opacity: 0.55; }
+
+/* The state-model vocabulary: backlog | active | paused | review | done |
+   abandoned. The old status names stay as aliases so anything still holding a
+   pre-deploy page renders coloured rather than plain. */
+.status-backlog, .status-inbox { color: var(--terminal-dim); border-color: var(--terminal-dim); }
+.status-active, .status-building, .status-planning { color: var(--ansi-green); border-color: var(--ansi-green); }
+.status-paused, .status-waiting_user, .status-needs_input { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+.status-review { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
+.status-done { color: var(--ansi-green); border-color: var(--ansi-green); opacity: 0.7; }
+.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red); opacity: 0.7; }
+
+.author-agent { color: var(--ansi-blue); border-color: var(--ansi-blue); }
+.author-user { color: var(--ansi-green); border-color: var(--ansi-green); }
+.author-system { color: var(--terminal-dim); }
+
+/* Forms ------------------------------------------------------------------ */
+.field { margin-bottom: 0.9rem; }
+label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.35rem; }
+
+input[type="text"], input[type="number"], input[type="password"], textarea, select {
+  width: 100%;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  color: var(--terminal-fg);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  /* One height for every control, so a row of selects and number inputs reads
+     as one instrument panel rather than four differently-sized boxes. */
+  min-height: var(--control-h);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+/* A textarea is the one control that is meant to be taller than the rest, and
+   app.js grows it to fit its content - so it gets the shared minimum and no
+   fixed height. Everything else is pinned. */
+input[type="text"], input[type="number"], input[type="password"], select {
+  height: var(--control-h);
+}
+/* Native select chrome ignores padding and sizes itself off the font, which is
+   what made dropdowns sit a few pixels shorter than the text fields beside
+   them on every page. appearance:none hands the box back to CSS; the arrow is
+   drawn as a background so there is still something to say "this opens". */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 1.9rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--terminal-dim) 50%),
+    linear-gradient(135deg, var(--terminal-dim) 50%, transparent 50%);
+  background-position: right 1.05rem center, right 0.75rem center;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  background-repeat: no-repeat;
+}
+select:disabled { opacity: 0.5; }
+input:focus, textarea:focus, select:focus {
+  border-color: var(--ansi-blue);
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
+}
+/* app.js grows a textarea to fit its content, which is right for a note box and
+   very wrong for a 230-line memory file: the learnings editor was several
+   screens tall and everything below it was unreachable without scrolling past
+   the whole thing. The cap turns the overflow into a scrollbar instead. */
+textarea { resize: vertical; line-height: 1.5; max-height: var(--panel-max-h); }
+select option { background: var(--bg-color); color: var(--terminal-fg); }
+
+.checkbox-row { display: flex; align-items: center; gap: 0.6rem; }
+.checkbox-row input[type="checkbox"] { width: auto; accent-color: var(--ansi-blue); }
+.checkbox-row label { margin: 0; }
+
+.hint { font-size: 0.76rem; color: var(--terminal-dim); margin-top: 0.3rem; }
+.hint.warn { color: var(--ansi-yellow); }
+
+button, .btn {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.45rem 1rem;
+  color: var(--ansi-blue);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-shadow: none;
+  /* inline-flex + the shared height is what makes a <label class="btn"> (the
+     attach-files control, which is a label wrapped round a hidden file input)
+     exactly as tall as the <button> next to it. Padding alone did not: the two
+     elements resolve their line boxes differently. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-h);
+  line-height: 1;
+}
+button:hover, .btn:hover {
+  background: var(--ansi-blue);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+  text-decoration: none;
+}
+button.secondary { color: var(--terminal-dim); background: rgba(148, 163, 184, 0.06); }
+button.secondary:hover { background: var(--terminal-dim); color: var(--bg-color); box-shadow: none; }
+
+button.danger, .btn.danger { color: var(--ansi-red); background: rgba(255, 110, 110, 0.08); }
+button.danger:hover, .btn.danger:hover {
+  background: var(--ansi-red);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(255, 110, 110, 0.3);
+}
+button.small, .btn.small { padding: 0.2rem 0.6rem; font-size: 0.75rem; height: 1.8rem; }
+
+/* "go" - the affirmative action on a form: add note, approve the build. Green
+   rather than the default blue so the thing that commits your typing is the
+   thing your eye lands on. */
+button.go, .btn.go {
+  color: var(--ansi-green);
+  background: rgba(74, 222, 128, 0.1);
+  border-color: rgba(74, 222, 128, 0.45);
+}
+button.go:hover, .btn.go:hover {
+  background: var(--ansi-green);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
+}
+
+/* The build gate: a project an agent wants to build, held for Wes's OK. */
+.approve-build {
+  margin-top: 1rem;
+  padding: 0.8rem;
+  border: 1px solid rgba(250, 204, 21, 0.45);
+  border-radius: 4px;
+  background: rgba(250, 204, 21, 0.06);
+}
+.approve-build p { margin-bottom: 0.6rem; font-size: 0.85rem; }
+[data-attach-status].error { color: var(--ansi-red); }
+
+/* Lets a one-button form sit inline next to other controls in a .button-row
+   or a flex header, instead of taking a full block line. */
+.inline-form { display: inline-flex; margin: 0; }
+
+/* Name a sub-project and split it out, on one line. The name is the required
+   field and the description is optional, so the name gets the smaller share of
+   the row on purpose - a wide empty box invites a sentence, and this is a
+   project title. Wraps to two rows on a phone rather than shrinking to nothing.
+   The heights are pinned to --control-h like every other control here. */
+.split-form {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0.8rem 0 0;
+}
+.split-form input[type="text"] { flex: 1 1 12rem; min-width: 0; margin: 0; height: var(--control-h); }
+.split-form input[name="description"] { flex: 2 1 18rem; }
+.split-form button { height: var(--control-h); margin: 0; }
+
+/* Convert this project into a sub-project of another (or move a child to a
+   new parent): a label, a parent picker sized to its options, and the button,
+   on one line that wraps on a phone. */
+.convert-form {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0.8rem 0 0;
+  /* Shrinkable when it sits inside a button row: without this its min-content
+     floor is the picker's full 24rem and a phone-width row overflows. */
+  min-width: 0;
+}
+/* Capped rather than content-sized: a project title can be a whole sentence,
+   and one long option must not push the button onto its own line. The first
+   rule is the no-JS native control; the second sizes the themed-dropdown
+   wrapper app.js puts around it (same trick as .todo-add). */
+.convert-form select { width: auto; max-width: min(100%, 24rem); margin: 0; height: var(--control-h); }
+.convert-form .sel { width: 24rem; min-width: 0; flex: 0 1 auto; }
+.convert-form button { height: var(--control-h); margin: 0; }
+.family-moves { margin-top: 0.6rem; }
+.family-moves .convert-form { margin: 0; }
+
+form.inline { display: inline-block; margin-right: 0.4rem; }
+.button-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+
+/* Journal / logs --------------------------------------------------------- */
+.journal-entry {
+  border-left: 2px solid var(--window-border);
+  padding-left: 0.9rem;
+  margin-bottom: 1.4rem;
+}
+.journal-entry:last-child { margin-bottom: 0; }
+.journal-entry.from-agent { border-left-color: var(--ansi-blue); }
+.journal-entry.from-user { border-left-color: var(--ansi-green); }
+
+/* A note no agent has read yet. Dashed rather than a different colour: it is
+   still one of Wes's notes (green), the dash says only that it has not gone
+   anywhere. */
+.journal-entry.note-unsent { border-left-style: dashed; }
+.badge-unsent { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+
+/* The ask side thread: a question and its read-only answer. Dotted and dimmed
+   because these entries are deliberately NOT part of what an agent run reads
+   (db.SIDE_THREAD) - they should look like marginalia next to the record. */
+.journal-entry.journal-aside { border-left-style: dotted; opacity: 0.86; }
+.badge-aside { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
+
+/* --- Highlight a journal passage, then ask or note about it ---------------
+   The floating bar over a selection, and the quoted passage once it has been
+   dropped into the ask form or the note form. Both are built by app.js and
+   never rendered by the server. */
+#sel-actions {
+  position: fixed;
+  z-index: 70;
+  display: flex;
+  gap: 0.3rem;
+  padding: 0.3rem;
+  background: var(--bg-color);
+  border: 1px solid var(--ansi-magenta);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+.sel-act {
+  font: inherit;
+  font-size: 0.82rem;
+  white-space: nowrap;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  color: var(--terminal-fg);
+  background: transparent;
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+}
+.sel-act:hover { border-color: var(--ansi-magenta); color: var(--ansi-magenta); }
+/* Parked in the gutter beside the journal card (Wes, 2026-07-25) the bar is a
+   narrow stack rather than a row, so it fits a gutter a two-button row would
+   not - and buttons stretch to a common width so the column reads as one
+   control, not two ragged ones. */
+#sel-actions.side { flex-direction: column; align-items: stretch; }
+#sel-actions.side .sel-act { text-align: left; }
+
+.quote-chip {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0.6rem;
+  padding: 0.45rem 0.6rem;
+  border-left: 3px solid var(--ansi-magenta);
+  background: var(--window-bg, rgba(255, 255, 255, 0.03));
+  border-radius: 0 4px 4px 0;
+}
+.quote-chip-text {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-size: 0.82rem;
+  color: var(--terminal-dim);
+  /* Long selections stay a chip rather than pushing the composer off screen. */
+  max-height: 6.5em;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.quote-chip-x {
+  flex: none;
+  font: inherit;
+  line-height: 1;
+  padding: 0.1rem 0.3rem;
+  cursor: pointer;
+  color: var(--terminal-dim);
+  background: transparent;
+  border: 0;
+}
+.quote-chip-x:hover { color: var(--ansi-red); }
+
+/* The global `details { margin-bottom: 1rem }` would put a gap under every
+   note in the journal, the same rule that used to space out the file tree. */
+.note-edit { margin-bottom: 0; margin-top: 0.4rem; }
+.note-edit > summary { cursor: pointer; color: var(--terminal-dim); }
+.note-edit textarea { margin-top: 0.5rem; }
+.note-edit-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.journal-entry .meta {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.45rem;
+  font-size: 0.8rem;
+}
+
+/* Media an agent embedded in a journal entry or one-off reply. Capped so a
+   full-page screenshot reads as a figure, not a wall - click opens it full
+   size in a new tab (the img is wrapped in a link by the markdown_media
+   filter). display:block keeps a caption line from snuggling beside it. */
+.journal-media {
+  display: block;
+  max-width: 100%;
+  max-height: 24rem;
+  width: auto;
+  height: auto;
+  border: 1px solid var(--window-border);
+  border-radius: 6px;
+  margin: 0.5rem 0;
+  background: rgba(0, 0, 0, 0.4);
+}
+.journal-media-link { display: inline-block; max-width: 100%; cursor: zoom-in; }
+
+/* In-page image viewer (the lightbox). Clicking a journal image opens it here
+   full-bleed with zoom/pan instead of navigating to the raw file - Wes's ask:
+   "make a popup show up on the page to view it... should be able to zoom and
+   whatnot. Should not take you to a different page." Built lazily by app.js and
+   appended to <body>; hidden until an image is opened. */
+/* While the viewer is open the page behind must not scroll under it. */
+body.lb-open { overflow: hidden; }
+#img-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  background: rgba(6, 9, 14, 0.92);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  /* Fade in; the .closing class fades back out before removal. */
+  animation: lb-fade 0.12s ease-out;
+}
+#img-lightbox.closing { animation: lb-fade 0.12s ease-in reverse; }
+@keyframes lb-fade { from { opacity: 0; } to { opacity: 1; } }
+
+/* The stage fills everything between the toolbar and caption; the image is
+   translated/scaled inside it by JS. overflow:hidden so a panned or zoomed
+   image is clipped to the stage, not the page. */
+.lb-stage {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: hidden;
+  touch-action: none; /* we handle pan/pinch ourselves */
+  cursor: grab;
+}
+.lb-stage.panning { cursor: grabbing; }
+.lb-stage img {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  max-width: none;
+  max-height: none;
+  transform-origin: 0 0;
+  user-select: none;
+  -webkit-user-drag: none;
+  will-change: transform;
+}
+
+.lb-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.5rem 0.7rem;
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--window-border);
+  font-family: var(--font-mono);
+}
+.lb-bar .lb-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--terminal-dim);
+  font-size: 0.8rem;
+}
+.lb-btn {
+  flex: 0 0 auto;
+  width: 2.1rem;
+  height: 2.1rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  font-size: 1rem;
+  line-height: 1;
+  background: var(--panel-bg);
+  color: var(--terminal-fg);
+  border: 1px solid var(--window-border);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.lb-btn:hover { background: var(--terminal-glow); color: var(--portal-blue); }
+.lb-zoom-label {
+  flex: 0 0 auto;
+  min-width: 3.2rem;
+  text-align: center;
+  color: var(--terminal-dim);
+  font-size: 0.78rem;
+}
+.lb-caption {
+  padding: 0.45rem 0.7rem;
+  color: var(--terminal-dim);
+  font-size: 0.78rem;
+  text-align: center;
+  border-top: 1px solid var(--window-border);
+  background: var(--header-bg);
+  max-height: 20vh;
+  overflow-y: auto;
+}
+.lb-caption:empty { display: none; }
+/* On a phone the caption and full toolbar still fit because both are single
+   lines that wrap/scroll rather than push the stage off-screen. */
+@media (max-width: 480px) {
+  .lb-bar { flex-wrap: wrap; }
+  .lb-bar .lb-title { order: 3; flex-basis: 100%; }
+}
+
+.content { font-size: 0.9rem; }
+.content p { margin-bottom: 0.6rem; }
+.content p:last-child { margin-bottom: 0; }
+.content ul, .content ol { margin: 0.4rem 0 0.7rem 1.3rem; }
+.content li { margin-bottom: 0.2rem; }
+.content h1, .content h2, .content h3 { font-size: 0.95rem; margin: 0.7rem 0 0.4rem; border: none; padding: 0; }
+.content h2::before { content: none; }
+.content code {
+  background: rgba(148, 163, 184, 0.1);
+  border-radius: 3px;
+  padding: 0.05rem 0.3rem;
+  font-size: 0.85em;
+  color: var(--ansi-cyan);
+}
+.content pre {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--window-border);
+  border-radius: 6px;
+  padding: 0.8rem;
+  overflow-x: auto;
+  margin-bottom: 0.7rem;
+}
+.content pre code { background: none; padding: 0; color: inherit; }
+.content strong { color: #fff; }
+.content blockquote {
+  border-left: 2px solid var(--terminal-dim);
+  padding-left: 0.8rem;
+  color: var(--terminal-dim);
+}
+
+/* Tables ----------------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--window-border); vertical-align: top; }
+th { color: var(--terminal-dim); font-weight: 600; }
+tbody tr:hover { background: rgba(148, 163, 184, 0.04); }
+
+/* Misc ------------------------------------------------------------------- */
+details { margin-bottom: 1rem; }
+summary {
+  cursor: pointer;
+  color: var(--terminal-dim);
+  font-size: 0.85rem;
+  padding: 0.35rem 0;
+  user-select: none;
+}
+summary:hover { color: var(--ansi-blue); }
+
+/* CLI auto-memory list on /memory: one collapsible row per workspace, files
+   nested under it. Reuses the badge/summary look of the rest of the page. */
+.cli-memory-dir > summary { display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.cli-memory-label { color: var(--terminal-fg); font-size: 0.9rem; }
+.cli-memory-files { list-style: none; margin: 0.3rem 0 0.6rem 1.2rem; font-size: 0.85rem; }
+.cli-memory-files li { padding: 0.2rem 0; }
+.cli-memory-desc { margin-top: 0.1rem; }
+
+.file-list { list-style: none; font-size: 0.85rem; }
+/* line-height in rem rather than a ratio: the scroll cap below is a multiple
+   of --files-row-h, so the row has to be an exact height and not one that
+   drifts with the font. 1.5 + 2*0.15 = 1.8rem = --files-row-h. */
+.file-list li { padding: 0.15rem 0; line-height: 1.5rem; }
+.file-list li::before { content: "\00bb  "; color: var(--terminal-dim); }
+
+/* The workspace file tree ------------------------------------------------
+   Same row metrics as .file-list above, because both feed the same ten-row
+   scroll cap: a tree row and a flat-list row must be the same height or the
+   cap stops being a whole number of rows. */
+.file-tree { list-style: none; font-size: 0.85rem; margin: 0; padding: 0; }
+.file-tree .file-tree { padding-left: 1.1rem; }
+.file-tree li { padding: 0; }
+.file-tree li::before { content: none; }
+.tree-file, .tree-dir > summary {
+  padding: 0.15rem 0;
+  line-height: 1.5rem;
+}
+.tree-file::before { content: "\00bb  "; color: var(--terminal-dim); }
+/* The folder marker is the one thing that says "this opens" before you click
+   it, so it is drawn rather than left to the platform triangle - which is
+   invisible against this background on some browsers. */
+/* A folder is a <details>, and the global `details { margin-bottom: 1rem }`
+   put a blank line under every one of them - so a tree row that happened to be
+   a folder was 1rem taller than a file row, the list looked double-spaced, and
+   the ten-row scroll cap stopped being ten rows. A tree row is a row. */
+.tree-dir { margin-bottom: 0; }
+.tree-dir > summary {
+  cursor: pointer;
+  list-style: none;
+  color: var(--ansi-blue);
+}
+.tree-dir > summary::-webkit-details-marker { display: none; }
+.tree-dir > summary::before {
+  content: "+ ";
+  color: var(--terminal-dim);
+}
+.tree-dir[open] > summary::before { content: "- "; }
+.tree-dir > summary:hover .tree-name { text-decoration: underline; }
+.tree-loading { padding: 0.15rem 0 0.15rem 1.1rem; line-height: 1.5rem; }
+/* The scroll cap lives on this wrapper, so opening a folder scrolls inside the
+   ten-row window instead of growing it. */
+.file-tree-scroll { padding-right: 0.2rem; }
+
+/* Scroll caps ------------------------------------------------------------
+   A long list gets its own scrollbar rather than pushing everything below it
+   off the screen. The inset shadow at the bottom edge is the only cue that
+   there is more - a scrollbar is invisible until you touch the list on a
+   phone, and an unmarked cut-off looks like the end of the data. */
+.scroll-cap {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.scroll-cap-files { max-height: calc(var(--files-rows) * var(--files-row-h)); }
+.scroll-cap-todo { max-height: calc(var(--todo-rows) * var(--todo-row-h)); }
+.scroll-cap-journal { max-height: var(--journal-max-h); }
+.scroll-cap-panel { max-height: var(--panel-max-h); }
+.scroll-cap::-webkit-scrollbar { width: 8px; }
+.scroll-cap::-webkit-scrollbar-thumb {
+  background: var(--window-border);
+  border-radius: 4px;
+}
+.scroll-cap::-webkit-scrollbar-thumb:hover { background: var(--terminal-dim); }
+/* The download link stays quiet until you go looking for it - the file name is
+   what you scan the list for, not the verb. */
+.download-link { margin-left: 0.6rem; color: var(--terminal-dim); }
+.download-link:hover { color: var(--ansi-blue); }
+
+/* The ssh-into-this-project line: a web page can't open a terminal, so it hands
+   over the command instead. */
+.ssh-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 0.8rem;
+}
+.ssh-command {
+  flex: 1 1 20rem;
+  overflow-x: auto;
+  white-space: nowrap;
+  padding: 0.35rem 0.5rem;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  font-size: 0.78rem;
+}
+
+.file-content {
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--window-border);
+  border-radius: 6px;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.empty-state {
+  color: var(--terminal-dim);
+  font-size: 0.85rem;
+  font-style: italic;
+  padding: 0.8rem 0;
+}
+.empty-state::before { content: "$ "; font-style: normal; opacity: 0.6; }
+
+.grid { display: grid; gap: 1rem; }
+.grid-2 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+
+.row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+.terminal-footer {
+  border-top: 1px dashed var(--window-border);
+  margin-top: 2rem;
+  padding-top: 1rem;
+  font-size: 0.75rem;
+  color: var(--terminal-dim);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.cursor::after {
+  content: "_";
+  animation: blink 1.1s step-end infinite;
+  color: var(--ansi-blue);
+}
+@keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+/* Live agent activity ---------------------------------------------------- */
+.dot.running {
+  background: var(--ansi-green);
+  box-shadow: 0 0 8px var(--ansi-green);
+  animation: run-pulse 1.2s ease-in-out infinite;
+}
+@keyframes run-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+
+.live-run { padding: 0.9rem 1.1rem; border-color: rgba(74, 222, 128, 0.35); }
+.live-run.idle { border-color: var(--window-border); }
+.live-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; font-size: 0.85rem; }
+.live-run .live-activity {
+  margin-top: 0.55rem;
+  font-size: 0.8rem;
+  color: var(--ansi-cyan);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Several agents can be in flight at once, so the strip stacks one row per
+   run with a hairline between them rather than assuming a single run. */
+.live-run-row + .live-run-row {
+  margin-top: 0.7rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--window-border);
+}
+.live-idle-reason { opacity: 0.75; }
+.bonus { color: var(--ansi-magenta); }
+
+/* The account's real Claude windows on the status line. Chips rather than
+   bars: at this size a bar 2% full is indistinguishable from an empty one,
+   and the number is what you actually read. */
+/* Wrapping container, nowrap chips: on a phone the row breaks *between*
+   windows, never inside one, so "session 47% (resets 1h 59m)" stays whole. */
+.claude-limits { display: inline-flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: baseline; }
+.claude-limits.stale { opacity: 0.5; }
+.limit-chip { white-space: nowrap; }
+.limit-chip.hot strong { color: var(--ansi-yellow); }
+/* The usage fallback (Fable window full -> runs use Opus) announcing itself
+   next to the configured model, with the why in its tooltip. */
+.fallback-chip { color: var(--ansi-yellow); white-space: nowrap; }
+/* A spend-down window is a mode, not a warning: green, like anything else
+   that means "work is happening", never the yellow that means "you're needed". */
+/* No nowrap: at phone widths the sentence is longer than the card and must
+   wrap rather than run off the right edge. */
+.spend-down { color: var(--ansi-green); }
+
+/* Running indicator on a project cell */
+.cell-run { display: none; font-size: 0.75rem; color: var(--ansi-green); }
+.project-cell.running .cell-run { display: block; }
+.project-cell.running { border-color: rgba(74, 222, 128, 0.5); }
+.project-cell.running:hover { border-color: var(--ansi-green); }
+
+/* Agent console ---------------------------------------------------------- */
+/* The console is folded shut between runs (see project.html). The summary is a
+   heading, not a hint, so it carries the weight the <h2> used to. */
+.fold-section { margin: 1.4rem 0 1rem; }
+/* A section folded down to its own heading. Shaped like the <h2> it replaced - same "//" prefix, same dashed rule -
+   so folding it did not demote it below every other section on the page. */
+.fold-section > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  list-style: none;
+  font-size: 1.05rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed var(--window-border);
+}
+.fold-section > summary::-webkit-details-marker { display: none; }
+.fold-section > summary::before { content: "//"; color: var(--ansi-blue); opacity: 0.8; }
+.fold-section-label { color: var(--terminal-fg); font-weight: 700; }
+.fold-section > summary::after {
+  content: "[ show ]";
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: var(--terminal-dim);
+}
+.fold-section[open] > summary::after { content: "[ hide ]"; }
+.fold-section > summary:hover::after { color: var(--ansi-blue); }
+.fold-section > summary:hover .fold-section-label { color: var(--ansi-blue); }
+.fold-section > .card { margin-top: 0.9rem; }
+.fold-section > .project-grid { margin-top: 0.9rem; }
+/* The dashboard shelves sit under the live grid, so they get less air above
+   them than a fold that follows a full section. */
+.shelf { margin-top: 0.9rem; }
+
+.console-card { padding: 0; overflow: hidden; }
+.console-card.live { border-color: rgba(74, 222, 128, 0.35); }
+.console-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px dashed var(--window-border);
+  background: rgba(0, 0, 0, 0.25);
+  font-size: 0.8rem;
+}
+.console-out {
+  margin: 0;
+  padding: 0.9rem 1rem;
+  max-height: 26rem;
+  overflow: auto;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--terminal-dim);
+  background: rgba(0, 0, 0, 0.35);
+}
+
+/* --- Activity: usage over time and the run feed ------------------------- */
+.window-picker { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
+
+.spark-block { display: flex; flex-direction: column; gap: 0.35rem; }
+.spark-row { display: flex; align-items: center; gap: 0.75rem; }
+.spark-label {
+  width: 3.5rem;
+  flex-shrink: 0;
+  font-size: 0.76rem;
+  color: var(--terminal-dim);
+  text-align: right;
+}
+/* One glyph per day. letter-spacing widens the bars so a two-week window
+   reads as a chart rather than as a word. */
+.spark {
+  margin: 0;
+  font-size: 1.35rem;
+  line-height: 1;
+  letter-spacing: 0.18em;
+  color: var(--ansi-green);
+  text-shadow: 0 0 8px rgba(120, 255, 150, 0.25);
+  white-space: pre;
+  overflow-x: auto;
+}
+.spark.cost { color: var(--ansi-yellow); text-shadow: 0 0 8px rgba(255, 210, 100, 0.25); }
+.spark-value { font-size: 0.8rem; color: var(--terminal-fg); margin-left: auto; }
+
+.stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.4rem;
+  margin-top: 1rem;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--window-border);
+}
+.stat { display: flex; flex-direction: column; font-size: 0.74rem; color: var(--terminal-dim); }
+.stat em { font-style: normal; font-size: 1.05rem; font-weight: 600; color: var(--terminal-fg); }
+
+.filter-row { display: flex; gap: 0.6rem; flex-wrap: wrap; margin-bottom: 0.9rem; }
+.filter-row select { width: auto; min-width: 11rem; }
+
+.run-table td { white-space: nowrap; }
+.run-table tr.run-running { background: rgba(120, 255, 150, 0.05); }
+.run-table tr.run-error td, .run-table tr.run-timeout td { color: var(--ansi-red); }
+.run-status-ok { color: var(--ansi-green); border-color: var(--ansi-green); }
+.run-status-running { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
+.run-status-error { color: var(--ansi-red); border-color: var(--ansi-red); }
+.run-status-timeout { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+/* Cancelled is a deliberate stop, not a failure - dim rather than red. */
+.run-status-cancelled { color: var(--terminal-dim); border-color: var(--terminal-dim); }
+.run-table tr.run-cancelled td { color: var(--terminal-dim); }
+
+.breakdown td { vertical-align: middle; }
+.share-bar { margin: 0; letter-spacing: 0.05em; }
+
+.pager { margin-top: 0.9rem; align-items: center; }
+
+/* Project control bar ----------------------------------------------------- */
+/* Four controls that do different things but should look like one instrument
+   panel: equal width, same label placement, same height. Previously these were
+   a mix of number inputs and selects at whatever width they felt like. */
+/* Not equal widths: the three controls need very different amounts of room and
+   giving them a quarter each (the row had four controls once) made the status
+   box too narrow for "building - agent works on it" while priority - which
+   never shows more than "9 - highest" - had space it could not use. The ratio
+   is what each control's longest option actually needs. */
+.control-bar {
+  display: flex;
+  gap: 0.75rem;
+}
+/* Each control is only as wide as its own longest value needs - Wes twice:
+   the priority picker is a single digit and had a quarter of the row, and the
+   status box (now one word, "building") does not need a sentence's width.
+   Fixed widths rather than fr shares so nothing stretches to fill the card. */
+.control-bar > .control-status { width: 9.5rem; }
+.control-bar > .control-priority { width: 5rem; }
+.control-bar > .control-model { width: 11rem; }
+.control { margin: 0; min-width: 0; }
+.control label {
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+  margin-bottom: 0.3rem;
+}
+.control select {
+  width: 100%;
+  height: 2.3rem;
+  padding: 0 0.55rem;
+  font-size: 0.85rem;
+}
+.control-hint { margin-top: 0.8rem; }
+
+/* The status control carries its own colour, so the project's state is
+   readable without reading the words. */
+.status-select {
+  border-width: 1px;
+  border-style: solid;
+  font-weight: 600;
+}
+select.status-backlog { color: var(--terminal-fg); border-color: var(--window-border); }
+select.status-active { color: var(--ansi-green); border-color: var(--ansi-green); }
+select.status-paused { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+select.status-review { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
+select.status-done { color: var(--ansi-green); border-color: var(--ansi-green); }
+select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red); }
+/* The option list is painted by the OS, which ignores the inherited colour on
+   most platforms - force it back to something readable on the dark menu. */
+.control select option { color: var(--terminal-fg); background: var(--bg-color); }
+
+@media (max-width: 720px) {
+  /* On a phone the three controls share the row and split it: fixed desktop
+     widths at 390px would overflow, and the one-word labels now fit. */
+  .control-bar { flex-wrap: wrap; }
+  /* The heatmap drops below the text facts instead of halving their column -
+     at 390px sharing the row squeezed every line into a two-word sliver. */
+  .status-line { flex-wrap: wrap; }
+  .control-bar > .control-status,
+  .control-bar > .control-priority,
+  .control-bar > .control-model { flex: 1 1 auto; width: auto; min-width: 4.5rem; }
+}
+
+/* Danger zone ------------------------------------------------------------- */
+/* The summary IS the section heading - the whole zone, heading included,
+   folds away, and collapsed it is one red line at the bottom of the page.
+   Styled to match h2 (size, rule, spacing) so the page reads as one system,
+   with the disclosure arrow kept so it is obviously openable. */
+.danger-zone { margin-top: 2rem; }
+.danger-zone > summary {
+  color: var(--ansi-red);
+  cursor: pointer;
+  font-size: 1.05rem;
+  padding-bottom: 0.4rem;
+  margin-bottom: 0.9rem;
+  border-bottom: 1px dashed var(--window-border);
+}
+.danger-zone > summary::marker { color: var(--ansi-red); }
+.danger-zone > summary::before { content: "// "; color: var(--ansi-red); opacity: 0.7; }
+.danger-zone .card { border-color: rgba(248, 113, 113, 0.4); }
+.btn.danger, button.danger {
+  border-color: var(--ansi-red);
+  color: var(--ansi-red);
+}
+.btn.danger:hover, button.danger:hover {
+  background: rgba(248, 113, 113, 0.12);
+}
+
+/* Draft restore marker ---------------------------------------------------- */
+/* A field repopulated from an unsaved draft says so, so restored text is never
+   mistaken for something already submitted. */
+.draft-note {
+  font-size: 0.72rem;
+  color: var(--ansi-yellow);
+  margin-top: 0.25rem;
+}
+
+/* Offline overlay --------------------------------------------------------- */
+#offline-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgba(8, 11, 16, 0.94);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem;
+}
+#offline-overlay[hidden] { display: none; }
+.offline-box {
+  max-width: 34rem;
+  text-align: center;
+  border: 1px solid var(--ansi-yellow);
+  border-radius: 8px;
+  padding: 1.75rem;
+  background: var(--window-bg);
+}
+/* The box centres its text, and a centred <pre> centres every LINE of the art
+   independently - so any line shorter than the widest one is shifted right by
+   half the difference and the letterforms shear apart. That, as much as the
+   mistyped glyphs, is what made this look broken. inline-block + left makes
+   the art one centred object whose interior alignment is its own. */
+.offline-art {
+  display: inline-block;
+  text-align: left;
+  color: var(--portal-orange);
+  font-size: 0.72rem;
+  line-height: 1.15;
+  margin-bottom: 1rem;
+  overflow-x: auto;
+}
+.offline-box p { margin-bottom: 0.6rem; }
+.offline-spin {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: var(--ansi-yellow);
+  margin-right: 0.4rem;
+  animation: run-pulse 1.2s ease-in-out infinite;
+}
+
+/* Settings sub-tabs ------------------------------------------------------- */
+/* The panels are all present in the HTML and visible by default; the tab bar
+   only appears once JS has taken over hiding them, so with scripting off the
+   page degrades to the old single long scroll rather than to one panel with
+   no way to reach the others. */
+.subtabs { display: none; gap: 0.4rem; margin: 0.2rem 0 1rem; flex-wrap: wrap; }
+.subtabs.ready { display: flex; }
+.subtab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 1px solid var(--window-border);
+  border-radius: 4px 4px 0 0;
+  color: var(--terminal-dim);
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  padding: 0.35rem 0.9rem;
+  cursor: pointer;
+}
+.subtab:hover { color: var(--terminal-fg); }
+.subtab.active {
+  color: var(--portal-blue);
+  border-color: var(--window-border);
+  border-bottom-color: transparent;
+  background: var(--panel-bg);
+}
+.settings-panel > h2:first-child { margin-top: 0; }
+
+/* Collapsible groups (credentials, anything set once and then in the way) */
+.fold { border-top: 1px solid var(--window-border); margin-top: 1rem; padding-top: 0.6rem; }
+.fold > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--terminal-dim);
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.fold > summary::before { content: "+"; color: var(--portal-blue); }
+.fold[open] > summary::before { content: "-"; }
+.fold > summary:hover { color: var(--terminal-fg); }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > *:not(summary) { margin-top: 0.7rem; }
+
+/* Save confirmation ------------------------------------------------------- */
+.flash {
+  border: 1px solid var(--ansi-green);
+  border-radius: 4px;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.82rem;
+  margin-bottom: 1rem;
+  background: rgba(74, 222, 128, 0.08);
+}
+.flash.ok { color: var(--ansi-green); }
+
+/* Equal-height field cells: hints vary in length, so the inputs are pinned to
+   the top of each cell and the hint fills whatever is left. */
+.field-grid .field { display: flex; flex-direction: column; }
+.field-grid .hint { margin-top: auto; padding-top: 0.3rem; }
+
+/* Attachments -------------------------------------------------------------
+   Files Wes drops onto a project. The note form doubles as the drop target,
+   so the whole card gets the drag affordance rather than a separate box that
+   would be one more thing to aim at on a phone. */
+.note-form { position: relative; transition: border-color 0.15s ease; }
+.note-form.dragging {
+  outline: 2px dashed var(--portal-blue);
+  outline-offset: 6px;
+}
+.note-form.dragging::after {
+  content: "drop to attach";
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--portal-blue);
+  letter-spacing: 0.1em;
+  pointer-events: none;
+}
+
+.attach-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+/* The submit trio sits right-justified ("add note" on the far right, per Wes);
+   the auto margin on the first of the three is what pushes the group over. */
+.attach-row .note-actions { margin-left: auto; }
+/* The real input is hidden behind its own label so it can look like the other
+   buttons; it stays in the DOM (not display:none on a detached node) because
+   the form submit needs it.
+
+   margin-bottom: 0 is the whole reason `attach files` used to sit visibly
+   higher than `record audio` and `add note`. The global `label` rule carries a
+   0.35rem bottom margin (it is written for a label above a field), and in an
+   `align-items: center` row that margin is part of the item's box - so
+   centring it lifts the label by half of it. Every label styled as a button
+   has the same problem, so the rule is written against `label.btn`. */
+.file-btn { cursor: pointer; }
+label.btn { margin-bottom: 0; }
+.file-btn input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  overflow: hidden;
+}
+button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
+
+.attach-grid {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.9rem;
+}
+.attach-item {
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.5rem;
+  background: var(--panel-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.attach-item img,
+.attach-item video {
+  width: 100%;
+  height: 130px;
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+.attach-item audio { width: 100%; }
+.attach-blob {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 130px;
+  background: #000;
+  color: var(--terminal-dim);
+  letter-spacing: 0.15em;
+}
+.attach-meta { display: flex; flex-direction: column; gap: 0.15rem; word-break: break-all; }
+.attach-meta code { font-size: 0.72rem; }
+
+/* Inline under the journal entry that carried them. */
+.attach-strip {
+  list-style: none;
+  padding: 0;
+  margin: 0.5rem 0 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+}
+.attach-strip img { max-height: 160px; border: 1px solid var(--window-border); display: block; }
+.attach-strip video { max-height: 160px; }
+.attach-strip audio { height: 34px; }
+
+/* Dashboard sort control -------------------------------------------------- */
+/* The heading and its sort links share a baseline, and the links wrap under
+   the heading on a phone rather than squeezing it. */
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.4rem 1rem;
+  justify-content: space-between;
+}
+.section-head h2 { margin-bottom: 0.4rem; }
+.sort-links { letter-spacing: 0.02em; }
+.sort-link { color: var(--terminal-dim); text-decoration: none; }
+.sort-link:hover { color: var(--ansi-cyan); text-decoration: underline; }
+.sort-link.active { color: var(--portal-orange); font-weight: 600; }
+
+/* Dismissed questions stay on their project, folded away. */
+.dismissed-questions { margin-bottom: 1.2rem; }
+.dismissed-questions .card { opacity: 0.75; }
+
+/* Editable title / description ------------------------------------------- */
+/* The rendered description doubles as the disclosure trigger, so the page
+   reads the same as before until you actually want to change something. The
+   default triangle marker is dropped: it would sit beside a block of prose. */
+.details-editor { margin-top: 1rem; }
+.details-editor > summary {
+  cursor: pointer;
+  list-style: none;
+  position: relative;
+}
+.details-editor > summary::-webkit-details-marker { display: none; }
+.details-editor > summary .edit-hint {
+  color: var(--terminal-dim);
+  font-size: 0.8rem;
+  text-transform: lowercase;
+}
+.details-editor > summary:hover .edit-hint { color: var(--ansi-cyan); }
+.details-editor[open] > summary .edit-hint { color: var(--portal-orange); }
+.details-editor > form { margin-top: 0.8rem; }
+.details-editor input[readonly] { opacity: 0.6; cursor: not-allowed; }
+
+/* "ask project" - a button at the top of the page that unfolds into the ask
+   box. The <summary> is styled as the button rather than wrapped around one,
+   because a <button> inside a <summary> swallows the click that opens it. */
+.ask-block { margin: 0.9rem 0 1.2rem; }
+.ask-block > summary {
+  display: inline-flex;
+  align-items: center;
+  list-style: none;
+  padding: 0.45rem 1rem;
+}
+.ask-block > summary::-webkit-details-marker { display: none; }
+.ask-block[open] > summary { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
+.ask-block > .card { margin-top: 0.7rem; }
+
+/* One line where the Runs section used to be, sitting above the journal. */
+.journal-runs {
+  margin: -0.3rem 0 0.7rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+.journal-runs p { margin: 0; }
+
+/* ---- Activity grid -----------------------------------------------------
+   One square per day, one column per week. Wes asked for "relatively small and
+   unobtrusive", so it is sized in absolute pixels rather than ems: it must stay
+   a strip at the end of a line of text, not grow with the type scale. */
+.heatmap { display: flex; gap: 2px; }
+.heat-week { display: flex; flex-direction: column; gap: 2px; }
+.heat-day {
+  width: 7px;
+  height: 7px;
+  border-radius: 1px;
+  background: var(--window-border);
+}
+/* A day that has not happened yet is a hole, not an idle day. */
+.heat-none { background: transparent; }
+.heat-1 { background: rgba(80, 250, 123, 0.3); }
+.heat-2 { background: rgba(80, 250, 123, 0.5); }
+.heat-3 { background: rgba(80, 250, 123, 0.72); }
+.heat-4 { background: var(--ansi-green); }
+.heatmap-link { display: inline-flex; margin-left: auto; }
+
+/* The brief Wes originally typed, folded away once the agent-maintained
+   description has diverged from it. */
+.original-idea { margin-top: 0.8rem; }
+.original-idea > summary {
+  cursor: pointer;
+  color: var(--terminal-dim);
+  font-size: 0.85rem;
+}
+.original-idea > summary:hover { color: var(--ansi-cyan); }
+.original-idea .content {
+  margin-top: 0.5rem;
+  padding-left: 0.8rem;
+  border-left: 2px solid var(--window-border);
+  opacity: 0.85;
+}
+
+/* Pull to refresh --------------------------------------------------------- */
+/* Only ever visible in an installed (standalone) window - see initPullToRefresh.
+   Fixed above the header, starting off-screen and dragged down by transform so
+   the gesture stays at 60fps without touching layout. */
+#pull-refresh {
+  position: fixed;
+  top: -42px;
+  left: 50%;
+  transform: translate(-50%, 0);
+  z-index: 60;
+  display: none;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.8rem;
+  border: 1px solid var(--window-border);
+  border-radius: 999px;
+  background: var(--header-bg);
+  color: var(--terminal-dim);
+  font-size: 0.75rem;
+  white-space: nowrap;
+  pointer-events: none;
+}
+#pull-refresh.visible { display: flex; }
+#pull-refresh.armed { color: var(--ansi-green); border-color: rgba(74, 222, 128, 0.45); }
+.pull-spin {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+#pull-refresh.loading .pull-spin { animation: run-pulse 1.2s ease-in-out infinite; }
+
+/* "Just asking" ----------------------------------------------------------- */
+.ask-form textarea { min-height: 3.2rem; }
+[data-ask-pending] { color: var(--ansi-yellow); }
+
+/* The folder-name tidy-up prompt. Amber like the other "your call" states
+   (build approval) rather than red: nothing is wrong, it is an offer. */
+.slug-suggestion {
+  border: 1px solid rgba(250, 204, 21, 0.4);
+  background: rgba(250, 204, 21, 0.06);
+  border-radius: 4px;
+  padding: 0.75rem 0.9rem;
+  margin-bottom: 1rem;
+}
+.slug-suggestion p { margin: 0 0 0.6rem; font-size: 0.85rem; }
+
+.slug-suggestions { list-style: none; margin: 0; padding: 0; }
+.slug-suggestions li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.9rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0;
+  border-top: 1px solid var(--window-border);
+}
+.slug-change { font-size: 0.78rem; color: var(--terminal-dim); flex: 1 1 100%; }
+
+/* ---- Since you last looked ---------------------------------------------
+   The unread work summary at the top of a project. Tinted green rather than
+   yellow: this is news, not a demand - the yellow states on this page all mean
+   "something is waiting on you", and this must not compete with them. */
+.work-summary {
+  border: 1px solid var(--window-border);
+  border-left: 3px solid var(--ansi-green);
+  background: rgba(80, 250, 123, 0.05);
+  border-radius: 4px;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 1rem;
+}
+.work-summary-head {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--terminal-dim);
+  margin: 0 0 0.5rem;
+  border: 0;
+  padding: 0;
+}
+.work-summary-list { list-style: none; margin: 0 0 0.7rem; padding: 0; }
+/* One run per row: its bullets on the left, when it finished on the right.
+   Scoped to the direct children so the bullets inside stay ordinary list
+   items rather than each becoming its own full-width flex row. */
+.work-summary-list > li {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 0.35rem 0;
+  font-size: 0.88rem;
+}
+.work-summary-list > li + li { border-top: 1px solid var(--window-border); }
+.work-summary-text { flex: 1 1 auto; list-style: none; margin: 0; padding: 0; }
+/* The tick replaces the "Done." these lines used to open with - it says the
+   same thing in one glyph and leaves the whole line for what changed. */
+.work-summary-text li {
+  padding: 0.1rem 0;
+  text-indent: -1.15rem;
+  padding-left: 1.15rem;
+}
+.work-summary-text li::before {
+  content: "\2714";
+  color: var(--ansi-green);
+  margin-right: 0.5rem;
+}
+/* A status remark, not a shipped change: the tick would be a lie on it (Wes:
+   "Check marks should be for tasks that were completed"), so it gets a quiet
+   pointer and dimmer text instead. */
+.work-summary-text li.is-note { color: var(--terminal-dim); }
+.work-summary-text li.is-note::before {
+  content: "\25B8";
+  color: var(--terminal-dim);
+}
+.work-summary-list a { white-space: nowrap; }
+
+/* ---- Todo list ---------------------------------------------------------
+   The project's working checklist. Deliberately quiet: it sits between the
+   questions (which demand an answer) and the note box, and it is a list you
+   scan rather than one that should shout. */
+.todo-head {
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--terminal-dim);
+  margin: 1rem 0 0.4rem;
+  display: flex;
+  gap: 0.6rem;
+  align-items: baseline;
+}
+.todo-card > .todo-head:first-child { margin-top: 0; }
+
+.todo-list { list-style: none; margin: 0; padding: 0; }
+.todo-item {
+  display: flex;
+  /* Wrap so tag chips drop under the text on a phone instead of widening the
+     row - a layout wider than the viewport doesn't present as overflow there,
+     it just looks zoomed out. Desktop rows have the room and never wrap. */
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.15rem 0.55rem;
+  padding: 0.35rem 0;
+  border-top: 1px solid var(--window-border);
+}
+.todo-list li:first-child { border-top: none; }
+/* 1.35 + 2*0.35 = 2.05rem = --todo-row-h, so the 16-row cap is exactly 16
+   single-line items. An item long enough to wrap is taller, and fewer of them
+   fit - the cap is a height, and pretending otherwise would need a row count
+   the browser cannot give CSS. */
+.todo-text {
+  flex: 1;
+  font-size: 0.86rem;
+  line-height: 1.35rem;
+  /* `anywhere` and not `break-word`: only `anywhere` shrinks a flex item's
+     min-content, and a todo naming a path like journal/todos/questions/runs
+     is one long token that otherwise sets the row's floor past a phone. */
+  overflow-wrap: anywhere;
+}
+.todo-item.done .todo-text { text-decoration: line-through; color: var(--terminal-dim); }
+.todo-toggle input { cursor: pointer; }
+
+/* Always present, just quiet. This used to be hover-only, which failed both
+   ways: on a phone there is no hover, so the only way to reach it was a tap
+   that left it stuck visible; and on desktop a click left it lit by :focus
+   after the pointer had gone. Dim-but-there behaves the same on every device
+   and is still far short of a row of red crosses. */
+.todo-del {
+  background: none;
+  border: none;
+  color: var(--terminal-dim);
+  cursor: pointer;
+  font-size: 1rem;
+  line-height: 1;
+  /* A real tap target on a phone, without making the row taller. The explicit
+     auto height opts out of the shared control height: a 2.3rem cross would
+     set the floor for every todo row and blow the 16-row scroll cap. */
+  padding: 0 0.4rem;
+  height: auto;
+  opacity: 0.32;
+  transition: opacity 0.1s ease, color 0.1s ease;
+}
+.todo-item:hover .todo-del, .todo-del:focus-visible { opacity: 1; }
+.todo-del:hover { color: var(--ansi-red); }
+
+/* Tag chips on a todo row. Bracketed like every badge, but bare text - no
+   border or padding - so a chip cannot make a row taller than --todo-row-h. */
+.todo-tag {
+  font-size: 0.7rem;
+  color: var(--terminal-dim);
+  white-space: nowrap;
+  margin-left: 0.3rem;
+}
+.todo-tag::before { content: "["; opacity: 0.55; }
+.todo-tag::after { content: "]"; opacity: 0.55; }
+.todo-tag.tag-blocked { color: var(--ansi-yellow); }
+.todo-tag.tag-ready { color: var(--ansi-green); }
+/* The little cross inside the brackets: dim-but-there, same rationale as
+   .todo-del above. */
+.tag-x {
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 0 0 0.2rem;
+  height: auto;
+  opacity: 0.32;
+  transition: opacity 0.1s ease;
+}
+.todo-item:hover .tag-x, .tag-x:focus-visible { opacity: 1; }
+.tag-x:hover { color: var(--ansi-red); }
+
+/* "+tag" swaps for a tiny inline input (app.js) when pressed. */
+.tag-add { white-space: nowrap; }
+.tag-add-btn {
+  background: none;
+  border: none;
+  color: var(--terminal-dim);
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  height: auto;
+  opacity: 0.32;
+  transition: opacity 0.1s ease;
+}
+.todo-item:hover .tag-add-btn, .tag-add-btn:focus-visible { opacity: 1; }
+.tag-add-form input[type="text"] {
+  width: 6.5rem;
+  height: 1.5rem;
+  font-size: 0.72rem;
+  padding: 0 0.3rem;
+}
+
+/* Clear-completed and the history link, on one line under the add form. */
+.todo-foot {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-top: 0.8rem;
+}
+.todo-foot a { margin-left: auto; }
+.todo-when { white-space: nowrap; }
+
+.todo-add {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.9rem;
+  flex-wrap: nowrap;
+}
+/* The form-wide `width: 100%` on inputs would otherwise stack these three
+   controls into a column; they belong on one line (Wes: the field and the
+   owner dropdown on the same line, dropdown at the far right). The themed
+   dropdown's `.sel` wrapper is width:100% everywhere else, which is exactly
+   what was shoving it onto its own row here - so it is shrunk to content and
+   pushed right, and the text field takes all the slack. */
+.todo-add input[type="text"] { flex: 1 1 12rem; width: auto; min-width: 0; }
+.todo-add select { flex: 0 0 auto; width: auto; }
+.todo-add .sel { flex: 0 0 auto; width: auto; margin-left: auto; }
+.todo-add .sel .sel-trigger { width: auto; }
+.todo-add button { flex: 0 0 auto; }
+@media (max-width: 560px) {
+  /* A phone keyboard needs the text field wider than the row allows; let the
+     controls drop under it rather than crushing it. */
+  .todo-add { flex-wrap: wrap; }
+  .todo-add input[type="text"] { flex-basis: 100%; }
+}
+
+/* Access panel (Settings > access) -----------------------------------------
+   Read-only facts about how the portal is reachable, so these are lists of
+   label + value rather than a form. */
+.access-list, .access-peers { list-style: none; padding: 0; margin: 0.4rem 0 0.9rem; }
+.access-list li { padding: 0.45rem 0; border-bottom: 1px solid var(--border, #1e2a38); }
+.access-list li:last-child { border-bottom: 0; }
+.access-label { display: inline-block; min-width: 8.5rem; color: var(--terminal-dim); }
+.access-label.ok { color: var(--ok, #6ee7a0); }
+.access-label.warn { color: var(--warn, #e8c56b); }
+.access-list .hint, .access-peers .hint { display: block; margin-left: 8.5rem; }
+.access-peers li { padding: 0.25rem 0; }
+.access-peers li.offline { opacity: 0.45; }
+/* Fixed-width so the codes line up into a column and a blocked machine is
+   findable by scanning rather than by reading every row. */
+.reach { display: inline-block; min-width: 5rem; font-size: 0.72rem; text-transform: uppercase; }
+.reach-yes { color: var(--ok, #6ee7a0); }
+.reach-blocked { color: var(--warn, #e8c56b); }
+.reach-unknown { color: var(--terminal-dim); }
+.secure-hint { display: block; }
+
+/* Workspace file viewer ---------------------------------------------------
+   The viewer used to be one <pre>. It now renders whatever the file actually
+   is - a screenshot, a recording, a PDF, a rendered README, or highlighted
+   source - so the file list is a way of looking at a workspace rather than a
+   list of things that mostly 415. */
+.file-title { word-break: break-all; }
+.file-facts { margin-bottom: 1rem; }
+
+.file-media {
+  border: 1px solid var(--window-border);
+  border-radius: 6px;
+  background: var(--panel-bg);
+  padding: 0.8rem;
+  display: flex;
+  justify-content: center;
+}
+/* Checkerboard behind an image so a transparent PNG (which is most of what an
+   agent screenshots) reads as transparent rather than as black-on-black. */
+.file-media img {
+  max-width: 100%;
+  height: auto;
+  background-image:
+    linear-gradient(45deg, rgba(148, 163, 184, 0.08) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.08) 75%),
+    linear-gradient(45deg, rgba(148, 163, 184, 0.08) 25%, transparent 25%, transparent 75%, rgba(148, 163, 184, 0.08) 75%);
+  background-size: 18px 18px;
+  background-position: 0 0, 9px 9px;
+}
+.file-media audio, .file-media video { width: 100%; max-width: 46rem; }
+.file-pdf { padding: 0; }
+.file-pdf iframe {
+  width: 100%;
+  height: 78vh;
+  border: 0;
+  border-radius: 6px;
+  background: #fff;
+}
+.file-markdown .content > *:last-child { margin-bottom: 0; }
+
+/* The highlighted block reuses .file-content's frame, so a highlighted file
+   and a plain one sit in the same box. */
+.highlight-wrap { padding: 0; }
+.highlight-wrap .highlight { background: none; margin: 0; }
+.highlight-wrap pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+/* Generated by app.fileview.pygments_rules() (pygments' "native" theme, the
+   scoped rules only). tests/test_fileview.py asserts these have not drifted
+   from what pygments produces - regenerate rather than hand-edit. */
+.highlight .hll { background-color: #404040 }
+.highlight { background: #202020; color: #D0D0D0 }
+.highlight .c { color: #ABABAB; font-style: italic } /* Comment */
+.highlight .err { color: #A61717; background-color: #E3D2D2 } /* Error */
+.highlight .esc { color: #D0D0D0 } /* Escape */
+.highlight .g { color: #D0D0D0 } /* Generic */
+.highlight .k { color: #6EBF26; font-weight: bold } /* Keyword */
+.highlight .l { color: #D0D0D0 } /* Literal */
+.highlight .n { color: #D0D0D0 } /* Name */
+.highlight .o { color: #D0D0D0 } /* Operator */
+.highlight .x { color: #D0D0D0 } /* Other */
+.highlight .p { color: #D0D0D0 } /* Punctuation */
+.highlight .ch { color: #ABABAB; font-style: italic } /* Comment.Hashbang */
+.highlight .cm { color: #ABABAB; font-style: italic } /* Comment.Multiline */
+.highlight .cp { color: #FF3A3A; font-weight: bold } /* Comment.Preproc */
+.highlight .cpf { color: #ABABAB; font-style: italic } /* Comment.PreprocFile */
+.highlight .c1 { color: #ABABAB; font-style: italic } /* Comment.Single */
+.highlight .cs { color: #E50808; font-weight: bold; background-color: #520000 } /* Comment.Special */
+.highlight .gd { color: #FF3A3A } /* Generic.Deleted */
+.highlight .ge { color: #D0D0D0; font-style: italic } /* Generic.Emph */
+.highlight .ges { color: #D0D0D0; font-weight: bold; font-style: italic } /* Generic.EmphStrong */
+.highlight .gr { color: #FF3A3A } /* Generic.Error */
+.highlight .gh { color: #FFF; font-weight: bold } /* Generic.Heading */
+.highlight .gi { color: #589819 } /* Generic.Inserted */
+.highlight .go { color: #CCC } /* Generic.Output */
+.highlight .gp { color: #AAA } /* Generic.Prompt */
+.highlight .gs { color: #D0D0D0; font-weight: bold } /* Generic.Strong */
+.highlight .gu { color: #FFF; text-decoration: underline } /* Generic.Subheading */
+.highlight .gt { color: #FF3A3A } /* Generic.Traceback */
+.highlight .kc { color: #6EBF26; font-weight: bold } /* Keyword.Constant */
+.highlight .kd { color: #6EBF26; font-weight: bold } /* Keyword.Declaration */
+.highlight .kn { color: #6EBF26; font-weight: bold } /* Keyword.Namespace */
+.highlight .kp { color: #6EBF26 } /* Keyword.Pseudo */
+.highlight .kr { color: #6EBF26; font-weight: bold } /* Keyword.Reserved */
+.highlight .kt { color: #6EBF26; font-weight: bold } /* Keyword.Type */
+.highlight .ld { color: #D0D0D0 } /* Literal.Date */
+.highlight .m { color: #51B2FD } /* Literal.Number */
+.highlight .s { color: #ED9D13 } /* Literal.String */
+.highlight .na { color: #BBB } /* Name.Attribute */
+.highlight .nb { color: #2FBCCD } /* Name.Builtin */
+.highlight .nc { color: #71ADFF; text-decoration: underline } /* Name.Class */
+.highlight .no { color: #40FFFF } /* Name.Constant */
+.highlight .nd { color: #FFA500 } /* Name.Decorator */
+.highlight .ni { color: #D0D0D0 } /* Name.Entity */
+.highlight .ne { color: #BBB } /* Name.Exception */
+.highlight .nf { color: #71ADFF } /* Name.Function */
+.highlight .nl { color: #D0D0D0 } /* Name.Label */
+.highlight .nn { color: #71ADFF; text-decoration: underline } /* Name.Namespace */
+.highlight .nx { color: #D0D0D0 } /* Name.Other */
+.highlight .py { color: #D0D0D0 } /* Name.Property */
+.highlight .nt { color: #6EBF26; font-weight: bold } /* Name.Tag */
+.highlight .nv { color: #40FFFF } /* Name.Variable */
+.highlight .ow { color: #6EBF26; font-weight: bold } /* Operator.Word */
+.highlight .pm { color: #D0D0D0 } /* Punctuation.Marker */
+.highlight .w { color: #666 } /* Text.Whitespace */
+.highlight .mb { color: #51B2FD } /* Literal.Number.Bin */
+.highlight .mf { color: #51B2FD } /* Literal.Number.Float */
+.highlight .mh { color: #51B2FD } /* Literal.Number.Hex */
+.highlight .mi { color: #51B2FD } /* Literal.Number.Integer */
+.highlight .mo { color: #51B2FD } /* Literal.Number.Oct */
+.highlight .sa { color: #ED9D13 } /* Literal.String.Affix */
+.highlight .sb { color: #ED9D13 } /* Literal.String.Backtick */
+.highlight .sc { color: #ED9D13 } /* Literal.String.Char */
+.highlight .dl { color: #ED9D13 } /* Literal.String.Delimiter */
+.highlight .sd { color: #ED9D13 } /* Literal.String.Doc */
+.highlight .s2 { color: #ED9D13 } /* Literal.String.Double */
+.highlight .se { color: #ED9D13 } /* Literal.String.Escape */
+.highlight .sh { color: #ED9D13 } /* Literal.String.Heredoc */
+.highlight .si { color: #ED9D13 } /* Literal.String.Interpol */
+.highlight .sx { color: #FFA500 } /* Literal.String.Other */
+.highlight .sr { color: #ED9D13 } /* Literal.String.Regex */
+.highlight .s1 { color: #ED9D13 } /* Literal.String.Single */
+.highlight .ss { color: #ED9D13 } /* Literal.String.Symbol */
+.highlight .bp { color: #2FBCCD } /* Name.Builtin.Pseudo */
+.highlight .fm { color: #71ADFF } /* Name.Function.Magic */
+.highlight .vc { color: #40FFFF } /* Name.Variable.Class */
+.highlight .vg { color: #40FFFF } /* Name.Variable.Global */
+.highlight .vi { color: #40FFFF } /* Name.Variable.Instance */
+.highlight .vm { color: #40FFFF } /* Name.Variable.Magic */
+.highlight .il { color: #51B2FD } /* Literal.Number.Integer.Long */
+
+/* The per-project runs/day cap, folded out of the control bar. It is a setting
+   for the rare project that needs throttling, and it was taking a quarter of
+   the control row on every project that does not. */
+.run-cap { margin-top: 0.9rem; }
+.run-cap > summary {
+  font-size: 0.78rem;
+  color: var(--terminal-dim);
+  cursor: pointer;
+  list-style: none;
+}
+.run-cap > summary::-webkit-details-marker { display: none; }
+.run-cap > summary::before { content: "+ "; color: var(--ansi-blue); }
+.run-cap[open] > summary::before { content: "- "; }
+.run-cap > summary:hover { color: var(--ansi-blue); }
+.run-cap select { width: auto; min-width: 9rem; margin-top: 0.5rem; }
+
+/* run agent now / pause building / queue research burst - three buttons that
+   are read as one row, so none of them is .small. */
+.action-row { margin-top: 1rem; }
+/* `open it` is an <a> styled as a button, and the global `a:hover` underline
+   would be the only control in the row that grows a line when you point at it. */
+a.btn:hover { text-decoration: none; }
+
+/* A label that is there for a screen reader and for the form's own semantics,
+   but whose text is already said by the surrounding fold. */
+.sr-only {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Themed dropdowns --------------------------------------------------------
+   The list half of a <select> is drawn by the OS and ignores every rule on
+   this page, so app.js builds a real one beside it (see enhanceSelect). The
+   native control stays in the form and is what submits; it is hidden here
+   rather than removed, so with scripting off the page is unchanged.
+
+   `.sel select` keeps its box so the layout is identical either way - the
+   trigger is laid over the top of it. A `display: none` here would collapse
+   every row a select sits in the moment this stylesheet and the script
+   disagreed about whether the enhancement had run. */
+.sel { position: relative; width: 100%; }
+.sel select {
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+}
+.sel-trigger {
+  width: 100%;
+  height: var(--control-h);
+  text-align: left;
+  padding: 0 1.9rem 0 0.6rem;
+  font-size: 0.9rem;
+  font-family: var(--font-body);
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  color: var(--terminal-fg);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* The same drawn caret the native control was given, so nothing about the
+     closed state changes when the enhancement runs. */
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--terminal-dim) 50%),
+    linear-gradient(135deg, var(--terminal-dim) 50%, transparent 50%);
+  background-position: right 1.05rem center, right 0.75rem center;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  background-repeat: no-repeat;
+}
+.sel-trigger:hover { border-color: var(--terminal-dim); }
+.sel-trigger:focus-visible,
+.sel.open .sel-trigger {
+  border-color: var(--ansi-blue);
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
+  outline: none;
+}
+.sel-trigger:disabled { opacity: 0.5; cursor: default; }
+
+.sel-menu {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 2px);
+  left: 0;
+  min-width: 100%;
+  max-height: 16rem;
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem;
+  background: var(--bg-color);
+  border: 1px solid var(--ansi-blue);
+  border-radius: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+}
+.sel-opt {
+  padding: 0.4rem 0.6rem;
+  border-radius: 3px;
+  font-size: 0.88rem;
+  white-space: nowrap;
+  cursor: pointer;
+  color: var(--terminal-fg);
+}
+.sel-opt:hover { background: rgba(56, 189, 248, 0.12); }
+.sel-opt.selected { background: rgba(56, 189, 248, 0.18); font-weight: 600; }
+.sel-opt.selected::after { content: " \2713"; }
+.sel-opt.disabled { opacity: 0.45; cursor: default; }
+
+/* Colour on both halves of the control: the closed box already coloured
+   itself by status, and Wes asked for the options to carry the same colour so
+   the list reads the way the chosen value does. Written once here for the
+   trigger and the option rows together. */
+.sel-trigger.status-backlog, .sel-opt.status-backlog { color: var(--terminal-fg); }
+.sel-trigger.status-active, .sel-opt.status-active { color: var(--ansi-green); }
+.sel-trigger.status-paused, .sel-opt.status-paused { color: var(--ansi-yellow); }
+.sel-trigger.status-review, .sel-opt.status-review { color: var(--ansi-magenta); }
+.sel-trigger.status-done, .sel-opt.status-done { color: var(--ansi-green); }
+.sel-trigger.status-abandoned, .sel-opt.status-abandoned { color: var(--ansi-red); }
+.sel-trigger.status-select { font-weight: 600; }
+.sel-trigger.status-active { border-color: var(--ansi-green); }
+.sel-trigger.status-paused { border-color: var(--ansi-yellow); }
+.sel-trigger.status-review { border-color: var(--ansi-magenta); }
+.sel-trigger.status-done { border-color: var(--ansi-green); }
+.sel-trigger.status-abandoned { border-color: var(--ansi-red); }
+
+/* Priority is a number with no words on it, so colour is the only thing that
+   makes 8 read differently from 2 at a glance. */
+.sel-trigger.prio-high, .sel-opt.prio-high { color: var(--ansi-orange, var(--portal-orange)); }
+.sel-trigger.prio-mid, .sel-opt.prio-mid { color: var(--terminal-fg); }
+.sel-trigger.prio-low, .sel-opt.prio-low { color: var(--terminal-dim); }
+
+/* Memory page ------------------------------------------------------------- */
+.memory-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+.revision-list { list-style: none; margin: 0; padding: 0; }
+.revision-list li {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--window-border);
+  font-size: 0.85rem;
+}
+.revision-list li:last-child { border-bottom: 0; }
+.revision-list form { margin-left: auto; }
+.archive-list { list-style: none; margin: 0; padding: 0; }
+.archive-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--window-border);
+  font-size: 0.85rem;
+}
+.archive-list li:last-child { border-bottom: 0; }
+.archive-list .archive-text { flex: 1 1 100%; opacity: 0.85; }
+.revision-text {
+  margin: 0 0 0.8rem;
+  padding: 0.8rem;
+  background: rgba(0, 0, 0, 0.3);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ------------------------------------------------------------------ */
+/* One-off tasks (/tasks): scratch agent sessions without a project    */
+/* ------------------------------------------------------------------ */
+.oneoff-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+.oneoff-list { list-style: none; margin: 0; padding: 0; }
+.oneoff-row {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--window-border);
+}
+.oneoff-row:last-child { border-bottom: 0; }
+.oneoff-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+.oneoff-head > a { font-weight: 600; }
+.oneoff-head > .small { margin-left: auto; }
+/* One line of the latest message, so the list says where each exchange
+   stands without becoming the transcript. */
+.oneoff-snippet {
+  margin-top: 0.15rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dashboard: drag-to-move and the right-click project menu            */
+/* ------------------------------------------------------------------ */
+/* While a card is in flight every zone shows a faint dashed edge, so where a
+   drop is possible is visible before anything is hovered; the zone under the
+   cursor firms up in blue. */
+.dragging-project [data-status-zone] {
+  outline: 1px dashed rgba(148, 163, 184, 0.35);
+  outline-offset: 4px;
+  border-radius: 8px;
+}
+[data-status-zone].drop-ready {
+  outline: 2px dashed var(--ansi-blue);
+  background: rgba(56, 189, 248, 0.05);
+}
+.drag-source { opacity: 0.35; }
+.project-cell[draggable="true"] { cursor: grab; }
+/* An empty section is still a landing pad: give it enough height to hit. */
+.project-grid .zone-empty { margin: 0; padding: 1.1rem; grid-column: 1 / -1; }
+
+.ctx-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 13rem;
+  max-width: 20rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem;
+  background: var(--bg-color);
+  border: 1px solid var(--ansi-blue);
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  font-size: 0.88rem;
+}
+.ctx-head {
+  padding: 0.35rem 0.6rem 0.45rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--window-border);
+  margin-bottom: 0.25rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ctx-label {
+  padding: 0.45rem 0.6rem 0.15rem;
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+}
+.ctx-item {
+  padding: 0.4rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ctx-item:hover { background: rgba(56, 189, 248, 0.12); }
+/* The move-to entries wear the same status colours as every badge and picker
+   on the site, so the menu reads as part of the page rather than laid on it. */
+.ctx-item.status-building { color: var(--ansi-green); }
+.ctx-item.status-review { color: var(--ansi-magenta); }
+.ctx-item.status-waiting_user { color: var(--ansi-yellow); }
+.ctx-item.status-inbox { color: var(--terminal-fg); }
+.ctx-item.status-done { color: var(--ansi-green); }
+.ctx-item.status-abandoned { color: var(--ansi-red); }
+.ctx-item.ctx-danger { color: var(--ansi-red); }
+.ctx-item.ctx-danger:hover { background: rgba(248, 113, 113, 0.12); }
+.ctx-rename { padding: 0.3rem; }
+.ctx-rename input {
+  width: 100%;
+  height: 2rem;
+  font-size: 0.85rem;
+}

@@ -1,0 +1,77 @@
+# Project Portal - site configuration.
+#
+# Copy to `portal.toml` (beside this file, or in `data/`) and edit. Both are
+# gitignored, so your copy stays yours.
+#
+# EVERY KEY IS OPTIONAL. With no file at all the portal reads the machine
+# itself: `host` is the system hostname, `ssh_user` is the account it runs as,
+# and `owner` is that account's real name. On a home server that is usually
+# already correct, which is why a fresh clone needs no setup.
+#
+# Anything here can also be set in the environment as PORTAL_<KEY>, e.g.
+# PORTAL_HOST=box.example.com. The environment wins over this file, and this
+# file wins over the machine defaults. Point $PORTAL_CONFIG at a path to keep
+# the file somewhere else entirely.
+
+# Your name. Agents are told they are working on your behalf, and it is what
+# the portal calls you in prompts and notifications.
+# owner = "Ada Lovelace"
+
+# How agents should refer to you in the second half of a sentence - the agent
+# contract is written *about* you ("a hostname they can reach", "only Ada can
+# decide this"), so it needs this as much as it needs your name.
+#
+# One of "they", "he" or "she"; "he/him" and "She/Her" are understood too.
+# Nothing on the machine records this and a name does not imply it, so the
+# default is "they", which is never wrong for somebody the portal has not
+# been told about. Anything unrecognised falls back to "they" rather than
+# guessing.
+# pronouns = "they"
+
+# The hostname you actually open the portal at, FROM ANOTHER DEVICE. This is
+# the one setting worth checking: every URL the portal and its agents print is
+# read on your phone or laptop, never on the machine serving it, so a name that
+# only resolves locally makes every one of those links dead. If the system
+# hostname is not reachable from elsewhere, set the LAN name, the tailnet name
+# or the IP here.
+# host = "myserver"
+
+# The port the portal listens on.
+# port = 8500
+
+# The preview server (app/preview.py) serves pages built inside a project
+# workspace. It gets its own port rather than a path on the portal's, because a
+# separate port is a separate origin: workspace pages are written by agents and
+# must not share an origin with the portal's own POST endpoints.
+# preview_port = 8501
+# preview_https_port = 8443
+
+# The account to SSH in as. Used only to build the copy-paste command the
+# project page offers for opening a terminal in a workspace.
+# ssh_user = "ada"
+
+# ntfy notifications. These seed the settings table on first boot; after that
+# the Settings page owns them, and editing here changes nothing.
+# ntfy_url = "http://127.0.0.1:8095"
+# ntfy_topic = "portal"
+
+# A second machine with a browser on it, as `user@host`. The portal never needs
+# one, but an agent that can render a page and *look* at it catches layout bugs
+# that reading HTML cannot - deploy/screenshot.sh and deploy/interact.py drive
+# chromium there over SSH. Leave unset if you have no such machine; those two
+# scripts then explain what to set instead of hanging on an SSH attempt.
+#
+# Needs key-based SSH from this machine and chromium installed on that one.
+# render_host = "ada@render-box.example.com"
+
+# How the render machine reaches the portal, if that is not the same address
+# everybody else uses. A tailnet ACL, a VLAN or split-horizon DNS can leave one
+# machine able to connect only by another route, and a screenshot tool pointed
+# at an address it cannot reach fails as a blank page rather than as an error.
+# Leave unset unless you have that problem.
+# render_portal_url = "http://10.0.0.21:8500"
+
+# Where a web-push service should complain if this portal misbehaves. RFC 8292
+# makes the claim mandatory, so leaving this unset uses `portal@<host>`, which
+# is well-formed and goes nowhere.
+# contact_email = "ada@example.com"

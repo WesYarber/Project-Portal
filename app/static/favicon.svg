@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The two portals from the wordmark: the blue O and the orange O, on the
+     terminal background. Drawn rather than rasterised so it stays crisp at
+     every tab size and needs no .ico toolchain. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="10" fill="#0d1016"/>
+  <ellipse cx="24" cy="32" rx="12" ry="19" fill="none" stroke="#3fa7ff" stroke-width="6"/>
+  <ellipse cx="42" cy="32" rx="12" ry="19" fill="none" stroke="#ff8a3d" stroke-width="6"/>
+</svg>

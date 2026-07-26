@@ -1,0 +1,28 @@
+{# One level of the workspace tree.
+
+   Rendered twice over: once inline on the project page for the workspace root,
+   and once per folder by /tree/<slug>/<path> when that folder is first opened.
+   Being the same template both times is the point - a lazily loaded folder
+   cannot drift out of step with the root.
+
+   Folders are <details> so they are shut by default and openable with no
+   JavaScript at all; the fetch that fills one is progressive enhancement on
+   top (see initFileTree in app.js). #}
+<ul class="file-tree">
+  {% for e in entries %}
+  <li>
+    {% if e.is_dir %}
+    <details class="tree-dir" data-tree-src="/tree/{{ project.slug }}/{{ e.path }}">
+      <summary><span class="tree-name">{{ e.name }}/</span></summary>
+      <div class="tree-children"><p class="tree-loading muted small">loading...</p></div>
+    </details>
+    {% else %}
+    <div class="tree-file">
+      <a href="/file/{{ project.slug }}/{{ e.path }}">{{ e.name }}</a>
+      <a class="download-link small" href="/download/{{ project.slug }}/{{ e.path }}"
+         download title="download {{ e.name }}">download</a>
+    </div>
+    {% endif %}
+  </li>
+  {% endfor %}
+</ul>

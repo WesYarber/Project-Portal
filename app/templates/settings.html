@@ -1,0 +1,531 @@
+{% extends "base.html" %}
+{% block title %}Settings - Project Portal{% endblock %}
+
+{# Each section is its own form declaring the settings it owns via `_fields`,
+   so saving one panel can never blank out another's values - and every panel
+   gets its own save button, which is what makes the sub-tabs safe. #}
+{% macro select_field(key, label, hint='') %}
+  <div class="field">
+    <label for="{{ key }}">{{ label }}</label>
+    <select id="{{ key }}" name="{{ key }}">
+      {% for value, option_label in APPEARANCE_CHOICES[key] %}
+      <option value="{{ value }}" {{ 'selected' if value == (settings[key] or APPEARANCE_DEFAULTS[key]) else '' }}>{{ option_label }}</option>
+      {% endfor %}
+    </select>
+    {% if hint %}<p class="hint">{{ hint }}</p>{% endif %}
+  </div>
+{% endmacro %}
+
+{% block content %}
+
+<h1>Settings</h1>
+<p class="small muted">Defaults for every project. Individual projects can override the agent and
+  run cap on their own page.</p>
+
+{% if saved %}
+<p class="flash ok" role="status">saved &middot; {{ saved|join(', ') }}</p>
+{% elif sent %}
+<p class="flash ok" role="status">test notification sent.</p>
+{% elif push_sent %}
+<p class="flash ok" role="status">test push accepted for {{ push_sent }} device{{ '' if push_sent == '1' else 's' }}.</p>
+{% endif %}
+
+<nav class="subtabs" id="settings-tabs">
+  <button type="button" class="subtab" data-panel="agent">agent</button>
+  <button type="button" class="subtab" data-panel="appearance">appearance</button>
+  <button type="button" class="subtab" data-panel="notifications">notifications</button>
+  <button type="button" class="subtab" data-panel="access">access</button>
+</nav>
+
+<!-- Agent ---------------------------------------------------------------- -->
+<section class="settings-panel" id="panel-agent" data-panel="agent">
+  <form method="post" action="/settings">
+    <input type="hidden" name="_section" value="agent">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines">
+    <div class="card">
+      <div class="field checkbox-row">
+        <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
+        <label for="worker_enabled">Worker enabled</label>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="require_build_approval" name="require_build_approval" {{ 'checked' if (settings.require_build_approval or '1') == '1' else '' }}>
+        <label for="require_build_approval">Ask before building</label>
+      </div>
+      <p class="hint">Agents always triage and plan on their own. With this on, actually writing
+        code waits until you press <strong>approve build</strong> on the project (or set its status
+        to building yourself). Off means a finished plan rolls straight into a build.</p>
+      <div class="field">
+        <label for="worker_model">Default agent</label>
+        <select id="worker_model" name="worker_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == settings.worker_model else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">Used by any project that hasn't set its own agent.</p>
+      </div>
+      <div class="field">
+        <label for="research_model">Research burst agent</label>
+        <select id="research_model" name="research_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == (settings.research_model or 'fable') else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">Used for a queued <strong>research burst</strong>, which only runs while
+          weekly Claude allowance is about to expire. It overrides a project's own agent on
+          purpose: that setting is usually there to save cost, and a burst spends allowance that
+          would be lost anyway.</p>
+      </div>
+      <div class="field">
+        <label for="spend_down_model">Spend-down agent</label>
+        <select id="spend_down_model" name="spend_down_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == (settings.spend_down_model or 'opus') else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">While a <strong>spend-down</strong> is running, a project pinned to a cheaper
+          agent is routed up to this one - so an expiring weekly window is spent on quality, not just
+          on more runs. Only upgrades, never downgrades, and only during a spend-down you approved.</p>
+      </div>
+      <div class="field">
+        <label for="ask_model">Question model</label>
+        <select id="ask_model" name="ask_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == (settings.ask_model or 'sonnet') else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">Answers the <strong>just asking</strong> box on a project (and <code>/btw</code>
+          over Telegram). Read-only: it can look at the workspace but not change it, and it doesn't
+          use up a run.</p>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="self_review" name="self_review" {{ 'checked' if (settings.self_review or '1') == '1' else '' }}>
+        <label for="self_review">Self-review before surfacing for review</label>
+      </div>
+      <p class="hint">When a run says its work is finished, a read-only critic first checks the
+        committed diff against what the run claims and the project's open todos. If it finds concrete
+        gaps, the project stays on the <strong>active</strong> shelf with those gaps journalled for the
+        next run, so your review queue only sees finished work. Fails open - anything uncertain
+        surfaces as normal.</p>
+      <div class="field">
+        <label for="self_review_model">Self-review agent</label>
+        <select id="self_review_model" name="self_review_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == (settings.self_review_model or 'sonnet') else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">The read-only model that critiques a run's own diff before it reaches you.</p>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="hook_guardrails" name="hook_guardrails" {{ 'checked' if (settings.hook_guardrails or '1') == '1' else '' }}>
+        <label for="hook_guardrails">Guardrail hooks on runs</label>
+      </div>
+      <p class="hint">Every run's tool calls are screened by the portal before they execute: writes to
+        the portal's own source or data, another project's workspace, or the Claude credentials are
+        blocked at the CLI hook layer, even under skip-permissions. A run's own workspace family
+        (parent and sub-projects) stays writable, and the portal meta-project is exempt. Denials are
+        listed on the run's page. Fails open - if the portal can't be reached the tool call goes ahead.</p>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="stop_report_nudge" name="stop_report_nudge" {{ 'checked' if (settings.stop_report_nudge or '1') == '1' else '' }}>
+        <label for="stop_report_nudge">Report nudge at run end</label>
+      </div>
+      <p class="hint">A project run that tries to finish without delivering its report is bounced once
+        at the CLI's Stop hook and told to submit it - so a run can't end reportless and leave only
+        "(no output)" behind. One bounce at most, and it fails open; one-off tasks are never nudged.</p>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="hook_audit" name="hook_audit" {{ 'checked' if (settings.hook_audit or '1') == '1' else '' }}>
+        <label for="hook_audit">Tool-call audit trail on runs</label>
+      </div>
+      <p class="hint">Every tool call a run makes is recorded as one structured row and listed on the
+        run's page - so "what did this run actually do" survives after its transcript is pruned.
+        Capped per run, and plain rows age out after a month; guardrail denials are kept forever.</p>
+      {# Wes tracks model releases himself and wants the newest one adopted the day it
+         ships. This is that job, done by the portal instead. #}
+      <div class="field checkbox-row">
+        <input type="checkbox" id="model_watch" name="model_watch" {{ 'checked' if (settings.model_watch or '1') == '1' else '' }}>
+        <label for="model_watch">Watch for new models</label>
+      </div>
+      <p class="hint">Once a day the portal asks Anthropic which models your subscription can reach.
+        A model it hasn't seen before gets a notification and a one-tap question here &ndash; it never
+        switches the default agent by itself, because a new id on the list doesn't prove the CLI can
+        spawn it yet. Uses the CLI's own login; no API key, no billing.
+        {% if model_catalog.models %}
+        <br><span class="muted">Knows {{ model_catalog.models|length }} models, newest
+        <code>{{ model_catalog.models[0].id }}</code>{% if model_catalog.fetched_at %}, last checked
+        {{ model_catalog.fetched_at[:16]|replace('T', ' ') }} UTC{% endif %}.</span>
+        {% else %}
+        <br><span class="muted">Nothing checked yet &ndash; the first check runs within a day and is
+        recorded silently, so only genuinely new releases ever notify you.</span>
+        {% endif %}</p>
+      <div class="grid grid-2 field-grid">
+        <div class="field">
+          <label for="worker_interval_min">Interval between runs</label>
+          <input type="number" id="worker_interval_min" name="worker_interval_min" value="{{ settings.worker_interval_min }}" min="0" max="1440">
+          <p class="hint">Minutes. 0 runs back to back, with no pacing.</p>
+        </div>
+        <div class="field">
+          <label for="run_timeout_min">Run timeout</label>
+          <input type="number" id="run_timeout_min" name="run_timeout_min" value="{{ settings.run_timeout_min }}" min="1" max="1440">
+          <p class="hint">Minutes. A run past this is killed.</p>
+        </div>
+        <div class="field">
+          <label for="run_max_turns">Turn limit per run</label>
+          <input type="number" id="run_max_turns" name="run_max_turns" value="{{ settings.run_max_turns or '400' }}" min="10" max="2000">
+          <p class="hint">The CLI stops a run at this many turns. The timeout above is the real backstop.</p>
+        </div>
+        <div class="field">
+          <label for="run_max_budget_usd">Per-run $ ceiling</label>
+          <input type="number" id="run_max_budget_usd" name="run_max_budget_usd" value="{{ settings.run_max_budget_usd or '' }}" min="0" max="1000" step="0.5" placeholder="none">
+          <p class="hint">A hard --max-budget-usd cap. Subscription runs bill $0, so this is a backstop against a leaked API key. Blank = no ceiling.</p>
+        </div>
+        <div class="field">
+          <label for="learnings_cap_lines">Learnings auto-compact at</label>
+          <input type="number" id="learnings_cap_lines" name="learnings_cap_lines" value="{{ settings.learnings_cap_lines or '200' }}" min="0" max="5000">
+          <p class="hint">Lines. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). 0 disables it.</p>
+        </div>
+        <div class="field">
+          <label for="max_parallel_runs">Parallel runs</label>
+          <input type="number" id="max_parallel_runs" name="max_parallel_runs" value="{{ settings.max_parallel_runs or '2' }}" min="1" max="{{ max_parallel_limit }}">
+          <p class="hint">Agents in flight at once, on different projects. 1-{{ max_parallel_limit }}.</p>
+        </div>
+        <div class="field">
+          <label for="max_runs_per_day">Max runs per day</label>
+          <input type="number" id="max_runs_per_day" name="max_runs_per_day" value="{{ settings.max_runs_per_day }}" min="0" max="999">
+          <p class="hint">The permanent budget. One-off bumps below.</p>
+        </div>
+        <div class="field">
+          <label for="limit_hold_percent">Hold scheduled runs at</label>
+          <input type="number" id="limit_hold_percent" name="limit_hold_percent" value="{{ settings.limit_hold_percent or '90' }}" min="1" max="100">
+          <p class="hint">% of a real Claude window. Scheduled runs stop here; run now still goes.</p>
+        </div>
+        <div class="field">
+          <label for="spend_down_session_hold">Burst session guard</label>
+          <input type="number" id="spend_down_session_hold" name="spend_down_session_hold" value="{{ settings.spend_down_session_hold or '70' }}" min="1" max="100">
+          <p class="hint">% of the 5h window a spend-down or ahead-of-pace burst may use, so it spreads across sessions.</p>
+        </div>
+        <div class="field">
+          <label for="spend_front_load">Front-load pace curve</label>
+          <input type="number" id="spend_front_load" name="spend_front_load" value="{{ settings.spend_front_load or '0.75' }}" min="0.1" max="1" step="0.05">
+          <p class="hint">&lt;1 spends the weekly window ahead of the clock (a hedge against it resetting early); 1 is plain linear pacing.</p>
+        </div>
+        <div class="field">
+          <label for="saturation_max_duty">Don't-saturate guard</label>
+          <input type="number" id="saturation_max_duty" name="saturation_max_duty" value="{{ settings.saturation_max_duty or '85' }}" min="0" max="100">
+          <p class="hint">% of the last 5h the portal may run before it holds to leave an idle gap, so steady use doesn't look like a 24/7 bot. 0 or 100 turns it off; spend-downs are exempt.</p>
+        </div>
+        <div class="field">
+          <label for="day_reset_hour">Day resets at</label>
+          <select id="day_reset_hour" name="day_reset_hour">
+            {% for h in range(24) %}
+            <option value="{{ h }}" {{ 'selected' if h|string == (settings.day_reset_hour or '5') else '' }}>{{ '%02d:00'|format(h) }}</option>
+            {% endfor %}
+          </select>
+          <p class="hint">Local. Everything daily rolls over here, not midnight.</p>
+        </div>
+        <div class="field">
+          <label for="cost_units">Show run cost as</label>
+          <select id="cost_units" name="cost_units">
+            <option value="weight" {{ 'selected' if settings.cost_units != 'usd' else '' }}>relative weight (0.421w)</option>
+            <option value="usd" {{ 'selected' if settings.cost_units == 'usd' else '' }}>US dollars ($0.421)</option>
+          </select>
+          <p class="hint">You're on Max and aren't billed per token.</p>
+        </div>
+      </div>
+      <div class="button-row"><button type="submit">save agent settings</button></div>
+    </div>
+  </form>
+
+  <h2 id="budget">Today's budget</h2>
+  <div class="card">
+    <div class="status-line" style="border:0;padding:0;margin:0;">
+      <span>used <strong>{{ usage.runs_today }}</strong> of <strong>{{ usage.max_runs }}</strong></span>
+      <span class="muted">= {{ usage.base_max_runs }} base{% if usage.bonus_runs %} <span class="bonus">+ {{ usage.bonus_runs }} bonus</span>{% endif %}</span>
+      <span class="muted">{{ usage.remaining }} left &middot; resets in {{ usage.resets_in }} ({{ usage.resets_at }})</span>
+      {% if usage.in_backoff %}<span><span class="dot warn"></span>backing off {{ usage.backoff_in }}</span>{% endif %}
+    </div>
+    <p class="hint">A bonus applies to the current portal day only and disappears at the
+      {{ '%02d:00'|format(usage.reset_hour) }} reset, so it can't quietly inflate your budget forever.</p>
+    <form method="post" action="/settings/bonus-runs" class="button-row">
+      <button type="submit" name="extra" value="1">+1 today</button>
+      <button type="submit" name="extra" value="3">+3 today</button>
+      <button type="submit" name="extra" value="10">+10 today</button>
+      <button type="submit" name="extra" value="0" class="secondary">clear bonus</button>
+    </form>
+  </div>
+</section>
+
+<!-- Appearance ----------------------------------------------------------- -->
+<section class="settings-panel" id="panel-appearance" data-panel="appearance">
+  <form method="post" action="/settings">
+    <input type="hidden" name="_section" value="appearance">
+    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density">
+    <div class="card">
+      <p class="hint" style="margin-top:0;">Every layer is independent, so you can keep the parts of
+        the terminal look you like and drop the parts that make text tiring. Applies on save.</p>
+      <div class="grid grid-2 field-grid">
+        {{ select_field('crt_scanlines', 'Scanlines') }}
+        {{ select_field('crt_glow', 'Phosphor glow') }}
+        {{ select_field('crt_animations', 'Animations') }}
+        {{ select_field('ui_font', 'Typeface') }}
+        {{ select_field('ui_density', 'Density') }}
+      </div>
+      <p class="hint">Journal entries, notes and agent reports are rendered as Markdown either way
+        &mdash; the typeface setting is what decides whether that prose is monospaced.</p>
+      <div class="button-row"><button type="submit">save appearance</button></div>
+    </div>
+  </form>
+  <p class="hint">The portal follows a reusable dark terminal theme:
+    <a href="/style">the theme page</a> has every component with markup to
+    copy, and a one-click download of <code>terminal-theme.css</code> to drop
+    into anything you build.</p>
+</section>
+
+<!-- Notifications -------------------------------------------------------- -->
+<section class="settings-panel" id="panel-notifications" data-panel="notifications">
+  <form method="post" action="/settings">
+    <input type="hidden" name="_section" value="notifications">
+    <input type="hidden" name="_fields" value="telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic">
+    <div class="card">
+      <div class="field checkbox-row">
+        <input type="checkbox" id="telegram_natural_language" name="telegram_natural_language" {{ 'checked' if settings.telegram_natural_language == '1' else '' }}>
+        <label for="telegram_natural_language">Understand plain English</label>
+      </div>
+      <p class="hint">Talk to the bot normally &mdash; it works out whether you're answering a question,
+        adding an idea, leaving a note, or asking for status. Slash commands keep working either way.</p>
+      <div class="field" style="margin-top:1rem;">
+        <label for="telegram_model">Telegram model</label>
+        <select id="telegram_model" name="telegram_model">
+          {% for value, label in MODEL_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == settings.telegram_model else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
+        <p class="hint">Reads your messages and works out what you meant. Separate from the agent
+          model, and switchable from the chat with <code>/model sonnet</code>.</p>
+      </div>
+      <div class="field checkbox-row" style="margin-top:1rem;">
+        <input type="checkbox" id="glados_mode" name="glados_mode" {{ 'checked' if settings.glados_mode == '1' else '' }}>
+        <label for="glados_mode">GLaDOS personality</label>
+      </div>
+      <p class="hint">Snark on the bot's own confirmations and notification headers. Agent output,
+        journal entries and questions are never rewritten.</p>
+
+      {# Credentials are set once and then only ever get in the way, so they
+         start folded - open only when unset, which is the one case where you
+         do need to see them. #}
+      <details class="fold" {{ 'open' if not settings.telegram_token else '' }}>
+        <summary>Telegram credentials {% if settings.telegram_token %}<span class="badge ok">configured</span>{% else %}<span class="badge warn">not set</span>{% endif %}</summary>
+        <div class="grid grid-2 field-grid">
+          <div class="field">
+            <label for="telegram_token">Bot token</label>
+            <input type="text" id="telegram_token" name="telegram_token" value="{{ settings.telegram_token }}" placeholder="from @BotFather" data-no-draft>
+          </div>
+          <div class="field">
+            <label for="telegram_chat_id">Chat id</label>
+            <input type="text" id="telegram_chat_id" name="telegram_chat_id" value="{{ settings.telegram_chat_id }}" placeholder="auto-filled on first message" data-no-draft>
+          </div>
+        </div>
+      </details>
+
+      <details class="fold">
+        <summary>ntfy fallback {% if settings.ntfy_url %}<span class="badge ok">configured</span>{% else %}<span class="badge warn">not set</span>{% endif %}</summary>
+        <div class="grid grid-2 field-grid">
+          <div class="field">
+            <label for="ntfy_url">Server URL</label>
+            <input type="text" id="ntfy_url" name="ntfy_url" value="{{ settings.ntfy_url }}" data-no-draft>
+          </div>
+          <div class="field">
+            <label for="ntfy_topic">Topic</label>
+            <input type="text" id="ntfy_topic" name="ntfy_topic" value="{{ settings.ntfy_topic }}" data-no-draft>
+          </div>
+        </div>
+      </details>
+
+      <div class="button-row"><button type="submit">save notifications</button></div>
+    </div>
+  </form>
+
+  {# Its own form, not a formaction button inside the settings form: sharing a
+     form meant a click here submitted (and could silently discard) everything
+     above it. #}
+  <form method="post" action="/settings/test-notification" class="button-row">
+    <button type="submit" class="secondary">send test notification</button>
+  </form>
+
+  {# Web push: real lock-screen notifications, no Telegram in the loop. The
+     enroll button must be pressed on the device that should get them, from a
+     secure context (the tailscale HTTPS address) - and on an iPhone, from the
+     portal installed to the Home Screen, because iOS only grants push to
+     installed web apps. #}
+  <div class="card" id="push-card">
+    <h2>phone push {% if push_subs %}<span class="badge ok">{{ push_subs|length }} device{{ '' if push_subs|length == 1 else 's' }}</span>{% else %}<span class="badge warn">none enrolled</span>{% endif %}</h2>
+    <p class="hint">Notifications straight to the lock screen, no Telegram in between.
+      On an iPhone: open <code>{{ tailnet.https_url if tailnet and tailnet.https else 'the tailscale HTTPS address' }}</code>,
+      share &rarr; <em>Add to Home Screen</em>, open the installed app, come back
+      here and tap enable. Questions arrive as high-priority pushes with the
+      portal one tap away.</p>
+    <div class="button-row">
+      <button type="button" class="secondary" id="enable-push" data-act="enable-push">enable push on this device</button>
+      <span id="push-status" class="hint" role="status"></span>
+    </div>
+    {% if push_subs %}
+    <ul class="access-list" id="push-devices">
+      {% for sub in push_subs %}
+      <li>
+        <span class="access-label">device {{ sub.id }}</span>
+        <code>{{ sub.ua[:60] or 'unknown browser' }}</code>
+        <span class="hint">
+          enrolled {{ sub.created_at[:10] }}{% if sub.last_ok_at %} &middot; last push {{ sub.last_ok_at[:16]|replace('T', ' ') }}{% endif %}{% if sub.failures %} &middot; <span class="badge warn">{{ sub.failures }} failed</span>{% endif %}
+        </span>
+        <form method="post" action="/push/remove/{{ sub.id }}" style="display:inline">
+          <button type="submit" class="secondary" data-act="remove-push" data-id="{{ sub.id }}">remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/settings/test-push" class="button-row">
+      <button type="submit" class="secondary">send test push</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <script>
+  (function () {
+    const button = document.getElementById('enable-push');
+    const statusEl = document.getElementById('push-status');
+    if (!button) return;
+    const status = (msg) => { statusEl.textContent = msg; };
+
+    function keyBytes(b64url) {
+      const raw = atob(b64url.replace(/-/g, '+').replace(/_/g, '/'));
+      return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+    }
+
+    button.addEventListener('click', async () => {
+      try {
+        if (!window.isSecureContext) {
+          status('push needs HTTPS - open the portal at its tailscale address first');
+          return;
+        }
+        status('working…');
+        const key = keyBytes((await (await fetch('/push/pubkey')).json()).key);
+        // iOS 18.4+ exposes a pushManager on window (Declarative Web Push, no
+        // service worker involved); everywhere else it lives on a service
+        // worker registration.
+        let pm = window.pushManager;
+        if (!pm && 'serviceWorker' in navigator) {
+          const reg = await navigator.serviceWorker.register('/sw.js');
+          await navigator.serviceWorker.ready;
+          pm = reg.pushManager;
+        }
+        if (!pm) {
+          status('no push support in this browser - on an iPhone, install the portal to the Home Screen first and enable from the installed app');
+          return;
+        }
+        const sub = await pm.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+        const resp = await fetch('/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sub),
+        });
+        if (!resp.ok) throw new Error('the portal refused the subscription');
+        status('enrolled');
+        location.href = '/settings#notifications';
+        location.reload();
+      } catch (err) {
+        // NotAllowedError is what Safari throws when the page is not an
+        // installed web app (or permission was declined).
+        status('failed: ' + (err && err.message ? err.message : err) +
+          (String(err).includes('NotAllowed') ? ' - on an iPhone this means: install to Home Screen first, or allow notifications' : ''));
+      }
+    });
+  })();
+  </script>
+</section>
+
+<!-- Access -------------------------------------------------------------- -->
+{# Read-only on purpose: none of this is a portal setting. It is what the
+   machine and the tailnet are actually doing, which is precisely the thing
+   that was impossible to find out from a browser when 8500 answered on one
+   address and not the other. #}
+<section class="settings-panel" id="panel-access" data-panel="access">
+  <div class="card">
+    <h2 id="addresses">where the portal answers</h2>
+    {% if tailnet %}
+    <ul class="access-list">
+      <li>
+        <span class="access-label">on the LAN</span>
+        <a href="{{ tailnet.lan_url }}"><code>{{ tailnet.lan_url }}</code></a>
+        <span class="hint">plain http - the browser hides the microphone here, so no voice memos</span>
+      </li>
+      {% if tailnet.https %}
+      <li>
+        <span class="access-label ok">over tailscale</span>
+        <a href="{{ tailnet.https_url }}"><code>{{ tailnet.https_url }}</code></a>
+        <span class="hint">real certificate, works off wifi, and voice memos work because it is a secure context</span>
+      </li>
+      {% elif tailnet.self %}
+      <li>
+        <span class="access-label warn">over tailscale</span>
+        <code>http://{{ tailnet.self.dns }}:{{ portal_port }}/</code>
+        <span class="hint">
+          no HTTPS yet - run <code>deploy/tailscale-https.sh</code> on {{ tailnet.self.host }} to
+          put <code>tailscale serve</code> in front of it
+        </span>
+      </li>
+      {% endif %}
+    </ul>
+
+    {% if tailnet.acl_known %}
+    <h2 id="reach">which machines can reach it</h2>
+    <p class="hint">
+      From the packet filter the tailnet actually handed this node. A machine
+      marked blocked is stopped by your ACL before it ever reaches the portal -
+      that is what made 8500 answer on the LAN address but not the tailscale one.
+    </p>
+    <ul class="access-peers">
+      {% for peer in tailnet.peers %}
+      <li class="{{ 'offline' if not peer.online }}">
+        <span class="reach reach-{{ peer.reach }}">{{ 'yes' if peer.reach == 'yes' else 'blocked' }}</span>
+        <code>{{ peer.host }}</code>
+        <span class="hint">{{ peer.os }}{% if peer.tags %} - {{ peer.tags|join(', ') }}{% endif %}{% if not peer.online %} - offline{% endif %}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    <p class="hint">
+      Read {{ tailnet.age_sec // 60 }} minute{{ 's' if tailnet.age_sec // 60 != 1 }} ago.
+    </p>
+    {% else %}
+    <p class="hint">No tailnet reading yet - the poller takes its first one a few seconds after startup.</p>
+    {% endif %}
+  </div>
+</section>
+
+{% if slug_suggestions %}
+{# The back-fill half of the tidy-up. A project's folder name is cut from the
+   idea Wes typed before the project had a title, so the old ones read like a
+   sentence. Each row is the same one-click rename the project page offers,
+   gathered in one place so the whole backlog can be dealt with in a sitting. #}
+<section class="panel">
+  <h2>workspace folder names</h2>
+  <p class="hint">
+    {{ slug_suggestions|length }} project{{ 's' if slug_suggestions|length != 1 }} still
+    use{{ '' if slug_suggestions|length != 1 else 's' }} the folder name cut from the
+    original idea. Renaming moves the directory on disk and is refused while an
+    agent is running in it.
+  </p>
+  <ul class="slug-suggestions">
+    {% for project, target in slug_suggestions %}
+    <li>
+      <a href="/project/{{ project.slug }}">{{ project.title }}</a>
+      <div class="slug-change"><code>{{ project.slug }}</code> &rarr; <code>{{ target }}</code></div>
+      <form method="post" action="/project/{{ project.slug }}/tidy-slug" class="button-row">
+        <button type="submit" name="action" value="apply" class="go small">rename</button>
+        <button type="submit" name="action" value="dismiss" class="secondary small">keep</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% endblock %}

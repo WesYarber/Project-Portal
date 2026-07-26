@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+{% block title %}Memory - Project Portal{% endblock %}
+{% block content %}
+
+<h1>Memory</h1>
+<p class="small muted">What every agent knows about you. These two files go into
+  the prompt of every run on every project, so what is in them costs context
+  everywhere - which is why the learnings file has a compact button.</p>
+
+<h2>Profile</h2>
+<div class="card">
+  <form method="post" action="/memory/profile">
+    <div class="field">
+      {# rows is a floor, not the size: the textarea grows to fit its content
+         and stops at the shared panel height, so a long file becomes a scroll
+         box rather than several screens of page. #}
+      <textarea name="content" rows="16">{{ profile }}</textarea>
+    </div>
+    <button type="submit">save profile.md</button>
+  </form>
+</div>
+
+<h2>Learnings</h2>
+<div class="card">
+  <div class="memory-head">
+    <span class="small muted">{{ learnings_lines }} lines &middot; {{ learnings_chars }} characters, in every prompt{% if learnings_cap %} &middot; cap {{ learnings_cap }} lines{% endif %}</span>
+    <form method="post" action="/memory/compact" class="inline-form">
+      {% if compacting %}
+      <button type="submit" class="btn secondary" disabled>compacting...</button>
+      {% else %}
+      <button type="submit" class="btn secondary"
+              data-confirm="Send an agent through learnings.md to distil it? The current version is kept under revisions.">compact this file</button>
+      {% endif %}
+    </form>
+  </div>
+  {% if learnings_over_cap %}
+  <p class="hint warn">Over the {{ learnings_cap }}-line cap. The portal will auto-compact
+    this at the next quiet day-boundary (snapshotting it to revisions first); press
+    compact above to do it now.</p>
+  {% endif %}
+  <form method="post" action="/memory/learnings">
+    <div class="field">
+      <textarea name="content" rows="14">{{ learnings }}</textarea>
+    </div>
+    <button type="submit">save learnings.md</button>
+  </form>
+  <p class="hint">Compacting runs a real agent: it reads the whole file, merges
+    the duplicates, drops the per-project trivia and rewrites it. It takes a
+    few minutes and lands in the journal when it is done.</p>
+</div>
+
+{# The dates live in a sidecar, not in learnings.md itself - the file is fed to
+   every run and Wes wanted its lines to read as durable facts, not a log. A run
+   that re-notices a fact confirms it here (the write gate's NOOP becomes a
+   +1 confirmation), so a line confirmed often and recently is load-bearing and
+   one added once and never re-seen is a compaction candidate. #}
+{% set tracked = learnings_freshness | selectattr('tracked') | list %}
+<h2>Entry ages</h2>
+<div class="card">
+  <p class="small muted">When each live learning was first recorded and last confirmed
+    by a run re-noticing it, stalest first. Tracked outside <code>learnings.md</code> so the
+    prompt-facing file stays date-free; ages build up as runs re-observe facts.</p>
+  {% if tracked %}
+  <ul class="archive-list scroll-cap scroll-cap-panel">
+    {% for e in tracked %}
+    <li>
+      <span class="badge">seen {{ e.count }}&times;</span>
+      <span class="small muted">added {{ e.added }} &middot; confirmed {{ e.confirmed }}</span>
+      <div class="archive-text">{{ e.text }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% set undated = (learnings_freshness | length) - (tracked | length) %}
+  {% if undated > 0 %}
+  <p class="hint">{{ undated }} of {{ learnings_freshness | length }} live lines are not yet
+    dated - added before tracking began, or reworded by hand or by a compaction pass.</p>
+  {% endif %}
+  {% else %}
+  <p class="empty-state">No entries dated yet - dates appear as runs add and re-confirm facts.</p>
+  {% endif %}
+</div>
+
+{# Procedure-shaped learnings the compaction agent lifted out of learnings.md
+   into real skill files (data/skills/): shipped into every workspace and
+   indexed by name in every prompt, so the recipe stays available without its
+   full text taxing every run. Deletable here because promotion is an agent's
+   judgement call and Wes curates his own memory. #}
+<h2>Promoted skills</h2>
+<div class="card">
+  <p class="small muted">How-to recipes a compaction pass promoted out of
+    <code>learnings.md</code> into skills. Each ships into every workspace and its one-line
+    description is indexed in every run's prompt; the bullet it came from is dropped.</p>
+  {% if promoted_skills %}
+  <ul class="archive-list scroll-cap scroll-cap-panel">
+    {% for s in promoted_skills %}
+    <li>
+      <span class="badge">{{ s.name }}</span>
+      <a href="/memory/skill/{{ s.name }}">view</a>
+      <span class="small muted">{{ s.lines }} lines &middot; {{ s.size|filesize }}</span>
+      <form method="post" action="/memory/skill/{{ s.name }}/delete" class="inline-form"
+            data-confirm="Delete the skill '{{ s.name }}'? It stops shipping to workspaces on their next sync. The learning it replaced is not restored.">
+        <button type="submit" class="btn secondary small">delete</button>
+      </form>
+      <div class="archive-text">{{ s.description }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">No promoted skills yet - the next compaction pass may lift
+    how-to recipes out of learnings.md into skills here.</p>
+  {% endif %}
+</div>
+
+{# The safety net under both of the above. Every write to either file - yours,
+   the reflect job's, the compaction agent's - copies the previous version here
+   first, because the only reason this section exists is that a rewrite once
+   took away text Wes had typed about himself with no copy of it anywhere. #}
+<h2>Revisions</h2>
+<div class="card">
+  {% if revisions %}
+  <ul class="revision-list scroll-cap scroll-cap-panel">
+    {% for r in revisions %}
+    <li>
+      <span class="badge">{{ r.stem }}</span>
+      <a href="/memory/revision/{{ r.name }}">{{ r.ts|timeago }}</a>
+      <span class="small muted">{{ r.lines }} lines &middot; {{ r.size|filesize }}</span>
+      <form method="post" action="/memory/revision/{{ r.name }}/restore" class="inline-form"
+            data-confirm="Put this version of {{ r.stem }}.md back? What is there now is copied to a new revision first.">
+        <button type="submit" class="btn secondary small">restore</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">No revisions stored yet.</p>
+  {% endif %}
+  <p class="hint">Kept automatically before any rewrite, newest first. Restoring
+    snapshots the current version first, so it is never a one-way door.</p>
+</div>
+
+{# Every learning the write gate supersedes (a refined rephrasing replacing an
+   old one) or retires (an explicit delete) is logged here rather than dropped
+   silently, so a fact that left the live file is still browsable with the date
+   and reason it went. #}
+<h2>Retired learnings</h2>
+<div class="card">
+  <p class="small muted">Facts the write gate removed from <code>learnings.md</code> - a
+    line <em>superseded</em> by a refined rephrasing, or <em>retired</em> as no longer true -
+    kept here with the date and reason rather than dropped without a trace.</p>
+  {% if archived_learnings %}
+  <ul class="archive-list scroll-cap scroll-cap-panel">
+    {% for a in archived_learnings %}
+    <li>
+      <span class="badge">{{ a.reason }}</span>
+      <span class="small muted">{{ a.date }}</span>
+      <div class="archive-text">{{ a.text }}</div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">Nothing has been superseded or retired yet.</p>
+  {% endif %}
+</div>
+
+<h2>CLI auto-memory</h2>
+<div class="card">
+  <p class="small muted">A <em>separate</em> memory the Claude CLI writes on its own as
+    it runs, at <code>~/.claude/projects/&lt;workspace&gt;/memory/</code> - not the portal's,
+    and not in any run's prompt here. Shown so it is not a second store you cannot see.
+    Read-only: the portal never edits it.</p>
+  {% if cli_memory %}
+  <p class="small muted">{{ cli_memory|length }} workspace{{ '' if cli_memory|length == 1 else 's' }} &middot;
+    {{ cli_memory_files }} file{{ '' if cli_memory_files == 1 else 's' }}</p>
+  <div class="cli-memory-list scroll-cap scroll-cap-panel">
+    {% for d in cli_memory %}
+    <details class="cli-memory-dir">
+      <summary>
+        <span class="badge">{{ d.kind }}</span>
+        <span class="cli-memory-label">{{ d.label }}</span>
+        <span class="small muted">{{ d.file_count }} file{{ '' if d.file_count == 1 else 's' }} &middot; {{ d.total_size|filesize }}</span>
+      </summary>
+      {% if not d.mapped %}
+      <p class="hint">A workspace outside the portal (an interactive session or a project's
+        own source tree): <code>{{ d.dir_name }}</code></p>
+      {% endif %}
+      {% if d.files %}
+      <ul class="cli-memory-files">
+        {% for f in d.files %}
+        <li>
+          <a href="/memory/cli/{{ d.dir_name }}/{{ f.name }}">{{ f.name }}</a>
+          <span class="small muted">{{ f.lines }} lines &middot; {{ f.size|filesize }}</span>
+          {% if f.description %}<div class="cli-memory-desc small muted">{{ f.description }}</div>{% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="empty-state small">Only an index, no separate fact files.</p>
+      {% endif %}
+    </details>
+    {% endfor %}
+  </div>
+  <p class="hint">If this keeps growing and drifting from the portal's own memory, the fix
+    is to disable the CLI's memory tool for portal runs; for now it is here to watch.</p>
+  {% else %}
+  <p class="empty-state">The CLI has not written any auto-memory yet.</p>
+  {% endif %}
+</div>
+
+<h2>Suggestions</h2>
+{% if suggestions %}
+<div class="project-grid">
+  {% for s in suggestions %}
+  <div class="project-cell">
+    <span class="cell-title">{{ s.title }}</span>
+    {% if s.description %}<span class="cell-desc">{{ s.description }}</span>{% endif %}
+    <span class="cell-foot">
+      <span class="badge">{{ s.status }}</span>
+      <span>{{ s.ts|timeago }}</span>
+    </span>
+    {% if s.status == 'proposed' %}
+    <div class="button-row" style="margin-top:0.5rem;">
+      <form method="post" action="/suggestions/{{ s.id }}/accept" class="inline">
+        <button type="submit">accept</button>
+      </form>
+      <form method="post" action="/suggestions/{{ s.id }}/dismiss" class="inline">
+        <button type="submit" class="secondary">dismiss</button>
+      </form>
+    </div>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No suggestions yet.</p>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,164 @@
+{# The style template gallery. Deliberately NOT extending base.html and
+   deliberately NOT loading style.css: this page is styled by
+   terminal-theme.css alone, so it is a living proof that the packaged
+   template is self-contained. If a piece looks broken here, the template
+   is missing something - fix the template, never patch this page from
+   style.css. #}
+<!doctype html>
+<html lang="en" style="background-color:#0d1016">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dark terminal theme</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="icon" type="image/svg+xml" sizes="any" href="{{ static_url('favicon.svg') }}">
+<link rel="stylesheet" href="{{ static_url('terminal-theme.css') }}">
+</head>
+<body>
+<div class="screen">
+  <div class="terminal-window">
+
+    <div class="terminal-header">
+      <div class="window-controls">
+        <span class="window-dot close"></span>
+        <span class="window-dot minimize"></span>
+        <span class="window-dot maximize"></span>
+      </div>
+      <a class="wordmark" href="/">TERMINAL&nbsp;THEME</a>
+      <div class="window-stats"><span>one css file, no js</span></div>
+    </div>
+
+    <div class="terminal-body">
+      <nav class="nav-tabs">
+        <a class="tab-btn active" href="#use">use it</a>
+        <a class="tab-btn" href="#badges">badges</a>
+        <a class="tab-btn" href="#buttons">buttons</a>
+        <a class="tab-btn" href="#forms">forms</a>
+        <a class="tab-btn" href="#panels">panels</a>
+        <a class="tab-btn" href="/">back to the portal</a>
+      </nav>
+
+      <h1>A dark terminal theme, packaged to reuse</h1>
+      <p class="muted small">Everything on this page is styled by
+        <code>terminal-theme.css</code> alone - the portal's own stylesheet
+        is not loaded here (the portal follows this theme, not the other way
+        round). A test keeps the template's design tokens in sync, so this
+        file is always the current look.</p>
+
+      <h2 id="use">use it</h2>
+      <p class="small">
+        <a class="btn go" href="/static/terminal-theme.css" download="terminal-theme.css">download terminal-theme.css</a>
+      </p>
+      <p class="small muted">Or fetch the newest copy any time from
+        <code>{{ request.url.scheme }}://{{ request.url.netloc }}/static/terminal-theme.css</code>.
+        Start a page from this skeleton:</p>
+      <pre class="panel scroll-cap small" id="starter">&lt;!doctype html&gt;
+&lt;html lang="en"&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8"&gt;
+  &lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
+  &lt;title&gt;My thing&lt;/title&gt;
+  &lt;link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&amp;display=swap" rel="stylesheet"&gt;
+  &lt;link rel="stylesheet" href="terminal-theme.css"&gt;
+&lt;/head&gt;
+&lt;body&gt;
+  &lt;div class="screen"&gt;
+    &lt;div class="terminal-window"&gt;
+      &lt;div class="terminal-header"&gt;
+        &lt;div class="window-controls"&gt;
+          &lt;span class="window-dot close"&gt;&lt;/span&gt;
+          &lt;span class="window-dot minimize"&gt;&lt;/span&gt;
+          &lt;span class="window-dot maximize"&gt;&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;a class="wordmark" href="/"&gt;MY&nbsp;THING&lt;/a&gt;
+        &lt;div class="window-stats"&gt;&lt;span&gt;{{ SITE.handle }}&lt;/span&gt;&lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class="terminal-body"&gt;
+        &lt;h1&gt;Hello&lt;/h1&gt;
+        &lt;h2&gt;a section&lt;/h2&gt;
+        &lt;p&gt;Content here.&lt;/p&gt;
+        &lt;div class="terminal-footer"&gt;
+          &lt;span&gt;my thing&lt;/span&gt;&lt;span class="cursor"&gt;&amp;nbsp;&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/div&gt;
+&lt;/body&gt;
+&lt;/html&gt;</pre>
+
+      <h2 id="badges">badges &amp; indicators</h2>
+      <p>
+        <span class="badge">plain</span>
+        <span class="badge accent-blue">agent</span>
+        <span class="badge accent-green">building</span>
+        <span class="badge accent-yellow">waiting</span>
+        <span class="badge accent-magenta">review</span>
+        <span class="badge accent-red">error</span>
+        <span class="badge accent-cyan">planning</span>
+        <span class="badge accent-dim">backlog</span>
+      </p>
+      <p class="small" style="margin-top:0.6rem">
+        <span class="dot ok"></span>up
+        &nbsp;&nbsp;<span class="dot warn"></span>degraded
+        &nbsp;&nbsp;<span class="dot err"></span>down
+        &nbsp;&nbsp;<span class="cursor">blinking cursor&nbsp;</span>
+      </p>
+
+      <h2 id="buttons">buttons</h2>
+      <div class="button-row">
+        <button type="button">default</button>
+        <button type="button" class="go">go / confirm</button>
+        <button type="button" class="secondary">secondary</button>
+        <button type="button" class="danger">danger</button>
+        <button type="button" class="small">small</button>
+        <a class="btn" href="#buttons">a link as a button</a>
+      </div>
+
+      <h2 id="forms">forms</h2>
+      <div class="field">
+        <label for="demo-text">text input</label>
+        <input type="text" id="demo-text" placeholder="type here...">
+      </div>
+      <div class="field">
+        <label for="demo-select">select</label>
+        <select id="demo-select">
+          <option>first option</option>
+          <option>second option</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="demo-area">textarea</label>
+        <textarea id="demo-area" rows="3" placeholder="notes..."></textarea>
+        <p class="hint">a hint line under a control</p>
+      </div>
+      <div class="checkbox-row">
+        <input type="checkbox" id="demo-check" checked>
+        <label for="demo-check">a checkbox row</label>
+      </div>
+
+      <h2 id="panels">panels &amp; tables</h2>
+      <div class="panel">
+        <h3>a panel</h3>
+        <p class="small">Bordered, faintly darker, rounded. Add
+          <code>scroll-cap</code> to anything that can grow without bound.</p>
+      </div>
+      <div class="banner-alert">an attention banner, for the thing that needs {{ SITE.owners }} eyes</div>
+      <table>
+        <tr><th>column</th><th>another</th><th>state</th></tr>
+        <tr><td>first row</td><td class="muted">detail</td><td><span class="badge accent-green">ok</span></td></tr>
+        <tr><td>second row</td><td class="muted">detail</td><td><span class="badge accent-yellow">waiting</span></td></tr>
+      </table>
+
+      <div class="terminal-footer">
+        <span>dark terminal theme // served from the portal</span>
+        <span class="cursor">&nbsp;</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+</body>
+</html>

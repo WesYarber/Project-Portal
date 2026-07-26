@@ -1,0 +1,160 @@
+{% extends "base.html" %}
+{% block title %}Activity - Project Portal{% endblock %}
+{% block header_stat %}{{ total }} run{{ 's' if total != 1 }} logged{% endblock %}
+{% block content %}
+
+<h1>Activity</h1>
+<p class="small muted">Every agent run the portal has made, and how heavy it was.</p>
+{% if cost_noun() == 'weight' %}
+<p class="hint">&ldquo;Weight&rdquo; is the CLI's token cost at API rates &mdash; a relative measure of
+  how expensive a run was, not a bill. You're on Max; nothing here is money owed.
+  Switch it back to dollars in <a href="/settings">settings</a>.</p>
+{% endif %}
+
+<div class="card status-line">
+  <span>
+    runs today: <strong data-usage="runs_today">{{ usage.runs_today }}</strong> /
+    <strong data-usage="max_runs">{{ usage.max_runs }}</strong>
+  </span>
+  <span class="muted">resets in <span data-usage="resets_in">{{ usage.resets_in }}</span></span>
+  {% for r in active_run.runs %}
+  <span><span class="dot running"></span>
+    <a href="/run/{{ r.run_id }}">{{ r.task }} on {{ r.project_title }} &middot; {{ r.elapsed }}</a>
+  </span>
+  {% else %}
+  <span class="muted">idle &mdash; {{ active_run.idle_reason }}</span>
+  {% endfor %}
+  <a class="small" href="/settings#budget">adjust budget</a>
+</div>
+
+<h2>Last {{ days }} days</h2>
+<div class="card">
+  <div class="window-picker">
+    {% for w in windows %}
+    <a class="tab-btn {{ 'active' if w == days }}"
+       href="/activity?days={{ w }}{% if status_filter %}&status={{ status_filter }}{% endif %}{% if project_filter %}&project={{ project_filter }}{% endif %}">{{ w }}d</a>
+    {% endfor %}
+  </div>
+
+  {# Two ASCII sparklines, one glyph per day, aligned under a shared axis so
+     "the expensive days" and "the busy days" can be compared by eye. #}
+  <div class="spark-block">
+    <div class="spark-row">
+      <span class="spark-label">runs</span>
+      <pre class="spark">{{ history.runs_spark }}</pre>
+      <span class="spark-value">{{ history.totals.runs }}</span>
+    </div>
+    <div class="spark-row">
+      <span class="spark-label">{{ cost_noun() }}</span>
+      <pre class="spark cost">{{ history.cost_spark }}</pre>
+      <span class="spark-value">{{ history.totals.cost|cost(2) }}</span>
+    </div>
+  </div>
+  {# The sparklines are one glyph per day and can be narrower than a pair of
+     date labels, so the range is stated in words rather than drawn as an axis. #}
+  <p class="hint">{{ history.buckets[0].date }} &rarr; {{ history.buckets[-1].date }}
+    &middot; one column per day &middot; busiest {{ history.totals.busiest or 'n/a' }}</p>
+
+  <div class="stat-row">
+    <span class="stat"><em>{{ history.totals.runs }}</em>runs</span>
+    <span class="stat"><em>{{ history.totals.success_rate }}%</em>succeeded</span>
+    <span class="stat"><em>{{ history.totals.failed }}</em>failed</span>
+    {% if history.totals.cancelled %}
+    <span class="stat"><em>{{ history.totals.cancelled }}</em>cancelled</span>
+    {% endif %}
+    <span class="stat"><em>{{ history.totals.cost|cost(2) }}</em>total {{ cost_noun() }}</span>
+    <span class="stat"><em>{{ history.totals.avg_cost|cost(3) }}</em>per run</span>
+    <span class="stat"><em>{{ history.totals.avg_duration_sec // 60 }}m</em>avg length</span>
+    <span class="stat"><em>{{ history.totals.turns }}</em>turns</span>
+  </div>
+</div>
+
+{# Where the budget actually went. Hidden when a single project is selected -
+   a breakdown of one row is just the totals again. #}
+{% if history.by_project and not project_filter %}
+<h2>By project</h2>
+<div class="card">
+  <table class="run-table breakdown">
+    <thead><tr>
+      <th>project</th><th>share</th><th>{{ cost_noun() }}</th>
+      <th>runs</th><th>ok</th><th>failed</th><th>avg length</th>
+    </tr></thead>
+    <tbody>
+      {% for g in history.by_project %}
+      <tr>
+        <td class="small">
+          {% if g.slug %}<a href="/activity?days={{ days }}&project={{ g.slug }}">{{ g.title }}</a>
+          {% else %}<span class="muted">{{ g.title }}</span>{% endif %}
+        </td>
+        <td><pre class="spark cost share-bar">{{ g.bar }}</pre></td>
+        <td class="small">{{ g.cost|cost(2) }} <span class="muted">({{ g.share }}%)</span></td>
+        <td class="small">{{ g.runs }}</td>
+        <td class="small">{{ g.ok }}</td>
+        <td class="small">{{ g.failed }}{% if g.cancelled %} <span class="muted">+{{ g.cancelled }} cancelled</span>{% endif %}</td>
+        <td class="small">{{ g.avg_duration_sec // 60 }}m</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>Runs</h2>
+<div class="card">
+  <form method="get" action="/activity" class="filter-row">
+    <input type="hidden" name="days" value="{{ days }}">
+    <select name="project" onchange="this.form.submit()">
+      <option value="">all projects</option>
+      {% for p in projects %}
+      <option value="{{ p.slug }}" {{ 'selected' if p.slug == project_filter }}>{{ p.title }}</option>
+      {% endfor %}
+    </select>
+    <select name="status" onchange="this.form.submit()">
+      <option value="">any status</option>
+      {% for s in RUN_STATUSES %}
+      <option value="{{ s }}" {{ 'selected' if s == status_filter }}>{{ s }}</option>
+      {% endfor %}
+    </select>
+    <noscript><button type="submit">filter</button></noscript>
+  </form>
+
+  {% if runs %}
+  <table class="run-table">
+    <thead><tr>
+      <th>run</th><th>when</th><th>project</th><th>task</th>
+      <th>model</th><th>status</th><th>took</th><th>{{ cost_noun() }}</th><th>events</th>
+    </tr></thead>
+    <tbody>
+      {% for r in runs %}
+      <tr class="run-{{ r.status }}">
+        <td><a href="/run/{{ r.id }}">#{{ r.id }}</a></td>
+        <td class="small">{{ r.started_at|timeago }}</td>
+        <td class="small">
+          {% if r.project_slug %}<a href="/project/{{ r.project_slug }}">{{ r.project_title }}</a>
+          {% else %}<span class="muted">{{ r.project_title }}</span>{% endif %}
+        </td>
+        <td class="small">{{ r.task }}</td>
+        <td class="small">{{ r.model }}</td>
+        <td><span class="badge run-status-{{ r.status }}">{{ r.status }}</span></td>
+        <td class="small">{{ r.duration }}</td>
+        <td class="small">{{ r.cost_usd|cost }}</td>
+        <td class="small">{{ r.events }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-state">No runs match.</p>
+  {% endif %}
+</div>
+
+{% if pages > 1 %}
+{% set qs = 'days=' ~ days ~ ('&status=' ~ status_filter if status_filter else '') ~ ('&project=' ~ project_filter if project_filter else '') %}
+<div class="button-row pager">
+  {% if page > 1 %}<a class="btn" href="/activity?{{ qs }}&page={{ page - 1 }}">&larr; newer</a>{% endif %}
+  <span class="muted small">page {{ page }} of {{ pages }}</span>
+  {% if page < pages %}<a class="btn" href="/activity?{{ qs }}&page={{ page + 1 }}">older &rarr;</a>{% endif %}
+</div>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en" style="background-color:#0d1016">
+<head>
+<meta charset="utf-8">
+<meta name="color-scheme" content="dark">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Project Portal{% endblock %}</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+{# Two different marks on purpose. The tab gets the drawn two-portal glyph,
+   which still reads at 16px; the home screen gets Wes's artwork, which is
+   built to be looked at at 180px and turns to mush any smaller. The bare
+   /favicon.ico is there because browsers probe the origin root for it whatever
+   these tags say, and a 404 there can leave the tab with no icon at all. #}
+{# Icon URLs carry the file-mtime version AND the boot id (icon_url). Chrome
+   caches a *failed* icon fetch against the exact URL, and the dashboard is
+   exactly the page that reloads itself while the portal is mid-restart - one
+   icon request into that gap and the tab stayed blank on / until the icon
+   file's mtime changed, i.e. forever. Salting with the boot id retires the
+   poisoned URL on the very restart that poisoned it.
+   PNG links beside the svg/ico because they are the one form every browser
+   agrees on - Safari ignores SVG favicons entirely, and some ico handling
+   is fussy about multi-frame files. #}
+<link rel="icon" type="image/png" sizes="32x32" href="{{ icon_url('favicon-32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" href="{{ icon_url('favicon-16.png') }}">
+<link rel="icon" type="image/svg+xml" sizes="any" href="{{ icon_url('favicon.svg') }}">
+<link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="{{ icon_url('favicon.ico') }}">
+<link rel="apple-touch-icon" href="{{ icon_url('apple-touch-icon.png') }}">
+{# Added to the home screen this runs chromeless, which means no browser
+   reload button and no native pull-to-refresh - app.js puts its own back
+   (see initPullToRefresh), and only in that mode. #}
+<link rel="manifest" href="{{ static_url('manifest.webmanifest') }}">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Portal">
+<meta name="theme-color" content="#0d1016">
+<link rel="stylesheet" href="{{ static_url('style.css') }}">
+</head>
+<body class="{{ body_classes() }}"{% if secure_url() %} data-secure-url="{{ secure_url() }}"{% endif %}>
+{# Shown only when the server stops answering - typically because it is
+   restarting itself to load new code. Beats the browser's "can't reach this
+   site" page, and reloads on its own the moment the portal is back. #}
+<div id="offline-overlay" hidden>
+  <div class="offline-box">
+    {# Generated with pyfiglet ("standard" font), not drawn by hand - the
+       previous version was hand-typed from the "small" font and had an F
+       rendered as a C and two letters at the wrong column width, which is
+       what made it look broken. Regenerate with:
+         python -c "import pyfiglet; print(pyfiglet.figlet_format('OFFLINE'))"
+       pyfiglet is not a dependency of the portal; the art is checked in. #}
+    <pre class="offline-art">  ___  _____ _____ _     ___ _   _ _____
+ / _ \|  ___|  ___| |   |_ _| \ | | ____|
+| | | | |_  | |_  | |    | ||  \| |  _|
+| |_| |  _| |  _| | |___ | || |\  | |___
+ \___/|_|   |_|   |_____|___|_| \_|_____|</pre>
+    <p><strong>The portal is not answering.</strong></p>
+    <p class="muted small">It is most likely restarting to load new code. This page is
+      watching, and will take you back the moment it returns.</p>
+    <p class="small"><span class="offline-spin"></span> <span id="offline-detail">retrying...</span></p>
+  </div>
+</div>
+{% set path = request.url.path %}
+{% set nav_questions = open_question_total() %}
+<div class="screen">
+  <div class="terminal-window">
+
+    <div class="terminal-header">
+      <div class="window-controls">
+        <span class="window-dot close"></span>
+        <span class="window-dot minimize"></span>
+        <span class="window-dot maximize"></span>
+      </div>
+      <a class="wordmark" href="/">PR<span class="o-blue">O</span>JECT&nbsp;P<span class="o-orange">O</span>RTAL</a>
+      <div class="window-stats">
+        <span>{% block header_stat %}{{ SITE.handle }}{% endblock %}</span>
+      </div>
+    </div>
+
+    <div class="terminal-body">
+      {# Above the nav on purpose (Wes's ask): the wordmark is the title of the
+         window, not the first item of the dashboard's content, so it should sit
+         over the tabs rather than under them. Only the dashboard fills it. #}
+      {% block masthead %}{% endblock %}
+      <nav class="nav-tabs">
+        <a class="tab-btn {{ 'active' if path == '/' }}" href="/">dashboard</a>
+        {% set nav_oneoffs = open_oneoff_total() %}
+        <a class="tab-btn {{ 'active' if path.startswith('/tasks') }}" href="/tasks">tasks{% if nav_oneoffs %}<span class="nav-count">{{ nav_oneoffs }}</span>{% endif %}</a>
+        <a class="tab-btn {{ 'active' if path.startswith('/questions') }}" href="/questions">questions{% if nav_questions %}<span class="nav-count">{{ nav_questions }}</span>{% endif %}</a>
+        <a class="tab-btn {{ 'active' if path.startswith('/activity') or path.startswith('/run/') }}" href="/activity">activity</a>
+        <a class="tab-btn {{ 'active' if path.startswith('/memory') }}" href="/memory">memory</a>
+        <a class="tab-btn {{ 'active' if path.startswith('/settings') }}" href="/settings">settings</a>
+      </nav>
+
+      {# Shown while a self-update is committed but not yet loaded: the restart
+         waits for in-flight agent runs, and during that window the site is
+         running code that no longer matches its source. Without this line, a
+         fix Wes asked for looks ignored for as long as a slow run keeps the
+         old code alive. The live-refresh morph brings it in the moment the
+         deferral is journalled, and the restart's reload takes it away. #}
+      {% set update_runs = restart_pending_runs() %}
+      {% if update_runs is not none %}
+      <div class="update-wait small">
+        {%- if update_runs -%}
+        an update is ready to load - waiting for
+        {{ update_runs }} agent run{{ 's' if update_runs != 1 }} to finish,
+        then the portal restarts and this page reloads itself
+        {%- else -%}
+        an update is ready to load - the portal restarts in a moment and
+        this page reloads itself
+        {%- endif -%}
+      </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+
+      <div class="terminal-footer">
+        <span>project portal // {{ SITE.handle }}</span>
+        <span class="cursor">&nbsp;</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+<script src="{{ static_url('app.js') }}"></script>
+</body>
+</html>

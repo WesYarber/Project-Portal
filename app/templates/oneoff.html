@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+{% block title %}{{ task.title }} - Tasks{% endblock %}
+{% block content %}
+
+<p class="small"><a href="/tasks">&larr; all tasks</a></p>
+<h1>{{ task.title }}</h1>
+<div class="oneoff-controls">
+  {% if task.status == 'archived' %}
+  <span class="badge">archived</span>
+  <form method="post" action="/tasks/{{ task.id }}/unarchive" class="inline-form">
+    <button type="submit" class="btn secondary small">unarchive</button>
+  </form>
+  {% else %}
+  <form method="post" action="/tasks/{{ task.id }}/archive" class="inline-form">
+    <button type="submit" class="btn secondary small">archive this session</button>
+  </form>
+  {% endif %}
+  <span class="small muted">workspace: <code>{{ workspace }}</code></span>
+</div>
+
+{% if running %}
+<div class="card live-run" id="oneoff-live" data-task-id="{{ task.id }}">
+  <div class="live-head">
+    <span class="dot running"></span>
+    <strong class="live-what">the agent is working on this</strong>
+    {% if latest_run %}
+    <a class="small" href="/run/{{ latest_run.id }}">watch the live transcript &rarr;</a>
+    <form method="post" action="/run/{{ latest_run.id }}/cancel" class="inline-form">
+      <input type="hidden" name="next" value="/tasks/{{ task.id }}">
+      <button type="submit" class="btn danger small">stop</button>
+    </form>
+    {% endif %}
+    {% if queued %}<span class="small muted">{{ queued }} reply(ies) queued for after this run</span>{% endif %}
+  </div>
+</div>
+{% endif %}
+
+<div class="card oneoff-thread scroll-cap scroll-cap-journal">
+  {% for m in messages %}
+  {% set who = 'user' if m.role == 'wes' else m.role %}
+  <div class="journal-entry from-{{ who }}">
+    <div class="meta">
+      <span class="badge author-{{ who }}">{{ 'wes' if m.role == 'wes' else m.role }}</span>
+      <span class="small muted">{{ m.ts|timeago }}</span>
+      {% if m.run_id %}<a class="small muted" href="/run/{{ m.run_id }}">run &rarr;</a>{% endif %}
+    </div>
+    <div class="content">{{ m.content_md|markdown_media(raw_base='/tasks/' ~ task.id ~ '/raw')|safe }}</div>
+  </div>
+  {% endfor %}
+</div>
+
+{% if task.status == 'open' %}
+<div class="card">
+  <form method="post" action="/tasks/{{ task.id }}/message">
+    <div class="field">
+      <textarea name="text" rows="3" placeholder="Reply to the agent..." required></textarea>
+    </div>
+    <button type="submit">send</button>
+    {% if running %}
+    <span class="hint">an agent is mid-run - your message queues, and a fresh run
+      picks it up (with the agent's memory of this session intact) the moment
+      the current one finishes</span>
+    {% endif %}
+  </form>
+</div>
+{% else %}
+<p class="muted small">This session is archived. Unarchive it to keep talking;
+  the agent's memory of the exchange is kept.</p>
+{% endif %}
+
+{% if running %}
+<script>
+// While a run is going, watch for it to finish and pull in the reply. The
+// reload is skipped if Wes has started typing - losing a half-written reply
+// to a refresh would be worse than pressing reload himself.
+(function () {
+  var live = document.getElementById("oneoff-live");
+  if (!live) return;
+  var taskId = parseInt(live.dataset.taskId, 10);
+  var timer = setInterval(function () {
+    fetch("/api/active-run").then(function (r) { return r.json(); }).then(function (snap) {
+      var stillRunning = (snap.runs || []).some(function (r) { return r.oneoff_id === taskId; });
+      if (stillRunning) return;
+      clearInterval(timer);
+      var box = document.querySelector('textarea[name="text"]');
+      if (box && box.value.trim() !== "") {
+        var head = live.querySelector(".live-head");
+        if (head) head.innerHTML = '<span class="dot"></span> <strong>the agent has replied</strong> ' +
+          '<a class="small" href="/tasks/' + taskId + '">refresh to read it</a>';
+        return;
+      }
+      window.location.reload();
+    }).catch(function () { /* offline overlay handles a dead server */ });
+  }, 5000);
+})();
+</script>
+{% endif %}
+
+{% endblock %}

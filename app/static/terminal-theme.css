@@ -1,0 +1,399 @@
+/* ==========================================================================
+   TERMINAL THEME - a dark terminal look, packaged to reuse.
+   (Wes's Project Portal follows this theme too; the theme is not the portal's.)
+
+   Drop this one file into anything you build and the terminal-window styling
+   comes with it: dark CRT palette, Fira Code, bracketed badges, the works.
+   No dependencies, no JS. Pair it with:
+
+     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+     <link rel="stylesheet" href="terminal-theme.css">
+
+   (Without the webfont it falls back to the system monospace and still looks
+   right.) A live gallery of every piece, with markup to copy, is served by
+   the portal at /style, and the newest copy of this file is always at
+   /static/terminal-theme.css.
+
+   KEPT CURRENT MECHANICALLY: tests/test_style_template.py asserts every
+   design token here matches the portal's own style.css, so a theme change to
+   the portal fails the suite until this file is synced to match.
+
+   The skeleton every piece assumes:
+
+     <body>                          dark page, centered column
+       <div class="terminal-window">   the rounded CRT window
+         <div class="terminal-header"> title bar: dots, title, right stat
+         <div class="terminal-body">   your content
+         <div class="terminal-footer"> the dim strip at the bottom
+   ========================================================================== */
+
+/* --- Design tokens (mirrored from the portal's style.css) ----------------- */
+:root {
+  --terminal-fg: hsl(215, 25%, 80%);
+  --terminal-dim: hsl(215, 15%, 55%);
+  --terminal-glow: rgba(148, 163, 184, 0.12);
+  --bg-color: hsl(220, 25%, 7%);
+  --window-bg: rgba(15, 20, 28, 0.85);
+  --window-border: rgba(148, 163, 184, 0.22);
+  --header-bg: rgba(22, 28, 38, 0.9);
+  --panel-bg: rgba(0, 0, 0, 0.3);
+  --font-mono: 'Fira Code', ui-monospace, 'SF Mono', 'Cascadia Code', 'Courier New', monospace;
+  --font-prose: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-mono);
+
+  /* ANSI/CLI accents */
+  --ansi-blue: hsl(205, 100%, 65%);
+  --ansi-cyan: hsl(180, 75%, 55%);
+  --ansi-green: hsl(120, 65%, 60%);
+  --ansi-yellow: hsl(45, 100%, 60%);
+  --ansi-red: hsl(0, 80%, 65%);
+  --ansi-magenta: hsl(290, 75%, 65%);
+
+  /* The two portals */
+  --portal-blue: hsl(200, 100%, 60%);
+  --portal-orange: hsl(28, 100%, 58%);
+
+  /* One height for every interactive control, so a row of mixed inputs,
+     selects and buttons reads as one instrument panel. */
+  --control-h: 2.3rem;
+
+  /* Cap for any panel that can grow without bound - nothing should be so
+     tall that reaching what is under it means scrolling forever. */
+  --panel-max-h: 60vh;
+}
+
+/* --- Base ----------------------------------------------------------------- */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* Author display rules (button, badges, ...) beat the UA stylesheet's
+   `[hidden] { display: none }`, so an element carrying `hidden` could still
+   render. Restate what hidden means at author level, once. */
+[hidden] { display: none !important; }
+
+html { background-color: var(--bg-color); color-scheme: dark; }
+
+body {
+  background-color: var(--bg-color);
+  color: var(--terminal-fg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.6;
+  min-height: 100vh;
+  padding: 1.5rem 1rem;
+  overflow-x: hidden;
+}
+
+/* A sensible default column; size to taste. */
+.screen { max-width: 1100px; margin: 0 auto; }
+
+h1, h2, h3 { font-weight: 700; letter-spacing: 0.02em; }
+h1 { font-size: 1.35rem; margin-bottom: 0.4rem; }
+h2 {
+  font-size: 1.05rem;
+  margin: 2rem 0 0.9rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px dashed var(--window-border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+h2::before { content: "//"; color: var(--ansi-blue); opacity: 0.8; }
+h3 { font-size: 0.95rem; margin-bottom: 0.5rem; }
+
+a { color: var(--ansi-blue); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.muted { color: var(--terminal-dim); }
+.small { font-size: 0.82rem; }
+.hint { font-size: 0.76rem; color: var(--terminal-dim); margin-top: 0.3rem; }
+
+/* --- The window ----------------------------------------------------------- */
+.terminal-window {
+  background: var(--window-bg);
+  border: 1px solid var(--window-border);
+  border-radius: 12px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px var(--terminal-glow);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  overflow: hidden;
+}
+
+.terminal-header {
+  background: var(--header-bg);
+  border-bottom: 1px solid var(--window-border);
+  padding: 0.7rem 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  user-select: none;
+  flex-wrap: wrap;
+}
+/* Equal flex basis either side keeps the centre item truly centred on the
+   window, not on whatever room the dots and the stat happened to leave. */
+.window-controls, .window-stats { flex: 1 1 0; min-width: 0; }
+.window-controls { display: flex; gap: 8px; flex-shrink: 0; }
+.window-stats {
+  justify-content: flex-end;
+  font-size: 0.78rem;
+  opacity: 0.7;
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.window-dot { width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--terminal-fg); }
+.window-dot.close { background-color: rgba(255, 100, 100, 0.25); }
+.window-dot.minimize { background-color: rgba(255, 200, 100, 0.25); }
+.window-dot.maximize { background-color: rgba(100, 255, 100, 0.25); }
+
+.wordmark {
+  flex: 0 0 auto;
+  text-align: center;
+  text-decoration: none;
+  color: var(--terminal-fg);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  font-size: 0.9rem;
+}
+.wordmark:hover { text-decoration: none; }
+.wordmark .o-blue { color: var(--portal-blue); text-shadow: 0 0 8px var(--portal-blue); }
+.wordmark .o-orange { color: var(--portal-orange); text-shadow: 0 0 8px var(--portal-orange); }
+
+.terminal-body { padding: 1.75rem; }
+
+.terminal-footer {
+  border-top: 1px dashed var(--window-border);
+  margin-top: 2rem;
+  padding-top: 1rem;
+  font-size: 0.75rem;
+  color: var(--terminal-dim);
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+/* The footer sits inside .terminal-body in the portal; give it side padding
+   if yours does not. */
+
+.cursor::after {
+  content: "_";
+  animation: blink 1.1s step-end infinite;
+  color: var(--ansi-blue);
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+/* --- Nav tabs ------------------------------------------------------------- */
+.nav-tabs {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  border-bottom: 1px dashed var(--window-border);
+  padding-bottom: 1rem;
+  margin-bottom: 1.75rem;
+}
+.tab-btn {
+  background: transparent;
+  border: none;
+  color: var(--terminal-dim);
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: pointer;
+  padding: 0.2rem 0.3rem;
+  transition: all 0.2s ease;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.tab-btn::before { content: "[ "; opacity: 0.5; }
+.tab-btn::after { content: " ]"; opacity: 0.5; }
+.tab-btn:hover, .tab-btn.active { color: var(--ansi-blue); text-shadow: 0 0 8px rgba(56, 189, 248, 0.3); text-decoration: none; }
+.tab-btn .nav-count { color: var(--ansi-yellow); font-size: 0.75rem; vertical-align: super; }
+
+/* --- Panels --------------------------------------------------------------- */
+.card, .panel {
+  border: 1px solid var(--window-border);
+  border-radius: 8px;
+  padding: 1.25rem;
+  background: var(--panel-bg);
+  margin-bottom: 1rem;
+}
+
+.banner-alert {
+  border: 1px solid var(--ansi-yellow);
+  border-radius: 8px;
+  padding: 0.85rem 1.1rem;
+  background: rgba(255, 200, 60, 0.07);
+  color: var(--ansi-yellow);
+  margin-bottom: 1.25rem;
+  font-size: 0.9rem;
+}
+.banner-alert a { color: var(--ansi-yellow); text-decoration: underline; }
+
+/* Any list or block that can grow without bound: cap it and let it scroll. */
+.scroll-cap {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  max-height: var(--panel-max-h);
+}
+.scroll-cap::-webkit-scrollbar { width: 8px; }
+.scroll-cap::-webkit-scrollbar-thumb {
+  background: var(--window-border);
+  border-radius: 4px;
+}
+.scroll-cap::-webkit-scrollbar-thumb:hover { background: var(--terminal-dim); }
+
+/* --- Badges & indicator dots ---------------------------------------------- */
+.badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+  border: 1px solid var(--window-border);
+  color: var(--terminal-dim);
+  text-shadow: none;
+  white-space: nowrap;
+}
+.badge::before { content: "["; opacity: 0.55; }
+.badge::after { content: "]"; opacity: 0.55; }
+
+/* Colour a badge (or anything else) by state. */
+.accent-blue { color: var(--ansi-blue); border-color: var(--ansi-blue); }
+.accent-cyan { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
+.accent-green { color: var(--ansi-green); border-color: var(--ansi-green); }
+.accent-yellow { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+.accent-red { color: var(--ansi-red); border-color: var(--ansi-red); }
+.accent-magenta { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
+.accent-dim { color: var(--terminal-dim); border-color: var(--terminal-dim); }
+
+.dot {
+  display: inline-block;
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  margin-right: 0.45rem;
+  background: var(--terminal-dim);
+}
+.dot.ok { background: var(--ansi-green); box-shadow: 0 0 8px var(--ansi-green); }
+.dot.err { background: var(--ansi-red); box-shadow: 0 0 8px var(--ansi-red); }
+.dot.warn { background: var(--ansi-yellow); box-shadow: 0 0 8px var(--ansi-yellow); }
+
+/* --- Forms ---------------------------------------------------------------- */
+.field { margin-bottom: 0.9rem; }
+label { display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.35rem; }
+
+input[type="text"], input[type="number"], input[type="password"], textarea, select {
+  width: 100%;
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  color: var(--terminal-fg);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  min-height: var(--control-h);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+input[type="text"], input[type="number"], input[type="password"], select {
+  height: var(--control-h);
+}
+/* Native select chrome sizes itself off the font and ignores padding;
+   appearance:none hands the box back, and the arrow is drawn in CSS. */
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  padding-right: 1.9rem;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--terminal-dim) 50%),
+    linear-gradient(135deg, var(--terminal-dim) 50%, transparent 50%);
+  background-position: right 1.05rem center, right 0.75rem center;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  background-repeat: no-repeat;
+}
+select:disabled { opacity: 0.5; }
+select option { background: var(--bg-color); color: var(--terminal-fg); }
+input:focus, textarea:focus, select:focus {
+  border-color: var(--ansi-blue);
+  box-shadow: 0 0 6px rgba(56, 189, 248, 0.25);
+}
+textarea { resize: vertical; line-height: 1.5; max-height: var(--panel-max-h); }
+
+.checkbox-row { display: flex; align-items: center; gap: 0.6rem; }
+.checkbox-row input[type="checkbox"] { width: auto; accent-color: var(--ansi-blue); }
+.checkbox-row label { margin: 0; }
+
+/* --- Buttons -------------------------------------------------------------- */
+button, .btn {
+  background: rgba(56, 189, 248, 0.1);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.45rem 1rem;
+  color: var(--ansi-blue);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-shadow: none;
+  /* inline-flex + shared height keeps a <label class="btn"> exactly as tall
+     as the <button> beside it. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-h);
+  line-height: 1;
+}
+button:hover, .btn:hover {
+  background: var(--ansi-blue);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
+  text-decoration: none;
+}
+button.secondary, .btn.secondary { color: var(--terminal-dim); background: rgba(148, 163, 184, 0.06); }
+button.secondary:hover, .btn.secondary:hover { background: var(--terminal-dim); color: var(--bg-color); box-shadow: none; }
+button.danger, .btn.danger { color: var(--ansi-red); background: rgba(255, 110, 110, 0.08); }
+button.danger:hover, .btn.danger:hover {
+  background: var(--ansi-red);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(255, 110, 110, 0.3);
+}
+/* "go" - the affirmative action on a form, green so the eye lands on it. */
+button.go, .btn.go {
+  color: var(--ansi-green);
+  background: rgba(74, 222, 128, 0.1);
+  border-color: rgba(74, 222, 128, 0.45);
+}
+button.go:hover, .btn.go:hover {
+  background: var(--ansi-green);
+  color: var(--bg-color);
+  box-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
+}
+button.small, .btn.small { padding: 0.2rem 0.6rem; font-size: 0.75rem; height: 1.8rem; }
+
+.button-row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }
+
+/* --- Tables --------------------------------------------------------------- */
+table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+th, td { text-align: left; padding: 0.45rem 0.6rem; border-bottom: 1px solid var(--window-border); vertical-align: top; }
+th { color: var(--terminal-dim); font-weight: 600; }
+
+/* --- Optional: CRT scanlines ---------------------------------------------- */
+/* Add class="scan-all" to <body> for the full-screen texture. */
+:root {
+  --scanlines:
+    linear-gradient(rgba(18, 16, 16, 0) 50%, rgba(0, 0, 0, 0.25) 50%),
+    linear-gradient(90deg, rgba(255, 0, 0, 0.05), rgba(0, 255, 0, 0.02), rgba(0, 0, 255, 0.05));
+  --scanlines-size: 100% 3px, 3px 100%;
+}
+body.scan-all::before {
+  content: " ";
+  position: fixed;
+  inset: 0;
+  background: var(--scanlines);
+  background-size: var(--scanlines-size);
+  z-index: 9999;
+  pointer-events: none;
+}

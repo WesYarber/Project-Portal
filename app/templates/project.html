@@ -1,0 +1,780 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }} - Project Portal{% endblock %}
+{% block header_stat %}{{ project.slug }}{% endblock %}
+{% block content %}
+
+{# A sub-project's link home. Above the title rather than below it, because
+   "which project is this part of" is the question you have on arriving from a
+   dashboard where two sibling cards look alike. #}
+<p class="small muted">
+  <a href="/">&larr; dashboard</a>
+  {% if parent %}&middot; part of <a href="/project/{{ parent.slug }}">{{ parent.title }}</a>{% endif %}
+</p>
+{# Click the name to rename the project. The heading is the control - there is
+   no pencil icon, because the thing you would click a pencil to edit is right
+   there and clicking it is the obvious guess.
+
+   It renames the project and nothing else: the workspace folder is a short
+   directory name that no longer tracks the title, so this cannot move a
+   directory an agent is working in.
+
+   With scripting off the <h1> is just an <h1> and the title field in the
+   details editor below still works, so nothing is lost. #}
+<form method="post" action="/project/{{ project.slug }}/rename" class="title-rename">
+  <h1 class="project-title" data-rename-title
+      title="click to rename">{{ project.title }}</h1>
+  <input type="text" name="title" value="{{ project.title }}"
+         aria-label="project title" maxlength="200" hidden>
+  <p class="hint" data-rename-hint hidden>
+    Enter to save, Escape to cancel. Renaming here locks the title, so agents
+    stop renaming it - untick that in the details editor to hand it back.
+  </p>
+</form>
+<p class="small muted">
+  /{{ project.slug }} &middot; {{ project.kind }} &middot;
+  created {{ project.created_at|timeago }} &middot; updated {{ project.updated_at|timeago }}
+</p>
+
+{# What happened while you were away: one line per agent run, newest first,
+   ending at the last time you pressed acknowledged. It is the first thing on
+   the page because it is the thing you open a project to find out - and it
+   disappears entirely once read, so it costs nothing on a project you are
+   simply looking at. #}
+{% if unacked_work %}
+<div class="work-summary" id="work-summary">
+  <h2 class="work-summary-head">since you last looked</h2>
+  <ul class="work-summary-list">
+    {% for run in unacked_work %}
+    <li>
+      <ul class="work-summary-text">
+        {% for bullet in run.bullets %}
+        {% set sb = summary_bullet(bullet) %}
+        <li{% if sb.kind == 'note' %} class="is-note"{% endif %}>{{ sb.text }}</li>
+        {% endfor %}
+      </ul>
+      <a class="small muted" href="/run/{{ run.id }}">{{ run.ended_at|timeago }}</a>
+    </li>
+    {% endfor %}
+  </ul>
+  <form method="post" action="/project/{{ project.slug }}/acknowledge">
+    <button type="submit" class="btn secondary">acknowledged</button>
+  </form>
+</div>
+{% endif %}
+
+{# A question, not a work request: read-only, no run, no budget. The answer
+   lands in the journal a minute or two later - the page is not held open for
+   it, so nothing is lost by navigating away.
+
+   It sits at the top because asking is the cheapest thing you can do here, but
+   it stays folded to a button: it is a thing you reach for, not a box that
+   should be occupying the space above the project every time you open it. #}
+<details class="ask-block" id="ask" {{ 'open' if ask_pending }}>
+  <summary class="btn secondary ask-open">ask project</summary>
+  <div class="card">
+    <form method="post" action="/project/{{ project.slug }}/ask" class="ask-form">
+      <div class="field">
+        <textarea name="question" rows="2" enterkeyhint="enter"
+                  placeholder="Ask about this project without setting anything in motion..."></textarea>
+      </div>
+      {% if ask_pending %}
+      <p class="small muted" data-ask-pending>thinking... the answer will appear in the journal below.</p>
+      {% else %}
+      <p class="hint">Reads the workspace and answers. It can't change anything, it doesn't use a run, and it stays out of the journal an agent run reads &ndash; highlight text in the journal to ask about a specific passage.</p>
+      {% endif %}
+      <button type="submit" class="btn secondary" {{ 'disabled' if ask_pending else '' }}>ask</button>
+    </form>
+  </div>
+</details>
+
+<div class="card">
+  {# One row of identically-shaped controls: same width, same label position,
+     same height, each submitting on change. The status control is tinted to
+     its own colour so the project's state reads at a glance.
+
+     No runs/day cap control here: Wes never sets per-project caps, so the
+     surface came off the page. The POST route and the worker's enforcement
+     still exist for a cap set elsewhere (Telegram, the DB). #}
+  <div class="control-bar">
+    {% set state = display_state(project) %}
+    <form method="post" action="/project/{{ project.slug }}/status" class="control control-status">
+      <label for="status">status</label>
+      <select id="status" name="status" class="status-select status-{{ state }}"
+              onchange="this.form.submit()">
+        {% for value, label in status_choices(state) %}
+        <option value="{{ value }}" data-opt-class="status-{{ value }}" {{ 'selected' if value == state else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <form method="post" action="/project/{{ project.slug }}/priority" class="control control-priority">
+      <label for="priority">priority</label>
+      <select id="priority" name="priority" onchange="this.form.submit()">
+        {% for p in range(9, -1, -1) %}
+        <option value="{{ p }}" data-opt-class="prio-{{ 'high' if p >= 7 else ('mid' if p >= 4 else 'low') }}" {{ 'selected' if p == project.priority else '' }}>{{ p }}</option>
+        {% endfor %}
+      </select>
+    </form>
+    <form method="post" action="/project/{{ project.slug }}/model" class="control control-model">
+      <label for="model">agent</label>
+      <select id="model" name="model" onchange="this.form.submit()">
+        <option value="" {{ 'selected' if not project.model else '' }}>inherit ({{ global_model }})</option>
+        {% for value, label in MODEL_CHOICES %}
+        <option value="{{ value }}" {{ 'selected' if value == project.model else '' }}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <p class="hint control-hint">
+    runs use <strong>{{ effective_model }}</strong> &middot;
+    {{ runs_today }} run{{ 's' if runs_today != 1 }} today on this project &middot;
+    {{ usage.runs_today }}/{{ usage.max_runs }} portal-wide
+  </p>
+
+  {% if suggested_slug %}
+  <div class="slug-suggestion">
+    <p>
+      This project's folder is still <code>{{ project.slug }}</code>, cut from the idea
+      you first typed. Tidy it to <code>{{ suggested_slug }}</code> to match the title?
+    </p>
+    <form method="post" action="/project/{{ project.slug }}/tidy-slug" class="button-row">
+      <button type="submit" name="action" value="apply" class="go">rename the folder</button>
+      <button type="submit" name="action" value="dismiss" class="secondary">keep it as it is</button>
+    </form>
+  </div>
+  {% endif %}
+
+  {# The description is shown read-only until you open the editor, because it
+     is the thing you read on this page far more often than you edit it. #}
+  <details class="details-editor" {{ 'open' if not project.description else '' }}>
+    <summary>
+      {% if project.description %}
+      <div class="content">{{ project.description|markdown|safe }}</div>
+      {% else %}
+      <span class="empty-state">No description - click to write one.</span>
+      {% endif %}
+      <span class="edit-hint">edit</span>
+    </summary>
+
+    <form method="post" action="/project/{{ project.slug }}/details" class="stack">
+      <div class="field">
+        <label for="title">title</label>
+        <input type="text" id="title" name="title" value="{{ project.title }}" required>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="title_locked" name="title_locked" {{ 'checked' if project.title_locked }}>
+        <label for="title_locked">lock the title - agents stop renaming it</label>
+      </div>
+      <div class="field">
+        <label for="description">description</label>
+        <textarea id="description" name="description" rows="5">{{ project.description }}</textarea>
+        <p class="hint">Markdown. Agents keep this current as the project changes.</p>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="description_locked" name="description_locked" {{ 'checked' if project.description_locked }}>
+        <label for="description_locked">lock the description - agents stop rewriting it</label>
+      </div>
+      <div class="field">
+        <label for="new_slug">workspace folder</label>
+        <input type="text" id="new_slug" name="new_slug" value="{{ project.slug }}"
+               {{ 'readonly' if project.slug == META_PROJECT_SLUG }}>
+        <p class="hint">
+          {% if project.slug == META_PROJECT_SLUG %}
+          The portal's own project keeps its folder name.
+          {% else %}
+          Renames <code>data/projects/{{ project.slug }}</code> on disk. Not while an agent is running.
+          {% endif %}
+        </p>
+      </div>
+      <div class="field">
+        <label for="preview_url">where to open it</label>
+        <input type="url" id="preview_url" name="preview_url" placeholder="http://{{ SITE.host }}:3000"
+               value="{{ project.preview_url or '' }}">
+        <p class="hint">
+          Only needed if this project runs its own server. A workspace with an
+          <code>index.html</code> in it gets an <strong>open it</strong> button
+          with nothing filled in here. Empty this box to take the button away.
+        </p>
+      </div>
+      <div class="button-row"><button type="submit">save details</button></div>
+    </form>
+  </details>
+
+  {% if project.initial_idea and project.initial_idea != project.description %}
+  <details class="original-idea">
+    <summary>the original idea</summary>
+    <div class="content">{{ project.initial_idea|markdown|safe }}</div>
+  </details>
+  {% endif %}
+
+  {# The build gate. Agents triage and plan on their own; writing this
+     project's code waits here until Wes says go. #}
+  {% if build_gated %}
+  <div class="approve-build">
+    <p><strong>Waiting for your OK to build.</strong> An agent can keep planning and
+      researching this, but it won't write code until you approve it.</p>
+    <form method="post" action="/project/{{ project.slug }}/approve-build" class="inline-form">
+      <button type="submit" class="btn go">approve build &amp; run agent</button>
+    </form>
+  </div>
+  {% elif project.build_approved %}
+  <p class="hint">Build approved - agents write code here.</p>
+  {% endif %}
+
+  {# The action row. One height for every button in it (no .small here - a
+     row of three buttons at two different heights reads as a mistake), and
+     `pause building` sits between running and queueing because that is the
+     order of commitment: do it now, stop doing it, do it when it is free. #}
+  <div class="button-row action-row">
+    {# "Open what was built", first in the row because it is the only button
+       here that is not about running an agent - it is the payoff. Opens in a
+       new tab: it is a different origin (the preview server on its own port),
+       and losing the project page to it would be wrong. #}
+    {# Through /open/<slug>, not straight at the target: that route probes an
+       explicit preview_url first and STARTS the server (per .portal/serve.json)
+       when nothing answers - Wes's "when I click it, it should surely open a
+       working version". For a portal-served static page it is one redirect. #}
+    {% if preview_link %}
+    <a class="btn go preview-open" href="/open/{{ project.slug }}" target="_blank" rel="noopener"
+       title="{{ preview_link.hint }}">open it &#8599;</a>
+    {% endif %}
+    <form method="post" action="/project/{{ project.slug }}/run" class="inline-form">
+      <button type="submit" {{ 'disabled' if active_run.active }}>
+        {% if active_run.active %}agent running...{% elif build_gated %}run planning pass{% else %}run agent now{% endif %}
+      </button>
+    </form>
+    {# `active_run` on this page is already narrowed to this project's own run
+       (see project_page), so stopping someone else's run from here is not
+       possible even while other agents work in parallel. #}
+    {% if active_run.active %}
+    <form method="post" action="/run/{{ active_run.run_id }}/cancel" class="inline-form">
+      <input type="hidden" name="next" value="/project/{{ project.slug }}">
+      <button type="submit" class="btn danger">stop this run</button>
+    </form>
+    {% endif %}
+    {% if project.build_approved and not build_gated %}
+    <form method="post" action="/project/{{ project.slug }}/revoke-build" class="inline-form"
+          data-confirm="Pause building on {{ project.slug }}? Agents will plan but not write code.">
+      <button type="submit" class="btn secondary">pause building</button>
+    </form>
+    {% endif %}
+    {# A research burst is deliberately not a "run now" button: it queues the
+       project for the next window where weekly allowance is about to expire,
+       so it spends nothing Wes would otherwise have used. #}
+    {% if research_queued %}
+    <form method="post" action="/project/{{ project.slug }}/research" class="inline-form">
+      <input type="hidden" name="queued" value="0">
+      <button type="submit" class="btn secondary">cancel research burst</button>
+    </form>
+    {% else %}
+    <form method="post" action="/project/{{ project.slug }}/research" class="inline-form">
+      <button type="submit" class="btn secondary">queue research burst</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if research_queued %}
+  <p class="hint research-queued">
+    Queued for a deep research burst on <strong>{{ research_model }}</strong>
+    {%- if spending_down %} - a spend-down window is open, so it starts within a minute.
+    {%- else %} - it starts the next time weekly Claude allowance is about to expire.{% endif %}
+    It writes RESEARCH.md and changes no code.
+  </p>
+  {% endif %}
+</div>
+
+{# data-run-id drives the poller in app.js; when the run is live it appends new
+   log bytes by offset, so the box scrolls like a real terminal.
+
+   Folded shut unless an agent is actually working. Between runs this is a wall
+   of last-run transcript sitting between the project and its questions, and
+   the summary in the journal is the version worth reading; open it when you
+   want the raw thing. A live run forces it open, because then it is the most
+   interesting thing on the page. #}
+<details class="fold-section console-details" id="agent-console-details" {{ 'open' if active_run.active }}>
+  <summary>
+    <span class="fold-section-label">Agent console</span>
+    {% if active_run.active %}
+    <span class="dot running"></span><span class="muted small">{{ active_run.task }}</span>
+    {% elif console_run_id %}
+    <span class="muted small">last run transcript</span>
+    {% else %}
+    <span class="muted small">no runs yet</span>
+    {% endif %}
+  </summary>
+  <div class="card console-card {{ 'live' if active_run.active }}" id="agent-console"
+       data-run-id="{{ console_run_id or '' }}" data-live="{{ '1' if active_run.active else '0' }}">
+    <div class="console-head">
+      {% if active_run.active %}
+      <span class="dot running"></span>
+      <strong>{{ active_run.task }}</strong>
+      <span class="muted small" id="console-meta">{{ active_run.model }} &middot; {{ active_run.elapsed }} &middot; {{ active_run.events }} events</span>
+      {% elif console_run_id %}
+      <span class="dot"></span><span class="muted">last run transcript</span>
+      {% else %}
+      <span class="dot"></span><span class="muted">no runs yet</span>
+      {% endif %}
+    </div>
+    <pre class="console-out" id="console-out">{{ console_text or '(nothing yet)' }}</pre>
+  </div>
+</details>
+
+{# Sub-projects. Only ever shown on a top-level project: a child cannot be split
+   again, so on a child this whole block is absent rather than present-and-
+   disabled, which would read as something that had gone wrong. #}
+{% if can_split %}
+<details class="fold-section" id="subprojects" {{ 'open' if children }}>
+  <summary>
+    <span class="fold-section-label">Sub-projects</span>
+    <span class="muted small">
+      {%- if children %}{{ children|length }} piece{{ 's' if children|length != 1 else '' }}
+      {%- else %}none yet{% endif -%}
+    </span>
+  </summary>
+
+  {% if children %}
+  <div class="project-grid">
+    {% for c in children %}
+    {% set cq = child_question_counts.get(c.id, 0) %}
+    <a class="project-cell sub {{ 'needs-attention' if cq }}" href="/project/{{ c.slug }}">
+      {% if cq %}<span class="cell-alert">{{ cq }}</span>{% endif %}
+      <span class="cell-title">{{ c.title }}</span>
+      {% if c.description %}<span class="cell-desc">{{ c.description }}</span>{% endif %}
+      <span class="cell-foot">
+        <span class="badge status-{{ display_state(c) }}">{{ display_state(c)|status_badge }}</span>
+        <span>{{ c.slug }} &middot; p{{ c.priority }} &middot; {{ c.updated_at|timeago }}</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+  <p class="small muted">
+    Each one is a project in its own right: its own workspace, journal, todo
+    list and agent runs. Nothing here is shared with them.
+  </p>
+  {% else %}
+  <p class="small muted">
+    Split this into sub-projects if it is really several independent pieces -
+    one per game, one per device - that each want their own context. Each
+    becomes a project of its own, starting empty and in the backlog, so naming
+    one does not commit you to building it. An agent can propose them too.
+  </p>
+  {% endif %}
+
+  <form method="post" action="/project/{{ project.slug }}/subproject" class="split-form">
+    <input type="text" name="title" placeholder="sub-project name" maxlength="200"
+           aria-label="sub-project name" required>
+    <input type="text" name="description" placeholder="what it is (optional)"
+           aria-label="sub-project description">
+    <button type="submit">split it out</button>
+  </form>
+
+  {# The other direction: this whole project becomes someone else's piece.
+     Hidden while it has children of its own - one level deep, always. #}
+  {% if can_become_child and adopt_parents %}
+  <form method="post" action="/project/{{ project.slug }}/make-subproject" class="convert-form">
+    <span class="small muted">or make this whole project a sub-project of</span>
+    <select name="parent_id" aria-label="new parent project">
+      {% for p in adopt_parents %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}
+    </select>
+    <button type="submit">convert</button>
+  </form>
+  <p class="small muted">
+    Nothing is lost converting: the journal, todos, questions, runs and files
+    all come along, and the workspace folder is renamed to the family scheme
+    (<code>parent-name</code>).
+  </p>
+  {% endif %}
+</details>
+
+{% elif parent %}
+{# A sub-project's view of its family: where it belongs, and the two moves it
+   can make - back to top level, or under a different parent. #}
+<details class="fold-section" id="family">
+  <summary>
+    <span class="fold-section-label">Sub-project of {{ parent.title }}</span>
+  </summary>
+  <p class="small muted">
+    This project is a piece of
+    <a href="/project/{{ parent.slug }}">{{ parent.title }}</a>. Its workspace,
+    journal, todo list and runs are all its own - only the dashboard grouping
+    and the run prompt's family context come from the parent. Moving it never
+    loses anything.
+  </p>
+  <div class="button-row family-moves">
+    <form method="post" action="/project/{{ project.slug }}/release" class="inline-form">
+      <button type="submit">make it top-level again</button>
+    </form>
+    {% if adopt_parents %}
+    <form method="post" action="/project/{{ project.slug }}/make-subproject" class="inline-form convert-form">
+      <select name="parent_id" aria-label="new parent project">
+        {% for p in adopt_parents %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}
+      </select>
+      <button type="submit">move it there</button>
+    </form>
+    {% endif %}
+  </div>
+</details>
+{% endif %}
+
+{% if questions %}
+<h2>Open questions</h2>
+{% for q in questions %}
+<div class="card">
+  <p><strong>Q{{ q.slot if q.slot is not none else q.id }}</strong> {{ q.question }}</p>
+  {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
+  <form method="post" action="/questions/{{ q.id }}/answer" style="margin-top:0.7rem;">
+    <div class="field">
+      <textarea name="answer" rows="3" required placeholder="Your answer..."></textarea>
+    </div>
+    <div class="button-row">
+      <button type="submit">answer</button>
+      {# formnovalidate: the textarea is `required`, and without this the
+         browser blocks the submit and dismiss silently does nothing. #}
+      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/dismiss"
+              class="secondary">dismiss</button>
+    </div>
+  </form>
+</div>
+{% endfor %}
+{% endif %}
+
+{% if dismissed_questions %}
+<details class="dismissed-questions">
+  <summary>dismissed questions ({{ dismissed_questions|length }})</summary>
+  {% for q in dismissed_questions %}
+  <div class="card">
+    <p>{{ q.question }}</p>
+    {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
+    <div class="button-row">
+      <form method="post" action="/questions/{{ q.id }}/reopen">
+        <button type="submit" class="secondary small">reopen</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</details>
+{% endif %}
+
+{# The working checklist. Split by who has to do the thing, because the two
+   halves are read for different reasons: the agent's half is a backlog, and
+   Wes's half is the list of things nothing can proceed without. #}
+<h2 id="todos">Todo</h2>
+<div class="card todo-card">
+  {# scroll-cap: taller than TODO_VISIBLE_ROWS rows and the list gets its own
+     scrollbar instead of pushing the rest of the page down. The row height is
+     pinned in CSS so the cap is an exact number of items, not an estimate. #}
+  {% macro todo_list(items, empty) %}
+  {% if items %}
+  <ul class="todo-list scroll-cap scroll-cap-todo">
+    {% for t in items %}
+    <li class="todo-item {{ 'done' if t.done }}">
+      <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle">
+        {# A checkbox that submits on change, with the target state posted
+           explicitly so a double-tap can't flip it back. #}
+        <input type="hidden" name="done" value="{{ '0' if t.done else '1' }}">
+        <input type="checkbox" {{ 'checked' if t.done }} onchange="this.form.submit()"
+               aria-label="{{ 'reopen' if t.done else 'complete' }} {{ t.text }}">
+      </form>
+      {# Chips sit beside the text, not inside it: .done strikes .todo-text
+         with a line-through no descendant could cancel. #}
+      <span class="todo-text">{{ t.text }}</span>
+      {%- for tag in todo_tags(t) %}
+      <span class="todo-tag{{ ' tag-blocked' if tag == 'blocked' }}{{ ' tag-ready' if tag.startswith('ready') }}">{{ tag }}<form method="post" action="/todo/{{ t.id }}/tag" class="inline-form"><input type="hidden" name="remove" value="{{ tag }}"><button type="submit" class="tag-x" title="remove tag '{{ tag }}'">&times;</button></form></span>
+      {%- endfor %}
+      {% if not t.done %}
+      {# The + swaps to a tiny input via app.js; `hidden` is JS-owned, so a
+         live-refresh morph can't slam the input shut mid-type. #}
+      <span class="tag-add">
+        <button type="button" class="tag-add-btn" data-act="tag-add" data-id="{{ t.id }}"
+                title="tag this item">+tag</button>
+        <form method="post" action="/todo/{{ t.id }}/tag" class="inline-form tag-add-form" hidden>
+          <input type="text" name="add" placeholder="tag" maxlength="24" size="9" required
+                 aria-label="new tag for: {{ t.text }}">
+        </form>
+      </span>
+      {% endif %}
+      <form method="post" action="/todo/{{ t.id }}/delete" class="inline-form"
+            data-confirm="Delete this todo?">
+        <button type="submit" class="todo-del" title="delete">&times;</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">{{ empty }}</p>
+  {% endif %}
+  {% endmacro %}
+
+  <h3 class="todo-head">For the agent
+    {% if agent_todos %}<span class="muted small">{{ agent_todos|rejectattr('done')|list|length }} open</span>{% endif %}
+  </h3>
+  {{ todo_list(agent_todos, "Nothing on the agent's list.") }}
+
+  <h3 class="todo-head">For you
+    {% if user_todos %}<span class="muted small">{{ user_todos|rejectattr('done')|list|length }} open</span>{% endif %}
+  </h3>
+  {{ todo_list(user_todos, "Nothing waiting on you.") }}
+
+  <form method="post" action="/project/{{ project.slug }}/todo" class="todo-add">
+    <input type="text" name="text" placeholder="Add a todo..." required>
+    <select name="owner" aria-label="whose todo">
+      <option value="agent">for the agent</option>
+      <option value="user">for me</option>
+    </select>
+    <button type="submit" class="btn secondary">add</button>
+  </form>
+
+  {# Completed items leave the live list either when you sweep them away here
+     or on their own after 16 hours. Neither deletes anything - the history
+     link is the promise that makes a one-click sweep safe. #}
+  <div class="todo-foot">
+    {% if clearable_todos %}
+    <form method="post" action="/project/{{ project.slug }}/todos/clear-completed" class="inline-form">
+      <button type="submit" class="btn secondary small">clear {{ clearable_todos }} completed</button>
+    </form>
+    {% endif %}
+    {% if hidden_done_todos %}
+    <a class="small muted" href="/project/{{ project.slug }}/todos/history">{{ hidden_done_todos }} completed earlier &rarr;</a>
+    {% else %}
+    <a class="small muted" href="/project/{{ project.slug }}/todos/history">completed history</a>
+    {% endif %}
+  </div>
+  <p class="hint">The agent's list goes into every run prompt, so an item here
+    outlives the context window it was asked in. Ticked-off items drop off this
+    list after 16 hours, or as soon as you clear them.</p>
+</div>
+
+<h2>Add note</h2>
+<div class="card">
+  {# multipart, with a real <input type=file>: drag-and-drop, paste and the
+     voice recorder all work by putting files *into this input*, so the browser's
+     own submit carries them. With scripting off you still get a working file
+     picker (which on a phone is the camera / gallery / files chooser). #}
+  <form method="post" action="/project/{{ project.slug }}/note"
+        enctype="multipart/form-data" class="note-form" data-dropzone>
+    <div class="field">
+      {# enterkeyhint=enter asks a phone keyboard for a return key rather than a
+         "go" key: on mobile Enter must insert a newline, never submit. #}
+      <textarea name="note" rows="3" enterkeyhint="enter"
+                placeholder="A note for the agent to read on its next run... (drag files in, or paste a screenshot)"></textarea>
+    </div>
+    {# One row: attach, record and submit are the three things you can do with
+       this form, so they sit on one line at one height rather than the submit
+       button hanging below on its own. #}
+    <div class="attach-row">
+      <label class="btn secondary file-btn">
+        attach files
+        {# data-max-bytes is only used to complain about an oversized file at
+           the moment one is chosen; the real limit is enforced server-side. #}
+        <input type="file" name="files" multiple accept="*/*"
+               data-max-bytes="{{ max_upload_bytes }}" data-max-label="{{ max_upload }}">
+      </label>
+      <button type="button" class="btn secondary" data-record hidden>record audio</button>
+      <span class="small muted" data-attach-status></span>
+      {# Which submit was pressed arrives as then=... with the form - no
+         JavaScript. Wes's order, right-justified with "add note" on the far
+         right: run now / queue quietly / the plain green default. DOM order can
+         match the visual order because this form has no single-line text
+         input, so there is no Enter-to-submit path that would fire the first
+         button. "add & run now" sets the project building (which is also the
+         build approval) and starts a run in one press; "queue & don't run"
+         stores the note without waking a parked project or starting anything,
+         for when he is stacking thoughts rather than dispatching one. #}
+      <button type="submit" name="then" value="run" class="btn secondary note-actions"
+              title="Add this note, switch the project to building, and start an agent run now">
+        add &amp; run now
+      </button>
+      <button type="submit" name="then" value="queue" class="btn secondary"
+              title="Add this note for the agent's next run - don't wake the project or start a run">
+        queue &amp; don't run
+      </button>
+      <button type="submit" class="btn go">add note</button>
+    </div>
+  </form>
+</div>
+
+{# Attachments only exist as a section when there are some. Most projects have
+   none, and an empty card here was a permanent reminder of a feature rather
+   than a place anything lived. Dropping a file on the note box above is what
+   creates it. #}
+{% if attachments %}
+{# Folded by default: on a project with a few screenshots the grid is the
+   tallest thing on the page, and it is a store, not a feed. The count is in
+   the summary so it can be checked without opening it. #}
+<details class="fold-section attach-block" id="attachments">
+  <summary>
+    <span class="fold-section-label">Attachments</span>
+    <span class="muted small">{{ attachments|length }} file{{ 's' if attachments|length != 1 else '' }}</span>
+  </summary>
+<div class="card">
+  <ul class="attach-grid">
+    {% for a in attachments %}
+    {% set kind = media_kind(a.mime) %}
+    <li class="attach-item kind-{{ kind }}">
+      {% if kind == 'image' %}
+      <a href="/attachment/{{ a.id }}" target="_blank" rel="noopener">
+        <img src="/attachment/{{ a.id }}" alt="{{ a.orig_name }}" loading="lazy">
+      </a>
+      {% elif kind == 'audio' %}
+      <audio controls preload="none" src="/attachment/{{ a.id }}"></audio>
+      {% elif kind == 'video' %}
+      <video controls preload="metadata" src="/attachment/{{ a.id }}"></video>
+      {% else %}
+      <a class="attach-blob" href="/attachment/{{ a.id }}">file</a>
+      {% endif %}
+      <div class="attach-meta small">
+        <a href="/attachment/{{ a.id }}">{{ a.orig_name }}</a>
+        <span class="muted">{{ a.size|filesize }} &middot; {{ a.created_at|timeago }}</span>
+        <code class="muted">attachments/{{ a.stored_name }}</code>
+      </div>
+      <form method="post" action="/attachment/{{ a.id }}/delete"
+            data-confirm="Delete {{ a.orig_name }}? The agent will no longer see it.">
+        <button type="submit" class="btn danger small">delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="hint">The agent reads these from its working directory by relative path.</p>
+</div>
+</details>
+{% endif %}
+
+{# Foldable like the console and the attachments, with the file count in the
+   summary so it can be read without opening it. A workspace with a hundred
+   files was several screens of list sitting between the note box and the
+   journal.
+
+   Shut by default, like the folders inside it: the file count in the summary
+   is what you check most of the time, and opening it is the deliberate act of
+   going looking for a file. #}
+<details class="fold-section workspace-block" id="workspace">
+  <summary>
+    <span class="fold-section-label">Workspace</span>
+    <span class="muted small">{{ file_count }}{{ '+' if file_count_capped }} file{{ 's' if file_count != 1 else '' }}</span>
+  </summary>
+<div class="card">
+  {# A web page can't open a terminal for you, so it hands over the line to
+     paste. Shown as text as well as a copy button, because clipboard access is
+     blocked on plain http in some browsers and a button that silently does
+     nothing is worse than no button. #}
+  <div class="ssh-row">
+    <code class="ssh-command" id="ssh-command">{{ ssh_command }}</code>
+    <button type="button" class="btn secondary small" data-copy="#ssh-command">copy</button>
+  </div>
+  {% if tree_entries %}
+  {# The scroll cap sits on the wrapper, not on the list, so it stays a
+     ten-row window as folders are opened inside it - putting it on the <ul>
+     would let an expanded folder push the box open again. #}
+  <div class="file-tree-scroll scroll-cap scroll-cap-files">
+    {% with entries = tree_entries %}{% include "_file_tree.html" %}{% endwith %}
+  </div>
+  {% else %}
+  <p class="empty-state">No files in workspace yet.</p>
+  {% endif %}
+</div>
+</details>
+
+<h2>Journal</h2>
+{# What the Runs section used to be. The table it hid duplicated /activity row
+   for row, so all that is kept is the count and the link - the journal below
+   is the readable account of the same runs. #}
+<div class="journal-runs">
+  <p class="small muted">
+    {{ runs|length }} run{{ 's' if runs|length != 1 else '' }} on this project &middot;
+    <a href="/activity?project={{ project.slug }}">usage over time</a>
+  </p>
+  {% include "_heatmap.html" %}
+</div>
+{# Scrolls too, but at a far higher cap than the todo and file lists - the
+   journal is the thing you came to read, so its box is most of a screen tall
+   rather than a ten-line window onto it. #}
+{% if journal %}
+<div class="card scroll-cap scroll-cap-journal" id="journal">
+  {% for j in journal %}
+  {% set pending = note_pending(j) %}
+  {% set aside = is_side_thread(j.author, j.kind) %}
+  <div class="journal-entry from-{{ j.author }}{{ ' note-unsent' if pending }}{{ ' journal-aside' if aside }}">
+    <div class="meta">
+      <span class="badge author-{{ j.author }}">{{ j.author }}</span>
+      <span class="badge">{{ j.kind }}</span>
+      <span class="small muted">{{ j.ts|timeago }}</span>
+      {% if pending %}<span class="badge badge-unsent" title="No agent has read this yet, so you can still change it">not sent yet</span>{% endif %}
+      {# An ask runs in parallel and read-only, and is left out of the journal
+         tail a run reads (db.SIDE_THREAD) - so say so on the row, or the two
+         kinds of writing here look identical and a question reads as an
+         instruction. #}
+      {% if aside %}<span class="badge badge-aside" title="Asks are a side thread: read-only, and left out of the journal an agent run reads">side thread</span>{% endif %}
+    </div>
+    <div class="content">{{ j.content_md|markdown_media(project.slug)|safe }}</div>
+    {# Only offered while `delivered_at` is NULL. The moment this note goes into
+       a prompt the controls disappear, because from then on the note is part of
+       what an agent was told and editing it would make the journal disagree
+       with the run. The route re-checks; this is the affordance, not the guard. #}
+    {% if pending %}
+    <details class="note-edit">
+      <summary class="small">edit or remove this note</summary>
+      <form method="post" action="/project/{{ project.slug }}/note/{{ j.id }}/edit">
+        <textarea name="note" rows="4">{{ j.content_md }}</textarea>
+        <div class="note-edit-actions">
+          <button type="submit" class="small go">save</button>
+          <button type="submit" class="small danger"
+                  formaction="/project/{{ project.slug }}/note/{{ j.id }}/delete">delete</button>
+          <span class="small muted">it will be sent with any other unsent notes as one note</span>
+        </div>
+      </form>
+    </details>
+    {% endif %}
+    {% set jattach = journal_attachments.get(j.id) %}
+    {% if jattach %}
+    <ul class="attach-strip">
+      {% for a in jattach %}
+      {% set kind = media_kind(a.mime) %}
+      <li class="kind-{{ kind }}">
+        {% if kind == 'image' %}
+        <a href="/attachment/{{ a.id }}" target="_blank" rel="noopener"><img src="/attachment/{{ a.id }}" alt="{{ a.orig_name }}" loading="lazy"></a>
+        {% elif kind == 'audio' %}
+        <audio controls preload="none" src="/attachment/{{ a.id }}"></audio>
+        {% elif kind == 'video' %}
+        <video controls preload="metadata" src="/attachment/{{ a.id }}"></video>
+        {% else %}
+        <a href="/attachment/{{ a.id }}">{{ a.orig_name }}</a>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No journal entries yet.</p>
+{% endif %}
+
+{# Last on the page, below the journal, and the WHOLE section folds - heading
+   included. Wes asked three times: collapsible, collapsed by default, at the
+   bottom. Nothing of it but one red line may show until he opens it. #}
+{% if project.slug != META_PROJECT_SLUG %}
+<details class="danger-zone">
+  <summary>Danger zone</summary>
+  <div class="card">
+    <p class="small">Deletes the project, its journal and its questions. Runs are kept in
+      <a href="/activity">activity</a> but detached, so the usage history stays honest.
+      There is no undo.</p>
+    <form method="post" action="/project/{{ project.slug }}/delete"
+          data-confirm="Delete {{ project.slug }} for good? This cannot be undone.">
+      <div class="field">
+        <label for="confirm">Type <code>{{ project.slug }}</code> to confirm</label>
+        <input type="text" id="confirm" name="confirm" autocomplete="off" data-no-draft="1"
+               placeholder="{{ project.slug }}" required>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="delete_workspace" name="delete_workspace">
+        <label for="delete_workspace">also delete the workspace files on disk
+          ({{ file_count }}{{ '+' if file_count_capped }} file{{ 's' if file_count != 1 }})</label>
+      </div>
+      <button type="submit" class="btn danger">delete project</button>
+    </form>
+  </div>
+</details>
+{% endif %}
+
+{% endblock %}

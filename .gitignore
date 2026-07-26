@@ -1,0 +1,8 @@
+venv/
+data/
+__pycache__/
+*.pyc
+secrets/
+# This installation's own identity - owner, hostname, ports (app/site.py).
+# portal.example.toml is the shipped, documented copy.
+portal.toml

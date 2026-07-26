@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}{{ rel_path }} - {{ project.title }}{% endblock %}
+{% block header_stat %}{{ size|filesize }}{% endblock %}
+{% block content %}
+
+<p class="small muted"><a href="/project/{{ project.slug }}">&larr; {{ project.title }}</a></p>
+<h1 class="file-title">{{ rel_path }}</h1>
+<p class="small muted file-facts">
+  {{ size|filesize }} &middot; {{ view.mime }}
+  {%- if view.language %} &middot; {{ view.language }}{% endif %} &middot;
+  <a href="/download/{{ project.slug }}/{{ rel_path }}" download>download</a>
+</p>
+
+{# One page, six shapes. The media kinds point at /raw, which is the only route
+   that serves workspace bytes inline and only for a whitelist of types;
+   everything else is rendered from text the server has already read. #}
+{% if view.kind == 'image' %}
+<div class="file-media">
+  <img src="/raw/{{ project.slug }}/{{ rel_path }}" alt="{{ rel_path }}">
+</div>
+
+{% elif view.kind == 'audio' %}
+<div class="file-media">
+  <audio controls preload="metadata" src="/raw/{{ project.slug }}/{{ rel_path }}"></audio>
+</div>
+
+{% elif view.kind == 'video' %}
+<div class="file-media">
+  <video controls preload="metadata" src="/raw/{{ project.slug }}/{{ rel_path }}"></video>
+</div>
+
+{% elif view.kind == 'pdf' %}
+{# An <iframe> rather than <embed>: it is the one the sandbox CSP on the raw
+   response actually applies to, and a PDF written by an agent is exactly the
+   document that should be sandboxed. #}
+<div class="file-media file-pdf">
+  <iframe src="/raw/{{ project.slug }}/{{ rel_path }}" title="{{ rel_path }}"></iframe>
+</div>
+
+{% elif view.kind == 'markdown' %}
+{# Rendered by default - that is the whole reason anyone opens a README from
+   the file list - with the source one fold away, because on a file an agent is
+   still writing the raw text is often the thing worth checking. #}
+<div class="card file-markdown"><div class="content">{{ body|safe }}</div></div>
+<details class="fold-section" id="markdown-source">
+  <summary>
+    <span class="fold-section-label">Source</span>
+    <span class="muted small">the raw markdown</span>
+  </summary>
+  <pre class="file-content">{{ view.text }}</pre>
+</details>
+
+{% elif view.kind == 'text' %}
+<div class="file-content highlight-wrap">{{ body|safe }}</div>
+
+{% else %}
+{# Not a 415. Clicking a name in the file list and landing on a bare error
+   detail is a dead end; this is the same page with the download link on it. #}
+<p class="empty-state">{{ view.reason }}</p>
+<p><a class="btn secondary" href="/download/{{ project.slug }}/{{ rel_path }}" download>download this file</a></p>
+{% endif %}
+
+{% endblock %}

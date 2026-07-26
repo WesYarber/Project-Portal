@@ -1,0 +1,41 @@
+{% extends "base.html" %}
+{% block title %}Completed todos - {{ project.title }}{% endblock %}
+{% block header_stat %}{{ project.slug }}{% endblock %}
+{% block content %}
+
+<p class="small muted"><a href="/project/{{ project.slug }}#todos">&larr; {{ project.title }}</a></p>
+<h1>Completed</h1>
+<p class="small muted">Everything ever ticked off on this project. Clearing the
+  live list never deletes anything; it lands here.</p>
+
+{% macro done_list(items, empty) %}
+{% if items %}
+<ul class="todo-list">
+  {% for t in items %}
+  <li class="todo-item done">
+    <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle">
+      {# Unticking from here puts the item back on the live list - it also
+         clears the cleared_at stamp, so it doesn't vanish again. #}
+      <input type="hidden" name="done" value="0">
+      <input type="checkbox" checked onchange="this.form.submit()"
+             aria-label="reopen {{ t.text }}">
+    </form>
+    <span class="todo-text">{{ t.text }}</span>
+    <span class="small muted todo-when">{{ (t.done_at or t.created_at)|timeago }}</span>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<p class="empty-state">{{ empty }}</p>
+{% endif %}
+{% endmacro %}
+
+<div class="card todo-card">
+  <h3 class="todo-head">The agent's <span class="muted small">{{ agent_done|length }}</span></h3>
+  {{ done_list(agent_done, "Nothing completed yet.") }}
+
+  <h3 class="todo-head">Yours <span class="muted small">{{ user_done|length }}</span></h3>
+  {{ done_list(user_done, "Nothing completed yet.") }}
+</div>
+
+{% endblock %}

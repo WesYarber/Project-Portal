@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} - Project Portal{% endblock %}
+{% block content %}
+
+<h1>{{ name }}</h1>
+<p class="small muted"><a href="/memory">&larr; memory</a></p>
+
+{# Shown as plain text rather than rendered markdown: this is a page you open
+   to find out what a line used to say, and rendering would hide the markup
+   that is part of the answer. Capped to the same height as every other long
+   panel, so the restore button below stays reachable. #}
+<div class="card">
+  <pre class="revision-text scroll-cap scroll-cap-panel">{{ text }}</pre>
+  <form method="post" action="/memory/revision/{{ name }}/restore"
+        data-confirm="Put this version back? What is there now is copied to a new revision first.">
+    <button type="submit" class="btn">restore this version</button>
+  </form>
+</div>
+
+{% endblock %}

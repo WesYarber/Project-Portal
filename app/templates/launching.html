@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}starting {{ project.title }} - Project Portal{% endblock %}
+{% block header_stat %}{{ project.slug }} &middot; starting{% endblock %}
+{% block content %}
+
+{# The holding page behind "open it": the project's server was probed and
+   nothing answered, so (if the workspace has a serve.json recipe) it has just
+   been started. This page polls /open/<slug>/status and replaces itself with
+   the real thing the moment the server answers - Wes clicked expecting a
+   working page, and this is the closest thing to one while the server boots. #}
+
+<h2>starting {{ project.title }}</h2>
+
+<div class="card">
+  <p id="launch-word">
+    {% if started %}
+    <span class="offline-spin"></span> The server at <code>{{ target }}</code> was not
+    answering, so it is being started ({{ detail }}). This page will take you
+    there the moment it answers.
+    {% elif cfg %}
+    <span class="offline-spin"></span> The server at <code>{{ target }}</code> is not
+    answering yet{% if detail %} - {{ detail }}{% endif %}. Watching for it to
+    come up; this page will take you there the moment it answers.
+    {% else %}
+    The server at <code>{{ target }}</code> is not answering, and this project has
+    no <code>.portal/serve.json</code> telling the portal how to start it. If it
+    runs somewhere the portal cannot reach (Docker, another machine), start it
+    there - this page will notice and take you over. Otherwise, leave the
+    project a note asking its agent to add a launch recipe.
+    {% endif %}
+  </p>
+  <p class="small muted" id="launch-status">checking...</p>
+  <p class="small muted" id="launch-help" hidden>
+    Still nothing after a minute. The launch log is
+    <a href="/file/{{ project.slug }}/.portal/serve.log">.portal/serve.log</a>
+    {% if started and 'user unit' in (detail or '') %}(or <code>journalctl --user -u
+    portal-app-{{ project.slug }}</code> on {{ SITE.host }}){% endif %} -
+    or go back to <a href="/project/{{ project.slug }}">the project page</a>.
+  </p>
+</div>
+
+<script>
+(function () {
+  var tries = 0;
+  var status = document.getElementById("launch-status");
+  var help = document.getElementById("launch-help");
+  function tick() {
+    tries += 1;
+    fetch("/open/{{ project.slug }}/status", {cache: "no-store"})
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data.up) {
+          status.textContent = "up - taking you there";
+          location.replace(data.url || "/project/{{ project.slug }}");
+          return;
+        }
+        status.textContent = "not answering yet (check " + tries + ")";
+        if (tries >= 30) { help.hidden = false; }
+        setTimeout(tick, 2000);
+      })
+      .catch(function () {
+        // The portal itself vanished mid-poll (restart); keep trying, the
+        // offline overlay in base.html owns telling that story.
+        setTimeout(tick, 2000);
+      });
+  }
+  setTimeout(tick, 800);
+})();
+</script>
+
+{% endblock %}

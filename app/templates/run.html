@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}Run #{{ run.id }} - Project Portal{% endblock %}
+{% block header_stat %}run #{{ run.id }} &middot; {{ run.status }}{% endblock %}
+{% block content %}
+
+<p class="small muted"><a href="/activity">&larr; activity</a></p>
+<h1>Run #{{ run.id }} &mdash; {{ run.task }}</h1>
+<p class="small muted">
+  {% if run.project_slug %}<a href="/project/{{ run.project_slug }}">{{ run.project_title }}</a>
+  {% else %}{{ run.project_title }}{% endif %}
+  &middot; started {{ run.started_at|timeago }} &middot; {{ run.model }}
+</p>
+
+<div class="card">
+  <div class="stat-row">
+    <span class="stat"><em class="run-status-{{ run.status }}">{{ run.status }}</em>status</span>
+    <span class="stat"><em>{{ run.duration }}</em>duration</span>
+    <span class="stat"><em>{{ run.cost_usd|cost }}</em>{{ cost_noun() }}</span>
+    <span class="stat"><em>{{ run.num_turns if run.num_turns is not none else '-' }}</em>turns</span>
+    <span class="stat"><em>{{ run.events }}</em>events</span>
+  </div>
+  {% if run.status == 'running' %}
+  <form method="post" action="/run/{{ run.id }}/cancel" style="margin-top:0.8rem;">
+    <input type="hidden" name="next" value="/run/{{ run.id }}">
+    <button type="submit" class="btn danger">stop this run</button>
+  </form>
+  {% endif %}
+  <p class="hint">{{ run.started_at }}{% if run.ended_at %} &rarr; {{ run.ended_at }}{% endif %}</p>
+  {% if run.summary %}
+  <p style="margin-top:0.8rem;"><strong>summary</strong></p>
+  <div class="content">{{ run.summary }}</div>
+  {% endif %}
+</div>
+
+{% if denials %}
+<div class="card">
+  <p><strong>guardrail events</strong>
+    <span class="small muted">what the portal's hooks stopped: blocked tool calls, and a bounce if the run tried to finish without its report</span></p>
+  <ul class="small" style="margin:0.4rem 0 0 1.1rem; padding:0;">
+    {% for d in denials %}
+    <li style="margin-bottom:0.35rem;">
+      <span class="badge">{{ d.tool }}</span>
+      {{ d.reason }}
+      {% if d.detail %}<code class="muted">{{ d.detail }}</code>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if audit %}
+<div class="card">
+  {# A short trail reads at a glance, so show it; a long one collapses. #}
+  <details {% if audit|length <= 30 %}open{% endif %}>
+    <summary style="cursor:pointer;"><strong>tool calls</strong> <span class="badge">{{ audit|length }}</span>
+      <span class="small muted">the run's audit trail &mdash; every tool call, as the portal's PostToolUse hook saw it (kept {{ audit_retention_days }} days; the transcript below has the full detail)</span></summary>
+    <ul class="small" style="margin:0.4rem 0 0 1.1rem; padding:0; max-height:22rem; overflow-y:auto;">
+      {% for a in audit %}
+      <li style="margin-bottom:0.25rem;">
+        <span class="muted">{{ a.ts[11:19] }}</span>
+        <span class="badge">{{ a.tool }}</span>
+        {% if a.decision == 'error' %}<span class="badge" style="color:var(--ansi-red); border-color:var(--ansi-red);">error</span>{% endif %}
+        {% if a.reason %}{{ a.reason }}{% endif %}
+        {% if a.detail %}<code class="muted">{{ a.detail }}</code>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
+</div>
+{% endif %}
+
+<h2>Transcript</h2>
+{# Same poller as the project console: a run that is still going streams here
+   too, so this page works as a live view and as an archive. #}
+<div class="card console-card {{ 'live' if run.status == 'running' }}" id="agent-console"
+     data-run-id="{{ run.id }}" data-live="{{ '1' if run.status == 'running' else '0' }}">
+  <div class="console-head">
+    <span class="dot {{ 'running' if run.status == 'running' }}"></span>
+    <span class="muted">{{ 'live' if run.status == 'running' else 'finished' }} transcript</span>
+  </div>
+  {% if log_pruned %}
+  <p class="empty-state">Transcript no longer on disk &mdash; logs are pruned to the newest 200 runs.</p>
+  {% else %}
+  <pre class="console-out" id="console-out">{{ console_text or '(empty)' }}</pre>
+  {% endif %}
+</div>
+
+{% endblock %}

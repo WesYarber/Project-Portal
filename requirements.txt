@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+jinja2
+httpx
+cryptography
+markdown
+pygments
+python-multipart
+pytest

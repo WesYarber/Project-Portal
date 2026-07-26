@@ -1,0 +1,256 @@
+{% extends "base.html" %}
+{% block title %}Dashboard - Project Portal{% endblock %}
+{% block masthead %}{% include "_banner.html" %}{% endblock %}
+
+{# The project cell, shared by all three shelves. Extracted rather than copied
+   so a paused card can never quietly drift out of step with a live one. #}
+{# `entry` is one row of subprojects.group_for_shelf: the project plus whether
+   it is a sub-project and, if so, whose. #}
+{% macro project_cell(entry, muted=false) %}
+{% set p = entry.project %}
+{% set qcount = question_counts.get(p.id, 0) %}
+{% set running = p.id in active_run.project_ids %}
+{% set state = display_state(p) %}
+{# A project you have paused is not the same kind of "wants you" as one that
+   is blocked mid-build: it is resting because you put it down. It keeps the
+   question count, loses the loud border and the pulsing pip. #}
+{% set resting = muted or (state == 'paused' and not running) %}
+{# data-slug/data-status feed the drag-to-move and right-click menu in app.js;
+   draggable is explicit so the whole card drags as a card, not as a link. #}
+<a class="project-cell {{ 'resting' if resting else ('needs-attention' if qcount) }} {{ 'running' if running }} {{ 'sub' if entry.child }}"
+   href="/project/{{ p.slug }}" data-project-id="{{ p.id }}"
+   data-slug="{{ p.slug }}" data-status="{{ state }}" data-title="{{ p.title }}" draggable="true">
+  {% if qcount %}<span class="cell-alert {{ 'quiet' if resting }}" title="{{ qcount }} open question{{ 's' if qcount != 1 else '' }}">{{ qcount }}</span>{% endif %}
+  {% if entry.child and entry.parent_title %}<span class="cell-parent">&#8627; {{ entry.parent_title }}</span>{% endif %}
+  <span class="cell-title">{{ p.title }}</span>
+  {% if p.description %}<span class="cell-desc">{{ p.description }}</span>{% endif %}
+  <span class="cell-run">
+    <span class="dot running"></span>agent working&hellip;
+  </span>
+  <span class="cell-foot">
+    <span class="badge status-{{ state }}">{{ state|status_badge }}</span>
+    {% if p.id in awaiting_approval %}<span class="badge needs-ok">needs your OK</span>{% endif %}
+    {% if p.blocked_on %}<span class="badge status-paused" title="{{ p.blocked_on }}">blocked</span>{% endif %}
+    <span>{{ p.kind }} &middot; p{{ p.priority }}
+      {%- if run_counts.get(p.id) %} &middot; {{ run_counts[p.id] }} run{{ 's' if run_counts[p.id] != 1 }} today{% endif %}
+      &middot; {{ p.updated_at|timeago }}</span>
+  </span>
+</a>
+{% endmacro %}
+
+{% block content %}
+
+{% if open_questions %}
+<div class="banner-alert">
+  <strong>{{ open_questions|length }} open question{{ 's' if open_questions|length != 1 else '' }}</strong>
+  waiting on you &mdash; <a href="/questions">answer them</a>
+</div>
+{% endif %}
+
+{# Two children only: the wrapping text facts on the left, the heatmap on the
+   right. When they shared one flex-wrap container the tall heatmap sat in the
+   first wrapped row and centred the text lines across its whole height, which
+   is the "messed up spacing" in Wes's screenshot. #}
+<div class="card status-line">
+  <div class="status-items">
+  <span>
+    <span class="dot {{ 'ok' if worker_enabled else 'err' }}"></span>
+    worker {{ 'online' if worker_enabled else 'offline' }}
+  </span>
+  <span>model: <strong>{{ worker_model }}</strong>
+    {%- if usage.model_fallback %} <span class="fallback-chip" title="{{ usage.model_fallback.why }}">&rarr; {{ usage.model_fallback.to }} for now</span>{% endif %}
+  </span>
+  <span>
+    runs today: <strong data-usage="runs_today">{{ usage.runs_today }}</strong> /
+    <strong data-usage="max_runs">{{ usage.max_runs }}</strong>
+    {% if usage.bonus_runs %}<span class="bonus">(+{{ usage.bonus_runs }} today)</span>{% endif %}
+  </span>
+  <span class="muted">resets in <span data-usage="resets_in">{{ usage.resets_in }}</span></span>
+  {% if usage.spend_down %}
+  <span class="spend-down"><span class="dot running"></span>{{ usage.spend_down }}</span>
+  {% endif %}
+  {% if usage.research_queued %}
+  <span class="muted" title="they run inside a spend-down window, on allowance that would otherwise expire">
+    {{ usage.research_queued }} queued for research
+  </span>
+  {% endif %}
+  {% if usage.in_backoff %}
+  <span><span class="dot warn"></span>backing off {{ usage.backoff_in }} (until {{ usage.backoff_until }})</span>
+  {% endif %}
+  {# The account's real Claude windows, alongside the portal's own invented
+     run budget - the two answer different questions and the run budget was
+     the only one on screen until now. #}
+  {% if usage.limits and usage.limits.ok %}
+  <span class="claude-limits{{ ' stale' if usage.limits.stale }}"
+        title="read from your Claude account{{ ' ' ~ usage.limits.age ~ ' ago' if usage.limits.age }}">
+    claude:
+    {% for w in usage.limits.windows + (usage.limits.scoped or []) %}
+    <span class="limit-chip{{ ' hot' if w.percent >= 80 }}">
+      {{ w.label }} <strong>{{ w.percent|round|int }}%</strong>
+      {%- if w.resets_in %} <span class="muted">(resets {{ w.resets_in }})</span>{% endif %}
+    </span>
+    {% endfor %}
+  </span>
+  {% elif usage.limits and usage.limits.error %}
+  <span class="muted small claude-limits" title="{{ usage.limits.error }}">claude limits: unavailable</span>
+  {% endif %}
+  <a class="small" href="/settings#budget">adjust budget</a>
+  </div>
+  {# The last quarter of activity across every project, sat at the end of the
+     status line so it costs no vertical space of its own. #}
+  <a class="heatmap-link" href="/activity" aria-label="activity over the last {{ heatmap.days }} days">
+    {% include "_heatmap.html" %}
+  </a>
+</div>
+
+{# Live agent strip: hydrated by app.js polling /api/active-run, so it stays
+   truthful without a page reload. #}
+<div class="card live-run {{ '' if active_run.active else 'idle' }}" id="live-run"
+     data-run-ids="{{ active_run.run_ids }}">
+  {% for r in active_run.runs %}
+  <div class="live-run-row" data-run-id="{{ r.run_id }}">
+    <div class="live-head">
+      <span class="dot running"></span>
+      <strong class="live-what">
+        {{ r.task }} on
+        {% if r.project_slug %}<a href="/project/{{ r.project_slug }}">{{ r.project_title }}</a>
+        {% elif r.oneoff_id %}<a href="/tasks/{{ r.oneoff_id }}">{{ r.project_title }}</a>
+        {% else %}{{ r.project_title }}{% endif %}
+      </strong>
+      <span class="muted small live-meta">{{ r.model }} &middot; {{ r.elapsed }} &middot; {{ r.events }} events</span>
+      <a class="small" href="/run/{{ r.run_id }}">full transcript &rarr;</a>
+      <form method="post" action="/run/{{ r.run_id }}/cancel" class="inline-form">
+        <input type="hidden" name="next" value="/">
+        <button type="submit" class="btn danger small">stop</button>
+      </form>
+    </div>
+    <div class="live-activity">{{ r.last_activity }}</div>
+  </div>
+  {% else %}
+  {# Idle: say *why*, so "nothing is happening" is never a mystery. #}
+  <div class="live-head">
+    <span class="dot"></span><span class="muted">no agent running</span>
+    <span class="muted small live-idle-reason">{{ active_run.idle_reason }}</span>
+  </div>
+  {% endfor %}
+</div>
+
+{# The shelves, in the order Wes asked for: active work on top, review under
+   it, then what he put down, then what he has not started, with done/abandoned
+   collapsed at the end. Every section is a drop target - drag a card onto one
+   and the project takes that section's state. #}
+<div class="section-head">
+  <h2>Active</h2>
+  <div class="sort-links small muted">
+    sort:
+    {% for name, spec in sorts.items() %}
+    <a class="sort-link {{ 'active' if name == active_sort }}" href="/?sort={{ name }}">{{ spec[0] }}</a>
+    {%- if not loop.last %} &middot; {% endif %}
+    {% endfor %}
+  </div>
+</div>
+<div class="project-grid drop-zone" data-status-zone="active" data-zone-label="active">
+  {% for p in active_projects %}{{ project_cell(p) }}
+  {% else %}<p class="empty-state zone-empty">Nothing in progress &mdash; drag a project here to start it.</p>
+  {% endfor %}
+</div>
+
+<h2>Review</h2>
+<div class="project-grid drop-zone" data-status-zone="review" data-zone-label="review">
+  {% for p in review_projects %}{{ project_cell(p) }}
+  {% else %}<p class="empty-state zone-empty">Nothing waiting for you to look at.</p>
+  {% endfor %}
+</div>
+
+{# Two shelves, both shut. What you are actively building on is the page; what
+   you have put down and what you have not started are one line each until you
+   ask for them. The zone attribute sits on the <details> so a card dropped on
+   the shut one-line summary still lands. #}
+<details class="fold-section shelf drop-zone" id="paused" data-status-zone="paused" data-zone-label="paused">
+  <summary>
+    <span class="fold-section-label">Paused</span>
+    {# Not "you put down": agent-parked and needs-input projects sit here too
+       now (his 06:02 note), so the line just counts what is waiting. #}
+    <span class="muted small">{{ paused_projects|length }} waiting or put down</span>
+  </summary>
+  <div class="project-grid">
+    {% for p in paused_projects %}{{ project_cell(p, muted=true) }}
+    {% else %}<p class="empty-state zone-empty">Nothing paused.</p>
+    {% endfor %}
+  </div>
+</details>
+
+<details class="fold-section shelf drop-zone" id="backlog" data-status-zone="backlog" data-zone-label="backlog">
+  <summary>
+    <span class="fold-section-label">Backlog</span>
+    <span class="muted small">{{ backlog_projects|length }} not started</span>
+  </summary>
+  <div class="project-grid">
+    {% for p in backlog_projects %}{{ project_cell(p, muted=true) }}
+    {% else %}<p class="empty-state zone-empty">Nothing in the backlog.</p>
+    {% endfor %}
+  </div>
+</details>
+
+{% if done_projects %}
+<details class="fold-section shelf drop-zone" id="done" data-status-zone="done" data-zone-label="done">
+  <summary>
+    <span class="fold-section-label">Done / abandoned</span>
+    <span class="muted small">{{ done_projects|length }}</span>
+  </summary>
+  <div class="project-grid">
+    {% for p in done_projects %}
+    <a class="project-cell resting" href="/project/{{ p.slug }}"
+       data-slug="{{ p.slug }}" data-status="{{ p.stage }}" data-title="{{ p.title }}" draggable="true">
+      <span class="cell-title">{{ p.title }}</span>
+      <span class="cell-foot">
+        <span class="badge status-{{ p.stage }}">{{ p.stage|status_badge }}</span>
+        <span>{{ p.updated_at|timeago }}</span>
+      </span>
+    </a>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+
+<h2>New idea</h2>
+<div class="card">
+  <form method="post" action="/ideas">
+    <div class="field">
+      <label for="title">Title <span class="muted">(optional)</span></label>
+      <input type="text" id="title" name="title" placeholder="leave blank to auto-generate">
+    </div>
+    <div class="field">
+      <label for="idea">What's the idea?</label>
+      <textarea id="idea" name="idea" rows="4" required enterkeyhint="enter"
+                placeholder="Describe it. Add it to the backlog for later, or hand it straight to an agent to plan."></textarea>
+    </div>
+    {# Two doors (Wes's ask): plain add parks it in the backlog and no model
+       sees it until he says so; the second one puts an agent on it now. #}
+    <button type="submit" name="then" value="" class="secondary">add to backlog</button>
+    <button type="submit" name="then" value="plan" class="go">add + start planning</button>
+  </form>
+</div>
+
+<h2>Recent activity</h2>
+{% if recent_journal %}
+{# The same scroll window the project journal gets, so the feed can carry more
+   history without pushing the bottom of the page away. #}
+<div class="card scroll-cap scroll-cap-journal">
+  {% for j in recent_journal %}
+  <div class="journal-entry from-{{ j.author }}">
+    <div class="meta">
+      <span class="badge author-{{ j.author }}">{{ j.author }}</span>
+      <span class="badge">{{ j.kind }}</span>
+      {% if j.project_slug %}<a href="/project/{{ j.project_slug }}">{{ j.project_title }}</a>{% endif %}
+      <span class="small muted">{{ j.ts|timeago }}</span>
+    </div>
+    <div class="content">{{ j.content_md|markdown_media(j.project_slug)|safe }}</div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty-state">No activity yet.</p>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}{{ name }} - Project Portal{% endblock %}
+{% block content %}
+
+<h1>skill: {{ name }}</h1>
+<p class="small muted"><a href="/memory">&larr; memory</a></p>
+
+{# Plain text, not rendered markdown: the frontmatter and the exact commands
+   ARE the content here, and rendering would hide half of each. #}
+<div class="card">
+  <pre class="revision-text scroll-cap scroll-cap-panel">{{ text }}</pre>
+  <p class="hint">Promoted out of <code>learnings.md</code> by a compaction pass; ships into
+    every workspace as <code>.claude/skills/{{ name }}/</code> and is indexed in every run's
+    prompt. Delete it from the /memory page if it should not be.</p>
+</div>
+
+{% endblock %}

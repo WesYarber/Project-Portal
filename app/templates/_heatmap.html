@@ -1,0 +1,17 @@
+{# A GitHub-style activity grid: one square per day, one column per week.
+   Deliberately tiny - it is a texture you notice out of the corner of your eye,
+   not a chart you read. `heatmap` is the payload from app.usage.heatmap().  #}
+<div class="heatmap" title="{{ heatmap.total }} run{{ 's' if heatmap.total != 1 else '' }} in the last {{ heatmap.days }} days">
+  {% for week in heatmap.weeks %}
+  <div class="heat-week">
+    {% for cell in week %}
+    {% if cell %}
+    <span class="heat-day heat-{{ cell.level }}"
+          title="{{ cell.date }}: {{ cell.runs }} run{{ 's' if cell.runs != 1 else '' }}"></span>
+    {% else %}
+    <span class="heat-day heat-none"></span>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endfor %}
+</div>

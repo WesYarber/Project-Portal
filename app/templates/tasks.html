@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block title %}Tasks - Project Portal{% endblock %}
+{% block content %}
+
+<h1>One-off tasks</h1>
+<p class="small muted">A scratch session with an agent - no project, no plan,
+  no journal. Type what you need; the agent works in a throwaway workspace and
+  replies here. Answer it as many times as it takes, then archive the session
+  when you are finished with it.</p>
+
+<div class="card">
+  <form method="post" action="/tasks">
+    <div class="field">
+      <textarea name="text" rows="3" placeholder="What needs doing? The agent starts on it immediately." required></textarea>
+    </div>
+    <button type="submit">start a task</button>
+  </form>
+</div>
+
+<h2>Open</h2>
+{% if open_tasks %}
+<div class="card">
+  <ul class="oneoff-list scroll-cap scroll-cap-panel">
+    {% for t in open_tasks %}
+    <li class="oneoff-row">
+      <div class="oneoff-head">
+        <a href="/tasks/{{ t.id }}">{{ t.title }}</a>
+        {% if t.id in running_ids %}
+        <span class="badge author-agent"><span class="dot running"></span> agent working</span>
+        {% elif t.last_role == 'agent' %}
+        <span class="badge author-agent">replied - your turn</span>
+        {% elif t.last_role == 'system' %}
+        <span class="badge">needs a look</span>
+        {% endif %}
+        <span class="small muted">{{ t.updated_at|timeago }}</span>
+      </div>
+      {% if t.last_message %}
+      <div class="small muted oneoff-snippet">{{ t.last_message }}</div>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% else %}
+<p class="muted small">Nothing open.</p>
+{% endif %}
+
+{% if archived_tasks %}
+<details>
+  <summary class="muted">archived ({{ archived_tasks|length }})</summary>
+  <div class="card">
+    <ul class="oneoff-list scroll-cap scroll-cap-panel">
+      {% for t in archived_tasks %}
+      <li class="oneoff-row">
+        <div class="oneoff-head">
+          <a href="/tasks/{{ t.id }}">{{ t.title }}</a>
+          <span class="small muted">{{ t.updated_at|timeago }}</span>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</details>
+{% endif %}
+
+{% endblock %}

@@ -1,0 +1,32 @@
+; Install with:
+;   cp deploy/project-portal.service ~/.config/systemd/user/project-portal.service
+;   systemctl --user daemon-reload && systemctl --user restart project-portal
+;
+; %h is systemd's own specifier for the home directory of the user the unit
+; runs as, so this works unedited for anyone whose checkout is at ~/project-portal.
+;
+; Measured on this box: SIGTERM to exit is ~0.2s and cold start to a serving
+; /api/ping is ~0.5s, so a restart is well under a second of real downtime.
+; These settings are about the cases where it *isn't*:
+;
+;   TimeoutStopSec=10  The default is 90s. Nothing currently comes close to
+;                      that, but if some future background task ever refuses
+;                      to unwind, this caps the outage at ten seconds instead
+;                      of a minute and a half.
+;   Restart=always     `on-failure` does not cover a clean-but-unintended exit,
+;                      which would otherwise leave the portal simply gone.
+;   RestartSec=2       The default 10s is 10s of error page after a crash.
+[Unit]
+Description=Project Portal - agentic project idea tracker
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/project-portal
+ExecStart=%h/project-portal/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8500
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+[Install]
+WantedBy=default.target
