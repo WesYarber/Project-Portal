@@ -130,3 +130,10 @@ def test_the_scan_finds_a_leak_that_is_really_there(tmp_path):
 def test_an_unreadable_file_is_skipped_rather_than_fatal(tmp_path):
     (tmp_path / "binary.md").write_bytes(b"\xff\xfe\x00 not utf-8")
     assert leakscan.scan(root=tmp_path, words=["anything"]) == []
+
+
+def test_an_image_cannot_ride_along_unchecked():
+    """A screenshot is the one kind of file the text scan cannot read, so a
+    picture of somebody's real board would pass a clean scan and be published.
+    Images are held back by path instead."""
+    assert any(p.endswith(".png") for p in leakscan.PRIVATE_PATHS)

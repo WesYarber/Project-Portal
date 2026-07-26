@@ -54,6 +54,11 @@ PRIVATE_PATHS = {
     # The plan for this separation: written for one person, about one repo,
     # and it quotes the very commits the public history has to start after.
     "docs/open-source.md",
+    # A screenshot of the author's own board. Nothing references it, and an
+    # image is the one kind of file the text scan below cannot check - so a
+    # picture of somebody's real projects would sail straight through a clean
+    # scan into a public repo.
+    "shots/opus5-settings.png",
 }
 
 
