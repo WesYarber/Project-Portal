@@ -48,23 +48,23 @@ def test_the_path_still_prepends_local_bin(monkeypatch):
 
 
 def test_no_budget_flag_when_unset():
-    cmd = agent_runner.build_cmd("p", "opus", 400)
+    cmd = agent_runner.build_cmd("opus", 400)
     assert "--max-budget-usd" not in cmd
 
 
 def test_budget_flag_appended_when_given():
-    cmd = agent_runner.build_cmd("p", "opus", 400, max_budget_usd=5.0)
+    cmd = agent_runner.build_cmd("opus", 400, max_budget_usd=5.0)
     assert cmd[cmd.index("--max-budget-usd") + 1] == "5"
 
 
 def test_budget_flag_keeps_fractional_amounts():
-    cmd = agent_runner.build_cmd("p", "opus", 400, max_budget_usd=2.5)
+    cmd = agent_runner.build_cmd("opus", 400, max_budget_usd=2.5)
     assert cmd[cmd.index("--max-budget-usd") + 1] == "2.5"
 
 
 def test_a_zero_or_negative_budget_is_no_ceiling():
     for value in (0, -1, 0.0):
-        cmd = agent_runner.build_cmd("p", "opus", 400, max_budget_usd=value)
+        cmd = agent_runner.build_cmd("opus", 400, max_budget_usd=value)
         assert "--max-budget-usd" not in cmd
 
 

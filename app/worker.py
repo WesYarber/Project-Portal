@@ -13,8 +13,8 @@ from string import Template
 from typing import Optional
 
 from app import (
-    agent_runner, config, daycycle, db, hookguard, limits, memory, modelwatch, notify,
-    oneoff, orphans, pacing, preview, proof, quickreplies, report_schema, runlimit,
+    agent_runner, config, crashloop, daycycle, db, hookguard, limits, memory, modelwatch,
+    notify, oneoff, orphans, pacing, preview, proof, quickreplies, report_schema, runlimit,
     runlog, selfreview, subprojects, todos,
 )
 
@@ -182,6 +182,12 @@ def _pick_project(manual_project_id: Optional[int]) -> tuple[Optional[db.sqlite3
         if build_gated(candidate):
             continue
         if blocked_with_nothing_workable(candidate):
+            continue
+        # A project whose last runs died before the agent started gets spaced
+        # out rather than retried every tick. Scheduled picks only - the manual
+        # branch above is Wes explicitly asking, and is how he would test that
+        # whatever broke is fixed. See app/crashloop.py.
+        if crashloop.held(candidate["id"]):
             continue
         if not project_at_daily_cap(candidate):
             return candidate, False
@@ -504,6 +510,52 @@ async def _execute_run(project: db.sqlite3.Row, task: str, run_id: int, model: s
         row = db.get_run(run_id)
         if row is not None and row["status"] == "running":
             db.finish_run(run_id, "error", summary="Run crashed; see the service log.")
+    finally:
+        # Whether it crashed or finished, this is the one place that sees every
+        # completed run, so it is where "these keep dying on the launch pad"
+        # gets noticed. Never allowed to break the caller: a failure to report
+        # a crash loop must not itself become one.
+        try:
+            await _announce_crash_loop(project)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Could not check the crash-loop state for %s", project["slug"])
+
+
+_CRASHLOOP_SETTING = "crashloop_announced_{}"
+
+
+async def _announce_crash_loop(project: db.sqlite3.Row) -> None:
+    """Tell Wes when a project's runs keep dying before the agent starts.
+
+    The portal's failure on 2026-07-26 was not only that it retried 257 times -
+    it was that it retried 257 times *silently*. Every one of those runs showed
+    as a red row on a page nobody was looking at, and the first Wes knew of it
+    was scrolling past a wall of them.
+    """
+    key = _CRASHLOOP_SETTING.format(project["id"])
+    streak = crashloop.consecutive_dead_starts(project["id"])
+    if streak <= 0:
+        # A run got going, so the loop is over. Clearing the marker is what
+        # lets a future recurrence announce itself instead of being silently
+        # deduplicated against this one.
+        if db.get_setting(key):
+            db.set_setting(key, "0")
+        return
+    try:
+        announced = int(db.get_setting(key) or "0")
+    except ValueError:
+        announced = 0
+    if not crashloop.should_announce(streak, announced):
+        return
+    db.set_setting(key, str(streak))
+    db.add_journal(project["id"], "system", "status", crashloop.note_for(streak))
+    await notify.notify(
+        f"{project['title']}: runs are failing to start",
+        f"{streak} runs in a row died before the agent started. The portal is "
+        f"backing off to every {crashloop.delay_min(streak)} minutes instead of "
+        f"retrying every tick.",
+        project_title=project["title"],
+    )
 
 
 def _live_logger(run_id: int) -> agent_runner.EventCallback:

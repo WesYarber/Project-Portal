@@ -98,13 +98,13 @@ def test_schema_rejects_the_stages_only_wes_may_set():
 
 
 def test_build_cmd_passes_the_schema_flag():
-    cmd = agent_runner.build_cmd("p", "opus", 400, json_schema='{"type":"object"}')
+    cmd = agent_runner.build_cmd("opus", 400, json_schema='{"type":"object"}')
     idx = cmd.index("--json-schema")
     assert cmd[idx + 1] == '{"type":"object"}'
 
 
 def test_build_cmd_omits_the_flag_without_a_schema():
-    assert "--json-schema" not in agent_runner.build_cmd("p", "opus", 400)
+    assert "--json-schema" not in agent_runner.build_cmd("opus", 400)
 
 
 def test_contract_names_structured_output_and_keeps_the_file_fallback():

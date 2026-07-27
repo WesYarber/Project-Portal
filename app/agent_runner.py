@@ -861,7 +861,6 @@ async def _kill_group(proc: asyncio.subprocess.Process) -> None:
 
 
 def build_cmd(
-    prompt: str,
     model: str,
     max_turns: int,
     resume_session: Optional[str] = None,
@@ -869,10 +868,24 @@ def build_cmd(
     json_schema: Optional[str] = None,
     settings_json: Optional[str] = None,
 ) -> list[str]:
+    """The argv for a run - deliberately without the prompt in it.
+
+    The prompt used to sit here as `cmd[2]`, and on 2026-07-26 that quietly
+    became a hard ceiling on how much context a project could carry. Linux caps
+    a *single* argv string at MAX_ARG_STRLEN (32 pages = 131072 bytes), which is
+    a separate limit from ARG_MAX and is not raiseable - so a project whose
+    rendered prompt crossed 128 KiB could not be spawned at all. OpenJournal
+    reached 146 KiB and failed 257 times in a row; ProxyTable was at 126 KiB,
+    five kilobytes from the same wall, and every other active project was in
+    the same band.
+
+    `claude -p` reads the prompt from stdin when argv does not carry one, which
+    has no such limit. Keeping the parameter out of this function's signature
+    (rather than accepting and ignoring it) is what stops it being put back.
+    """
     cmd = [
         "claude",
         "-p",
-        prompt,
         "--model",
         config.cli_model(model),
         "--output-format",
@@ -933,7 +946,7 @@ async def run_claude(
     stale_report = cwd / ".portal" / "report.json"
     stale_report.unlink(missing_ok=True)
     cmd = build_cmd(
-        prompt, model, max_turns, resume_session,
+        model, max_turns, resume_session,
         max_budget_usd=_configured_budget_usd(), json_schema=json_schema,
         settings_json=settings_json,
     )
@@ -947,6 +960,10 @@ async def run_claude(
             *argv,
             cwd=str(cwd),
             env=_extra_env(),
+            # The prompt goes in here rather than in argv - see build_cmd. The
+            # CLI reads it to EOF, so the pipe must be closed once written or
+            # the run hangs before it starts.
+            stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=STREAM_LINE_LIMIT,
@@ -962,11 +979,40 @@ async def run_claude(
     if run_id is not None:
         _ACTIVE_PROCS[run_id] = proc
 
+    # Started, not awaited, and deliberately so: the prompt is far larger than
+    # a pipe buffer (64 KiB on Linux; the busiest projects render past 120 KB),
+    # so writing it to completion before reading stdout would deadlock the
+    # first time the CLI emitted an event while we were still filling stdin.
+    feeder = asyncio.create_task(_feed_prompt(proc, prompt))
     try:
         return await _supervise(proc, cwd, run_id, on_event, timeout_min)
     finally:
+        feeder.cancel()
         _forget(run_id)
         runlimit.forget_scope(run_id)
+
+
+async def _feed_prompt(proc: asyncio.subprocess.Process, prompt: str) -> None:
+    """Write the prompt to the CLI's stdin and close it.
+
+    Every failure here is swallowed on purpose. A broken pipe means the CLI
+    exited before reading the prompt, and whatever made it exit is already on
+    its way out of stderr - raising here would replace that real diagnosis with
+    a write error, which is how a "run crashed, see the log" with nothing
+    useful in the log gets made.
+    """
+    if proc.stdin is None:  # pragma: no cover - only when stdin was not piped
+        return
+    try:
+        proc.stdin.write(prompt.encode("utf-8"))
+        await proc.stdin.drain()
+    except (BrokenPipeError, ConnectionResetError, OSError) as exc:
+        log.info("Could not write the prompt to the CLI's stdin: %s", exc)
+    finally:
+        try:
+            proc.stdin.close()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
 
 
 async def _supervise(

@@ -267,7 +267,7 @@ def test_junk_degrades_to_the_modes_default_not_to_unlimited(in_api_key_mode):
 
 def test_the_default_ceiling_reaches_the_command_line(in_api_key_mode):
     db.set_setting("run_max_budget_usd", "")
-    cmd = agent_runner.build_cmd("p", "opus", 400, max_budget_usd=agent_runner._configured_budget_usd())
+    cmd = agent_runner.build_cmd("opus", 400, max_budget_usd=agent_runner._configured_budget_usd())
     assert cmd[cmd.index("--max-budget-usd") + 1] == "5"
 
 

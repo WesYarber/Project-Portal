@@ -2189,10 +2189,20 @@ def acknowledge_work(project_id: int) -> None:
 
 
 def list_runs(project_id: int, limit: int = 50) -> list[sqlite3.Row]:
+    """This project's runs, newest first.
+
+    `started_at` has one-second resolution, so ordering by it alone leaves runs
+    that started in the same second in an order SQLite is free to choose. That
+    is invisible on the runs page and load-bearing for app/crashloop.py, which
+    walks this list from the newest backwards and stops at the first healthy
+    run - with a tie broken the wrong way, a recovery run sorts *below* the
+    failures it ended and the project stays held. `id DESC` is the tiebreak
+    because run ids are issued in creation order by definition.
+    """
     conn = get_conn()
     with _LOCK:
         return conn.execute(
-            "SELECT * FROM runs WHERE project_id = ? ORDER BY started_at DESC LIMIT ?",
+            "SELECT * FROM runs WHERE project_id = ? ORDER BY started_at DESC, id DESC LIMIT ?",
             (project_id, limit),
         ).fetchall()
 

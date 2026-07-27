@@ -126,12 +126,12 @@ def test_active_runs_carry_the_task_title_for_the_dashboard(task):
 
 
 def test_a_fresh_run_does_not_resume_anything():
-    cmd = agent_runner.build_cmd("p", "opus", 400)
+    cmd = agent_runner.build_cmd("opus", 400)
     assert "--resume" not in cmd
 
 
 def test_a_follow_up_resumes_the_saved_session():
-    cmd = agent_runner.build_cmd("p", "opus", 400, resume_session="sess-1")
+    cmd = agent_runner.build_cmd("opus", 400, resume_session="sess-1")
     assert cmd[cmd.index("--resume") + 1] == "sess-1"
 
 

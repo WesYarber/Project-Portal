@@ -329,10 +329,10 @@ def test_guard_settings_oneoff_uses_task_workspace(portal_layout, monkeypatch):
 # --- spawn flag --------------------------------------------------------------
 
 def test_build_cmd_carries_settings_json():
-    cmd = agent_runner.build_cmd("p", "opus", 50, settings_json='{"hooks":{}}')
+    cmd = agent_runner.build_cmd("opus", 50, settings_json='{"hooks":{}}')
     idx = cmd.index("--settings")
     assert cmd[idx + 1] == '{"hooks":{}}'
-    assert "--settings" not in agent_runner.build_cmd("p", "opus", 50)
+    assert "--settings" not in agent_runner.build_cmd("opus", 50)
 
 
 # --- endpoint ----------------------------------------------------------------
