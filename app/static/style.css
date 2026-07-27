@@ -2229,8 +2229,8 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .run-cap > summary:hover { color: var(--ansi-blue); }
 .run-cap select { width: auto; min-width: 9rem; margin-top: 0.5rem; }
 
-/* run agent now / pause building / queue research burst - three buttons that
-   are read as one row, so none of them is .small. */
+/* open it / run agent now / queue research burst - buttons that are read as
+   one row, so none of them is .small. */
 .action-row { margin-top: 1rem; }
 /* `open it` is an <a> styled as a button, and the global `a:hover` underline
    would be the only control in the row that grows a line when you point at it. */
@@ -2503,3 +2503,29 @@ a.btn:hover { text-decoration: none; }
   height: 2rem;
   font-size: 0.85rem;
 }
+
+/* Single-key section jumps (n / j / t / p) ------------------------------- */
+/* A little air above the target so it reads as the top of a section rather
+   than a line clipped against the very edge of the window. */
+[data-jump] { scroll-margin-top: 0.9rem; }
+
+/* Where the cursor landed. The outline is a plain, non-animated rule so the
+   highlight still appears with animations off (body.anim-off kills the
+   animation but not the outline); the fade is the decoration on top. */
+.jump-flash {
+  outline: 2px solid var(--ansi-cyan);
+  outline-offset: 2px;
+  animation: jump-flash-fade 1.4s ease-out forwards;
+}
+/* Held solid for most of the 1.4s, then faded - not faded across the whole of
+   it. The first cut ran the fade from 0%, and on an ease-out curve that is 95%
+   gone a second in: the screenshot taken to check the highlight showed no
+   highlight, because by then there was none to show. */
+@keyframes jump-flash-fade {
+  0%, 70% { outline-color: var(--ansi-cyan); box-shadow: 0 0 0.6rem hsl(180 75% 55% / 0.55); }
+  100% { outline-color: transparent; box-shadow: 0 0 0 transparent; }
+}
+
+/* The footer's keyboard hint. The explicit [hidden] rule is defensive: an
+   author `display` would otherwise silently beat the HTML hidden attribute. */
+.jump-hint[hidden] { display: none; }

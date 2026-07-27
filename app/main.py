@@ -387,6 +387,10 @@ templates.env.globals["APPEARANCE_CHOICES"] = config.APPEARANCE_CHOICES
 templates.env.globals["APPEARANCE_DEFAULTS"] = config.APPEARANCE_DEFAULTS
 templates.env.globals["status_choices"] = config.status_choices
 templates.env.globals["display_state"] = db.display_state
+# A global rather than a per-route context value: priority shows up on the
+# dashboard cells, the project page control and the sub-project list, and a
+# route that forgot to pass it would leave one of those three still showing it.
+templates.env.globals["show_priority"] = db.show_priority
 templates.env.globals["is_side_thread"] = db.is_side_thread
 templates.env.globals["summary_bullet"] = db.summary_bullet
 templates.env.filters["status_badge"] = config.status_badge
@@ -472,13 +476,17 @@ async def on_shutdown() -> None:
 async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     # `?sort=` both applies and sticks, so the order survives the next visit
     # without needing a settings trip. An unknown name is ignored entirely.
-    if sort in config.PROJECT_SORTS:
+    # The menu, not the full catalogue: with priority hidden, "priority, then
+    # recent" is not a sort this install offers, so a stored preference for it
+    # falls back here rather than quietly ranking by an invisible number.
+    sorts = db.project_sorts()
+    if sort in sorts:
         db.set_setting("dashboard_sort", sort)
-    active_sort = sort if sort in config.PROJECT_SORTS else (
-        db.get_setting("dashboard_sort") or config.DEFAULT_PROJECT_SORT
+    active_sort = sort if sort in sorts else (
+        db.get_setting("dashboard_sort") or db.default_project_sort()
     )
-    if active_sort not in config.PROJECT_SORTS:
-        active_sort = config.DEFAULT_PROJECT_SORT
+    if active_sort not in sorts:
+        active_sort = db.default_project_sort()
     projects = db.list_projects_sorted(active_sort)
     done = [p for p in projects if p["stage"] in config.DONE_STAGES]
     question_counts = db.open_question_counts()
@@ -533,7 +541,7 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             "heatmap": usage.heatmap(),
             "active_run": active_run,
             "worker_model": settings.get("worker_model") or config.DEFAULT_MODEL,
-            "sorts": config.PROJECT_SORTS,
+            "sorts": sorts,
             "active_sort": active_sort,
             # Which cards carry the "needs your OK" badge. A set of ids rather
             # than a per-card call so the gate is evaluated once per render.

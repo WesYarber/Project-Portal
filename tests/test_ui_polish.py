@@ -120,7 +120,8 @@ def test_run_count_line_sits_at_the_top_of_the_journal(client, project):
     html = _page(client)
     assert "2 runs on this project" in html
     assert 'href="/activity?project=fridge"' in html
-    journal = html.index("<h2>Journal</h2>")
+    # The heading carries data-jump so the J key can scroll to it.
+    journal = html.index(">Journal</h2>")
     line = html.index("2 runs on this project")
     assert journal < line
     # Above the entries themselves, not buried under them.

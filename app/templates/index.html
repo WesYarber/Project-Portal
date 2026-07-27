@@ -31,7 +31,7 @@
     <span class="badge status-{{ state }}">{{ state|status_badge }}</span>
     {% if p.id in awaiting_approval %}<span class="badge needs-ok">needs your OK</span>{% endif %}
     {% if p.blocked_on %}<span class="badge status-paused" title="{{ p.blocked_on }}">blocked</span>{% endif %}
-    <span>{{ p.kind }} &middot; p{{ p.priority }}
+    <span>{{ p.kind }}{% if show_priority() %} &middot; p{{ p.priority }}{% endif %}
       {%- if run_counts.get(p.id) %} &middot; {{ run_counts[p.id] }} run{{ 's' if run_counts[p.id] != 1 }} today{% endif %}
       &middot; {{ p.updated_at|timeago }}</span>
   </span>
@@ -224,7 +224,10 @@
 </details>
 {% endif %}
 
-<h2>New idea</h2>
+{# N on the dashboard: same key as "add note" on a project page, because on both
+   it means "start typing the thing I came here to type". The cursor goes to the
+   title, per Wes - the idea body is one Tab away. #}
+<h2 data-jump="idea" data-jump-focus="#title">New idea</h2>
 <div class="card">
   <form method="post" action="/ideas">
     <div class="field">

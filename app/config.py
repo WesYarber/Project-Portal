@@ -155,6 +155,22 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "spend_down_model": DEFAULT_MODEL,
     # Dashboard project ordering; see PROJECT_SORTS.
     "dashboard_sort": "priority",
+    # Whether the per-project priority number exists at all.
+    #
+    # Wes, 2026-07-27: "priority - I don't think I use it, and might want to
+    # remove it. I think maybe it would be more useful in cases where someone
+    # has less tokens to burn through and wants to keep less things running in
+    # parallel... At very least, maybe let's add in an option in settings to
+    # hide the priority." He is right about his own install: 28 of his 30
+    # projects sit at 0.
+    #
+    # Off does NOT mean "hide a lever that is still pulling". Priority is the
+    # first key in every ORDER BY the scheduler and the dashboard use, so a
+    # hidden 6 would go on front-running the queue with nothing on screen to
+    # explain it - the silent-behaviour failure this project keeps refusing to
+    # ship. Off therefore drops it from the ordering too, and the queue falls
+    # back to least-recently-touched. See db.project_order().
+    "show_priority": "1",
     "glados_mode": "1",
     # Seeded from the site config, so an install whose ntfy lives elsewhere
     # starts correct instead of needing a visit to /settings. Once seeded these

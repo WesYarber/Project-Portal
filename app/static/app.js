@@ -1460,6 +1460,9 @@ function reinit() {
   initDropzones();
   initTitleRename();
   initProjectDrag();
+  // The footer hint is written by the client, so the server's copy of that
+  // span - empty and hidden - would blank it on every live patch.
+  if (typeof jumpHintSync === "function") jumpHintSync();
   if (subtabsApply) subtabsApply();
 }
 
@@ -2036,3 +2039,141 @@ function quoteInto(kind, text) {
   }
   form.scrollIntoView({ block: "center", behavior: "smooth" });
 }
+
+// ---------------------------------------------------------------------------
+// Single-key jumps to the section you want.
+//
+// Wes, 2026-07-27: "Hitting the 'N' key when no text box is being typed into
+// in a project page should jump to the 'add note' section and highlight the
+// text box for it so a note can begin being typed immediately. If on the
+// overall project dashboard, hitting n should jump to the new ideas section
+// and highlight to start typing in a title. The page scroll should be set so
+// that the title section is at the top of the page rather than the bottom or
+// something. Same for the add note bit. Set the journal section up to be
+// jumped to in project pages by pressing J... T should do the same with todo,
+// and p with the top project status/settings stuff."
+//
+// The page declares its own targets with `data-jump="<name>"`, so this file
+// never learns the shape of a template: adding a jumpable section is one
+// attribute in the HTML. `data-jump-focus` names the field to put the cursor
+// in, and is optional - J, T and P are pure navigation.
+// ---------------------------------------------------------------------------
+
+// key -> the target names it will settle for, in preference order. A page only
+// ever declares one of them, which is how N means "the box I type into here"
+// on both pages: `note` exists on a project page, `idea` on the dashboard.
+var JUMP_KEYS = {
+  n: ["note", "idea"],
+  j: ["journal"],
+  t: ["todo"],
+  p: ["project"]
+};
+
+// Where the key must NOT act: anywhere the letter is a letter. Without this,
+// typing "not now" into the note box would fire N, T and O's worth of jumps
+// and lose the sentence.
+function typingInto(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  var tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" ||
+    tag === "OPTION";
+}
+
+function jumpTarget(key) {
+  var names = JUMP_KEYS[key];
+  if (!names) return null;
+  for (var i = 0; i < names.length; i++) {
+    var el = document.querySelector('[data-jump="' + names[i] + '"]');
+    if (el) return el;
+  }
+  return null;
+}
+
+// Smooth unless the reader has asked for stillness - the appearance setting
+// paints `anim-off` on <body>, and the OS-level preference is honoured too,
+// because a long page scrolling under you is exactly the motion both mean.
+function jumpBehavior() {
+  if (document.body.classList.contains("anim-off")) return "auto";
+  if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    return "auto";
+  }
+  return "smooth";
+}
+
+function jumpTo(el) {
+  // A target folded inside a <details> would otherwise scroll to a summary
+  // with nothing under it.
+  var fold = el.closest ? el.closest("details") : null;
+  while (fold) {
+    fold.open = true;
+    fold = fold.parentElement && fold.parentElement.closest
+      ? fold.parentElement.closest("details")
+      : null;
+  }
+
+  var sel = el.getAttribute("data-jump-focus");
+  var field = sel ? document.querySelector(sel) : null;
+  if (field) {
+    // Focus BEFORE the scroll, not after. focus() scrolls the field into view
+    // by itself, which lands the field near the top of the window and throws
+    // away the section heading we are here to align - so the scroll has to be
+    // the last word. preventScroll asks it not to fight in the first place.
+    try {
+      field.focus({ preventScroll: true });
+    } catch (e) {
+      field.focus();
+    }
+    jumpFlash(field);
+  }
+  // block:start is the whole ask: the section's top edge against the top of
+  // the window, not centred and not scrolled just barely into view.
+  el.scrollIntoView({ block: "start", behavior: jumpBehavior() });
+}
+
+// A brief ring around the field so it is obvious where the cursor went. The
+// class is dropped again so a live refresh never inherits a stale highlight.
+var jumpFlashTimer = null;
+function jumpFlash(field) {
+  if (jumpFlashTimer) clearTimeout(jumpFlashTimer);
+  document.querySelectorAll(".jump-flash").forEach(function (el) {
+    el.classList.remove("jump-flash");
+  });
+  field.classList.add("jump-flash");
+  jumpFlashTimer = setTimeout(function () {
+    field.classList.remove("jump-flash");
+  }, 1400);
+}
+
+document.addEventListener("keydown", function (ev) {
+  // Modified keys belong to the browser (Cmd+N is a new window, Ctrl+P is
+  // print). Shift is allowed through unmodified: Wes wrote "N" and "J".
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (typingInto(ev.target)) return;
+  // The image viewer is a modal: scrolling the page behind it does nothing you
+  // can see, and Escape is the way out.
+  var lightbox = document.getElementById("img-lightbox");
+  if (lightbox && !lightbox.hidden) return;
+  if (!ev.key || ev.key.length !== 1) return;
+  var el = jumpTarget(ev.key.toLowerCase());
+  if (!el) return;
+  ev.preventDefault();
+  jumpTo(el);
+});
+
+// The footer says which keys this page answers to, derived from the targets
+// the page declares - so it lists exactly the keys that work, and stays empty
+// on a page with none. Only on a device with a real keyboard: on a phone the
+// hint would be advertising something you cannot press.
+function jumpHintSync() {
+  var slot = document.querySelector(".jump-hint");
+  if (!slot) return;
+  if (!hasHardwareKeyboard()) return;
+  var keys = Object.keys(JUMP_KEYS).filter(function (key) {
+    return !!jumpTarget(key);
+  });
+  if (!keys.length) return;
+  slot.textContent = keys.join(" ") + " jump to a section";
+  slot.hidden = false;
+}
+document.addEventListener("DOMContentLoaded", jumpHintSync);

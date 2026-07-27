@@ -196,13 +196,19 @@ def test_the_cap_can_still_be_set(client, project):
 
 # --- the action row --------------------------------------------------------
 
-def test_pause_building_sits_between_run_now_and_queue_research(client, project):
+def test_run_now_sits_before_queue_research(client, project):
+    """`pause building` used to sit between these two.
+
+    It came off the page on Wes's 2026-07-27 note ("I know I've never used it")
+    - and the journal agreed: its route writes an entry every time it runs, and
+    there were zero of them across 841. What is left is still ordered by
+    commitment: do it now, then do it when the allowance is free. The button's
+    absence is pinned in test_priority_toggle.py.
+    """
     body = page(client)
     row = body.split('class="button-row action-row"', 1)[1].split("</div>", 1)[0]
-    run = row.index("run agent now")
-    pause = row.index("pause building")
-    research = row.index("queue research burst")
-    assert run < pause < research
+    assert "pause building" not in row
+    assert row.index("run agent now") < row.index("queue research burst")
 
 
 def test_no_button_in_the_action_row_is_small(client, project):

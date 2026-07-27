@@ -116,6 +116,10 @@
 
       <div class="terminal-footer">
         <span>project portal // {{ SITE.handle }}</span>
+        {# Filled by app.js from the [data-jump] targets this page actually
+           declares, so the hint can never advertise a key that does nothing.
+           Hidden until then, and hidden on touch, which has no keyboard. #}
+        <span class="jump-hint" hidden></span>
         <span class="cursor">&nbsp;</span>
       </div>
     </div>

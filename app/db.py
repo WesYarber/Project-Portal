@@ -503,10 +503,11 @@ def blocked_on(project: sqlite3.Row) -> str:
 def projects_awaiting_build_approval() -> list[sqlite3.Row]:
     """Projects whose agent has asked to start writing code, held for Wes's OK."""
     conn = get_conn()
+    order = project_order("updated_at DESC, id DESC")
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE build_approved = 0 AND build_requested = 1 "
-            "ORDER BY priority DESC, updated_at DESC, id DESC"
+            f"ORDER BY {order}"
         ).fetchall()
 
 
@@ -733,19 +734,76 @@ def get_project_by_slug(slug: str) -> Optional[sqlite3.Row]:
         return conn.execute("SELECT * FROM projects WHERE slug = ?", (slug,)).fetchone()
 
 
-def list_projects(order_by: str = "priority DESC, updated_at ASC") -> list[sqlite3.Row]:
+def list_projects(order_by: Optional[str] = None) -> list[sqlite3.Row]:
     conn = get_conn()
+    order_by = order_by or project_order("updated_at ASC")
     with _LOCK:
         return conn.execute(f"SELECT * FROM projects ORDER BY {order_by}").fetchall()
 
 
+def show_priority() -> bool:
+    """Whether the per-project priority number is part of this install.
+
+    Read defensively: this is called from every project listing, including ones
+    that run before the settings table has been seeded (and from tests holding
+    a bare database), and a listing that raises is worse than one that keeps
+    the default.
+    """
+    try:
+        value = get_setting("show_priority")
+    except Exception:
+        return True
+    if value is None:
+        value = config.DEFAULT_SETTINGS.get("show_priority", "1")
+    return value == "1"
+
+
+def project_order(rest: str) -> str:
+    """An ORDER BY for projects, with priority in front of it when it is on.
+
+    One definition rather than five copies of the same string, so turning
+    priority off cannot leave one listing still ranking by it. `rest` is the
+    tiebreak that applies either way.
+
+    CALL THIS BEFORE TAKING `_LOCK`, never inside the `with` block. It reads a
+    setting, and `get_setting` takes `_LOCK` itself - which is a plain
+    threading.Lock, not an RLock, so the same thread taking it twice hangs
+    forever. The first cut of this interpolated the call straight into the
+    f-string inside each `with _LOCK:` block, which deadlocked the dashboard,
+    the scheduler and the sub-project list. See test_priority_toggle.py's
+    watchdog test, which fails in a second rather than hanging the suite.
+    """
+    return f"priority DESC, {rest}" if show_priority() else rest
+
+
+def project_sorts() -> dict[str, tuple[str, str]]:
+    """The dashboard's sort menu for this install.
+
+    With priority off, "priority, then recent" comes off the menu rather than
+    staying there ranking by a number nothing on the page can set.
+    """
+    if show_priority():
+        return dict(config.PROJECT_SORTS)
+    return {k: v for k, v in config.PROJECT_SORTS.items() if k != "priority"}
+
+
+def default_project_sort() -> str:
+    """The sort a dashboard with no stored preference uses. Falls through to
+    the first one still on the menu when the configured default is gone."""
+    sorts = project_sorts()
+    if config.DEFAULT_PROJECT_SORT in sorts:
+        return config.DEFAULT_PROJECT_SORT
+    return next(iter(sorts))
+
+
 def list_projects_sorted(sort: Optional[str]) -> list[sqlite3.Row]:
-    """Projects in one of the named orders from `config.PROJECT_SORTS`.
+    """Projects in one of the named orders from `project_sorts()`.
 
     The name is looked up rather than interpolated, so an unknown (or hostile)
     `?sort=` value falls back to the default instead of reaching SQLite.
     """
-    label_sql = config.PROJECT_SORTS.get(sort or "") or config.PROJECT_SORTS[config.DEFAULT_PROJECT_SORT]
+    sorts = project_sorts()
+    label_sql = sorts.get(sort or "") or sorts[default_project_sort()]
     return list_projects(order_by=label_sql[1])
 
 
@@ -753,10 +811,11 @@ def list_projects_by_stage(stages: Iterable[str]) -> list[sqlite3.Row]:
     stages = list(stages)
     conn = get_conn()
     placeholders = ",".join("?" for _ in stages)
+    order = project_order("updated_at ASC")
     with _LOCK:
         return conn.execute(
             f"SELECT * FROM projects WHERE stage IN ({placeholders}) "
-            f"ORDER BY priority DESC, updated_at ASC",
+            f"ORDER BY {order}",
             tuple(stages),
         ).fetchall()
 
@@ -766,11 +825,12 @@ def list_schedulable_projects() -> list[sqlite3.Row]:
     Finer filters (the build gate, blocked-with-nothing-workable) are the
     worker's, since they depend on settings and todos."""
     conn = get_conn()
+    order = project_order("updated_at ASC")
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE stage = 'active' "
             "AND (paused IS NULL OR paused = '') "
-            "ORDER BY priority DESC, updated_at ASC",
+            f"ORDER BY {order}",
         ).fetchall()
 
 
@@ -796,10 +856,11 @@ def child_projects(parent_id: int) -> list[sqlite3.Row]:
     recently touched), so the list on the parent page reads as a queue.
     """
     conn = get_conn()
+    order = project_order("updated_at ASC")
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE parent_id = ? "
-            "ORDER BY priority DESC, updated_at ASC",
+            f"ORDER BY {order}",
             (parent_id,),
         ).fetchall()
 

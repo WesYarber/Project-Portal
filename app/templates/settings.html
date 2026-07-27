@@ -275,7 +275,7 @@
 <section class="settings-panel" id="panel-appearance" data-panel="appearance">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="appearance">
-    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density">
+    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority">
     <div class="card">
       <p class="hint" style="margin-top:0;">Every layer is independent, so you can keep the parts of
         the terminal look you like and drop the parts that make text tiring. Applies on save.</p>
@@ -288,6 +288,17 @@
       </div>
       <p class="hint">Journal entries, notes and agent reports are rendered as Markdown either way
         &mdash; the typeface setting is what decides whether that prose is monospaced.</p>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="show_priority" name="show_priority"
+               {{ 'checked' if (settings.show_priority or '1') == '1' else '' }}>
+        <label for="show_priority">Show project priority</label>
+      </div>
+      <p class="hint">The 0&ndash;9 number on each project. Turning it off takes it off the project
+        page, the dashboard cells and the sub-project list &mdash; and out of the ordering as well,
+        so nothing is left ranking by a number you can no longer see. Projects are then picked
+        least-recently-touched first, which is a fair round-robin. Priority earns its keep when
+        there is not enough allowance to go round and some projects should get the runs;
+        with plenty of headroom it mostly just sits at 0.</p>
       <div class="button-row"><button type="submit">save appearance</button></div>
     </div>
   </form>

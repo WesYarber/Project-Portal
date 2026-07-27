@@ -165,6 +165,7 @@ def _build_registry() -> dict[str, Field]:
         Field("research_model", _choice(config.MODEL_VALUES, config.RESEARCH_MODEL)),
         Field("spend_down_model", _choice(config.MODEL_VALUES, config.DEFAULT_MODEL)),
         Field("glados_mode", _text, checkbox=True),
+        Field("show_priority", _text, checkbox=True),
         Field("ntfy_url", _text),
         Field("ntfy_topic", _text),
     ]

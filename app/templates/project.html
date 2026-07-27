@@ -87,7 +87,9 @@
   </div>
 </details>
 
-<div class="card">
+{# data-jump="project": the P key scrolls this card's top edge to the top of the
+   window. It is the block Wes calls "the project status/settings stuff". #}
+<div class="card" data-jump="project">
   {# One row of identically-shaped controls: same width, same label position,
      same height, each submitting on change. The status control is tinted to
      its own colour so the project's state reads at a glance.
@@ -106,6 +108,7 @@
         {% endfor %}
       </select>
     </form>
+    {% if show_priority() %}
     <form method="post" action="/project/{{ project.slug }}/priority" class="control control-priority">
       <label for="priority">priority</label>
       <select id="priority" name="priority" onchange="this.form.submit()">
@@ -114,6 +117,7 @@
         {% endfor %}
       </select>
     </form>
+    {% endif %}
     <form method="post" action="/project/{{ project.slug }}/model" class="control control-model">
       <label for="model">agent</label>
       <select id="model" name="model" onchange="this.form.submit()">
@@ -221,10 +225,10 @@
   <p class="hint">Build approved - agents write code here.</p>
   {% endif %}
 
-  {# The action row. One height for every button in it (no .small here - a
-     row of three buttons at two different heights reads as a mistake), and
-     `pause building` sits between running and queueing because that is the
-     order of commitment: do it now, stop doing it, do it when it is free. #}
+  {# The action row. One height for every button in it (no .small here - a row
+     of buttons at two different heights reads as a mistake), ordered by
+     commitment: open what is there, run an agent now, queue one for when the
+     allowance is free. #}
   <div class="button-row action-row">
     {# "Open what was built", first in the row because it is the only button
        here that is not about running an agent - it is the payoff. Opens in a
@@ -252,12 +256,19 @@
       <button type="submit" class="btn danger">stop this run</button>
     </form>
     {% endif %}
-    {% if project.build_approved and not build_gated %}
-    <form method="post" action="/project/{{ project.slug }}/revoke-build" class="inline-form"
-          data-confirm="Pause building on {{ project.slug }}? Agents will plan but not write code.">
-      <button type="submit" class="btn secondary">pause building</button>
-    </form>
-    {% endif %}
+    {# No `pause building` button here any more.
+       Wes, 2026-07-27: "Is the 'Pause building' button used for anything? I
+       know I've never used it, and I'm wondering why it is still there and if
+       it should be removed."
+       He never used it and neither did anyone else: `revoke-build` writes a
+       "Build approval withdrawn" journal entry every time it runs, and across
+       841 journal entries on this install there are zero of them. The two
+       things it half-did are both better served elsewhere - pausing the whole
+       project is the status control at the top of this page, and un-approving
+       a build is a decision he makes when the agent asks, not one he goes
+       looking for a button to reverse. The POST route stays - undoing an
+       approval is still a real operation and that route is its only
+       implementation - but nothing on the page calls it now. #}
     {# A research burst is deliberately not a "run now" button: it queues the
        project for the next window where weekly allowance is about to expire,
        so it spends nothing Wes would otherwise have used. #}
@@ -341,7 +352,7 @@
       {% if c.description %}<span class="cell-desc">{{ c.description }}</span>{% endif %}
       <span class="cell-foot">
         <span class="badge status-{{ display_state(c) }}">{{ display_state(c)|status_badge }}</span>
-        <span>{{ c.slug }} &middot; p{{ c.priority }} &middot; {{ c.updated_at|timeago }}</span>
+        <span>{{ c.slug }}{% if show_priority() %} &middot; p{{ c.priority }}{% endif %} &middot; {{ c.updated_at|timeago }}</span>
       </span>
     </a>
     {% endfor %}
@@ -457,7 +468,7 @@
 {# The working checklist. Split by who has to do the thing, because the two
    halves are read for different reasons: the agent's half is a backlog, and
    Wes's half is the list of things nothing can proceed without. #}
-<h2 id="todos">Todo</h2>
+<h2 id="todos" data-jump="todo">Todo</h2>
 <div class="card todo-card">
   {# scroll-cap: taller than TODO_VISIBLE_ROWS rows and the list gets its own
      scrollbar instead of pushing the rest of the page down. The row height is
@@ -550,7 +561,9 @@
     list after 16 hours, or as soon as you clear them.</p>
 </div>
 
-<h2>Add note</h2>
+{# data-jump-focus puts the cursor straight in the box, so N is "start writing a
+   note", not "look at where notes go". #}
+<h2 data-jump="note" data-jump-focus=".note-form textarea[name='note']">Add note</h2>
 <div class="card">
   {# multipart, with a real <input type=file>: drag-and-drop, paste and the
      voice recorder all work by putting files *into this input*, so the browser's
@@ -680,7 +693,10 @@
 </div>
 </details>
 
-<h2>Journal</h2>
+{# J lands here rather than on the scroll box below, so the heading and the
+   run-count line stay on screen - the box's own top edge still ends up in the
+   first ~130px of the window, which is what "along the top" was asking for. #}
+<h2 data-jump="journal">Journal</h2>
 {# What the Runs section used to be. The table it hid duplicated /activity row
    for row, so all that is kept is the count and the link - the journal below
    is the readable account of the same runs. #}
