@@ -258,13 +258,25 @@ def test_boost_fires_on_the_real_horizon():
     assert pace["factor"] > 1.0
 
 
-def test_status_line_names_the_learned_cadence():
+def test_status_line_names_the_learned_cadence(monkeypatch):
+    """This test rotted, and how it rotted is worth keeping.
+
+    It used to write the snapshot into the live cache and call `status_line()`
+    with no clock. Both halves read the real time: `limits.cached()` marks a
+    snapshot stale once its `resets_at` has passed, and `resets_at` here is
+    five days after the frozen NOW of 2026-07-21. So from 2026-07-27 the
+    cached reading was permanently "stale", `weekly_pace` refused it, and the
+    line came back empty. It passed on the day it was written and failed every
+    day after - the one test in this suite that could go red with nobody
+    touching the code.
+
+    Both the clock and the reading are pinned now. The subject is how the line
+    is *worded*, so the freshness machinery has no business in it.
+    """
     _seed_72h(last=NOW - timedelta(hours=48))
-    snap = weekly_snapshot(10.0, resets_in_sec=5 * 86400)
-    # status_line reads the live cache; store the snapshot the way the poller would.
-    db.set_setting(limits.CACHE_KEY, json.dumps(dict(
-        snap, fetched_at=datetime.now(timezone.utc).isoformat(timespec="seconds"))))
-    line = pacing.status_line()
+    snap = dict(weekly_snapshot(10.0, resets_in_sec=5 * 86400), ok=True, stale=False)
+    monkeypatch.setattr(limits, "cached", lambda *a, **k: snap)
+    line = pacing.status_line(now=NOW)
     assert "learned reset cadence" in line
 
 
