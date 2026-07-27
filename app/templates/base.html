@@ -37,7 +37,11 @@
 <meta name="theme-color" content="#0d1016">
 <link rel="stylesheet" href="{{ static_url('style.css') }}">
 </head>
-<body class="{{ body_classes() }}"{% if secure_url() %} data-secure-url="{{ secure_url() }}"{% endif %}>
+{# data-jump-keys is the configured key -> section map (Settings > appearance >
+   keyboard jumps). It rides on every page because app.js must know the
+   bindings before the first keystroke, not after a fetch. Single-quoted: the
+   value is JSON and contains double quotes. #}
+<body class="{{ body_classes() }}" data-jump-keys='{{ jump_keys_json() }}'{% if secure_url() %} data-secure-url="{{ secure_url() }}"{% endif %}>
 {# Shown only when the server stops answering - typically because it is
    restarting itself to load new code. Beats the browser's "can't reach this
    site" page, and reloads on its own the moment the portal is back. #}

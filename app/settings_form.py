@@ -17,7 +17,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from . import config, daycycle, runlimit, usage
+from . import config, daycycle, jumpkeys, runlimit, usage
 
 # The hidden input a section form uses to declare the settings it owns.
 FIELDS_INPUT = "_fields"
@@ -169,6 +169,13 @@ def _build_registry() -> dict[str, Field]:
         Field("ntfy_url", _text),
         Field("ntfy_topic", _text),
     ]
+    # One field per jumpable section, derived from jumpkeys.ACTIONS. `clean`
+    # only ever sees one field at a time, so it can validate the letter but not
+    # notice that two sections now want the same one - that is what the
+    # de-duplication pass at the end of `apply` is for.
+    fields.extend(
+        Field(jumpkeys.setting_key(name), jumpkeys.clean) for name in jumpkeys.ACTION_NAMES
+    )
     fields.extend(_appearance_fields())
     return {field.key: field for field in fields}
 
@@ -204,4 +211,29 @@ def apply(form: dict[str, str], declared: Optional[str] = None) -> dict[str, str
             out[key] = "1" if form.get(key) else "0"
         elif key in form:
             out[key] = field.clean(str(form[key]))
+    return _deconflict_jump_keys(out)
+
+
+def _deconflict_jump_keys(out: dict[str, str]) -> dict[str, str]:
+    """Stop two sections being saved onto the same letter.
+
+    The per-field `clean` cannot see its siblings, so this is the only place
+    that can - and it has to be a pass over the whole submission rather than a
+    smarter Field, because "is this letter free?" is a question about the other
+    three fields in the same form.
+
+    The loser is written as blank rather than left alone, deliberately: the
+    stored value and the settings row then agree with each other and with what
+    the browser will actually do. Leaving the old letter in place would give a
+    settings page that shows a binding the page has just refused to honour.
+    """
+    submitted = {
+        name: out[jumpkeys.setting_key(name)]
+        for name in jumpkeys.ACTION_NAMES
+        if jumpkeys.setting_key(name) in out
+    }
+    if not submitted:
+        return out
+    for name, key in jumpkeys.deconflict(submitted).items():
+        out[jumpkeys.setting_key(name)] = key
     return out

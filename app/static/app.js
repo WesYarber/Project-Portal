@@ -2062,12 +2062,53 @@ function quoteInto(kind, text) {
 // key -> the target names it will settle for, in preference order. A page only
 // ever declares one of them, which is how N means "the box I type into here"
 // on both pages: `note` exists on a project page, `idea` on the dashboard.
-var JUMP_KEYS = {
+//
+// Wes, the same morning: "Allow these key commands to be reconfigured in
+// settings." So these letters are a default, not a fact. app/jumpkeys.py owns
+// the bindings and renders them onto `<body data-jump-keys>` as this exact
+// shape; this file reads them there rather than fetching, because the map has
+// to be known before the first keystroke - a page that answered N only after a
+// round trip would drop the key you pressed while it was still asking.
+var JUMP_KEYS_DEFAULT = {
   n: ["note", "idea"],
   j: ["journal"],
   t: ["todo"],
   p: ["project"]
 };
+
+// An absent attribute means a page that predates the setting (a cached tab, a
+// template rendered elsewhere) and falls back to the shipped letters. An empty
+// object does NOT: `{}` is somebody having turned every jump off on purpose,
+// and reviving the defaults there would be the portal overruling them.
+function readJumpKeys() {
+  var raw = document.body && document.body.getAttribute
+    ? document.body.getAttribute("data-jump-keys")
+    : null;
+  if (raw === null || raw === "") return JUMP_KEYS_DEFAULT;
+  var parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return JUMP_KEYS_DEFAULT;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return JUMP_KEYS_DEFAULT;
+  }
+  // Keep only entries this file could actually act on. A single character,
+  // because that is what a keydown gives us to match; a non-empty list of
+  // target names, because anything else would make jumpTarget iterate garbage
+  // and, worse, make the footer hint advertise a letter that does nothing.
+  var out = {};
+  Object.keys(parsed).forEach(function (key) {
+    var names = parsed[key];
+    if (key.length !== 1 || !Array.isArray(names) || !names.length) return;
+    var clean = names.filter(function (name) { return typeof name === "string" && name; });
+    if (clean.length) out[key.toLowerCase()] = clean;
+  });
+  return out;
+}
+
+var JUMP_KEYS = readJumpKeys();
 
 // Where the key must NOT act: anywhere the letter is a letter. Without this,
 // typing "not now" into the note box would fire N, T and O's worth of jumps

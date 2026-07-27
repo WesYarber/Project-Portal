@@ -73,7 +73,15 @@ function run(scene) {
     matchMedia: (q) => ({ matches: !!(scene.media && scene.media[q]) }),
   };
   globalThis.document = {
-    body: { classList: { contains: (c) => bodyClasses.has(c) } },
+    // `bindings` is what app/jumpkeys.py renders onto <body data-jump-keys>.
+    // `undefined` in a scene means the attribute is absent altogether, which
+    // is the cached-page case and must fall back to the shipped letters - not
+    // the same thing as a scene binding "{}", which is every jump turned off.
+    body: {
+      classList: { contains: (c) => bodyClasses.has(c) },
+      getAttribute: (name) =>
+        (name === "data-jump-keys" && scene.bindings !== undefined ? scene.bindings : null),
+    },
     querySelector: (sel) => bySelector[sel] || null,
     querySelectorAll: () => [],
     getElementById: (id) =>
@@ -175,6 +183,54 @@ const scenes = {
     elements: PROJECT_PAGE,
     key: "j",
     media: { "(prefers-reduced-motion: reduce)": true },
+  },
+
+  // --- the bindings are configuration (Wes: "allow these key commands to be
+  // reconfigured in settings") ---------------------------------------------
+
+  // The letters the page was rendered with are the letters that work: G jumps
+  // to the journal here because the settings say so...
+  rebound: {
+    elements: PROJECT_PAGE,
+    key: "g",
+    bindings: '{"g":["journal"]}',
+  },
+  // ...and J, the shipped default, is then just a letter again.
+  reboundOldKeyIsFree: {
+    elements: PROJECT_PAGE,
+    key: "j",
+    bindings: '{"g":["journal"]}',
+  },
+  // A rebound N still focuses, because focusing belongs to the target's
+  // data-jump-focus and not to the letter.
+  reboundStillFocuses: {
+    elements: PROJECT_PAGE,
+    key: "a",
+    bindings: '{"a":["note","idea"]}',
+  },
+  // Every jump turned off. `{}` must NOT revive the defaults - it is a
+  // deliberate choice, and reviving them would overrule it.
+  allUnbound: { elements: PROJECT_PAGE, key: "j", bindings: "{}" },
+  // A page rendered before the attribute existed (a cached tab) keeps the
+  // shipped letters rather than losing its keys.
+  attributeAbsent: { elements: PROJECT_PAGE, key: "j" },
+  // Garbage in the attribute is the same case: fall back, never throw.
+  bindingsNotJson: { elements: PROJECT_PAGE, key: "j", bindings: "not json{" },
+  bindingsNotAnObject: { elements: PROJECT_PAGE, key: "j", bindings: '["j"]' },
+  // An entry the handler could not act on is dropped rather than half-used:
+  // a multi-character key can never match a keydown, and an empty target list
+  // would be a letter that swallows the keystroke and goes nowhere.
+  bindingsJunkEntriesDropped: {
+    elements: PROJECT_PAGE,
+    key: "j",
+    bindings: '{"jj":["journal"],"t":[],"j":["journal"]}',
+  },
+  // The one that would swallow a keystroke: a bound letter whose targets are
+  // all junk must behave like an unbound letter, not like a dead jump.
+  bindingsAllTargetsJunk: {
+    elements: PROJECT_PAGE,
+    key: "t",
+    bindings: '{"t":[null,""]}',
   },
 };
 

@@ -1541,6 +1541,34 @@ select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red);
 .field-grid .field { display: flex; flex-direction: column; }
 .field-grid .hint { margin-top: auto; padding-top: 0.3rem; }
 
+/* A settings heading inside a panel, for a group that wants a name without
+   wanting its own card and its own save button. */
+.settings-subhead {
+  margin-top: 1.4rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--window-border);
+}
+
+/* The keyboard-jump bindings: one letter each, so the box is the size of what
+   goes in it rather than the full-width default every other text input takes.
+   `align-self` is needed because .field-grid makes the cell a flex column,
+   which would otherwise stretch the input back out to the column width.
+   Uppercase is display only - the stored value stays the lowercase letter the
+   keydown handler matches on.
+
+   Written `input.jump-key-input`, not `.jump-key-input`: the shared
+   `input[type="text"] { width: 100% }` above is an attribute selector and
+   outweighs a bare class, so the first cut of this rule was ignored outright
+   and the letter boxes rendered full width. */
+input.jump-key-input {
+  width: 3.2rem;
+  align-self: flex-start;
+  text-align: center;
+  text-transform: uppercase;
+  font-family: var(--font-mono);
+  letter-spacing: 0.08em;
+}
+
 /* Attachments -------------------------------------------------------------
    Files Wes drops onto a project. The note form doubles as the drop target,
    so the whole card gets the drag affordance rather than a separate box that

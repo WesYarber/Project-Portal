@@ -5,7 +5,7 @@ import re
 import subprocess
 from pathlib import Path
 
-from app import site
+from app import jumpkeys, site
 
 # This installation's identity - owner, hostname, ports, SSH user - resolved
 # from portal.toml / the environment / the machine itself (see app/site.py).
@@ -171,6 +171,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # ship. Off therefore drops it from the ordering too, and the queue falls
     # back to least-recently-touched. See db.project_order().
     "show_priority": "1",
+    # Which letter jumps to which section (n / j / t / p as shipped). Spread in
+    # from app/jumpkeys.py rather than written out here, so adding a jumpable
+    # section is one entry in that module's ACTIONS and nothing else - the
+    # settings row, the form field, the default and the page hint all follow.
+    **jumpkeys.DEFAULTS,
     "glados_mode": "1",
     # Seeded from the site config, so an install whose ntfy lives elsewhere
     # starts correct instead of needing a visit to /settings. Once seeded these

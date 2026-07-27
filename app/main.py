@@ -33,6 +33,7 @@ from app import (
     filetree,
     fileview,
     hookguard,
+    jumpkeys,
     launch,
     limits,
     live,
@@ -324,6 +325,21 @@ def body_classes() -> str:
     )
 
 
+def jump_keys_json() -> str:
+    """The configured `key -> section` map, for `<body data-jump-keys>`.
+
+    Rendered into every page rather than fetched, because app.js has to know
+    the bindings before the very first keystroke - a page that answered N only
+    after a round trip would drop the keypress you made while it was reading
+    the page. Falls back to the shipped defaults if the settings read fails, so
+    a database hiccup costs the keys their configuration, not their existence.
+    """
+    try:
+        return jumpkeys.bindings_json(db.get_all_settings())
+    except Exception:  # noqa: BLE001
+        return jumpkeys.bindings_json()
+
+
 def static_url(name: str) -> str:
     """`/static/style.css?v=<mtime>` so a stylesheet change is never masked by
     a cached copy. This was not academic: the appearance settings landed with
@@ -391,6 +407,7 @@ templates.env.globals["display_state"] = db.display_state
 # dashboard cells, the project page control and the sub-project list, and a
 # route that forgot to pass it would leave one of those three still showing it.
 templates.env.globals["show_priority"] = db.show_priority
+templates.env.globals["jump_keys_json"] = jump_keys_json
 templates.env.globals["is_side_thread"] = db.is_side_thread
 templates.env.globals["summary_bullet"] = db.summary_bullet
 templates.env.filters["status_badge"] = config.status_badge
@@ -1711,6 +1728,11 @@ async def settings_page(request: Request) -> HTMLResponse:
                 "default_human": runlimit.human(runlimit.default_max_bytes()),
                 "total_human": runlimit.human(runlimit.total_memory_bytes()),
             },
+            # One row per jumpable section: the field to render, and what the
+            # key does now. Derived from jumpkeys.ACTIONS rather than listed in
+            # the template, so a new jumpable section grows its settings field
+            # without anyone remembering to add one.
+            "jump_keys": jumpkeys.rows(settings),
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
             "push_sent": request.query_params.get("push_sent"),

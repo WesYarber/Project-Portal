@@ -233,3 +233,60 @@ def test_motion_preferences_drop_the_smooth_scroll(jumps):
     for name in ("animOff", "reducedMotion"):
         assert jumps[name]["scrolls"][0]["opts"]["behavior"] == "auto", name
     assert jumps["journal"]["scrolls"][0]["opts"]["behavior"] == "smooth"
+
+
+# --------------------------------------------------------------------------
+# The bindings are configuration, read off <body data-jump-keys>
+#
+# Wes, the same morning: "Allow these key commands to be reconfigured in
+# settings." The server half - storing, validating and de-duplicating the
+# letters - is tests/test_jump_key_settings.py. This is the half that proves
+# app.js actually obeys what it is handed.
+# --------------------------------------------------------------------------
+
+def test_a_rebound_letter_jumps_and_the_old_one_goes_back_to_being_a_letter(jumps):
+    assert _scrolled(jumps["rebound"]) == ["journalHead"]
+    assert jumps["rebound"]["defaultPrevented"] is True
+    # The default J is now nothing at all - and, crucially, does not swallow
+    # the keystroke, so it is still available to the browser.
+    assert _scrolled(jumps["reboundOldKeyIsFree"]) == []
+    assert jumps["reboundOldKeyIsFree"]["defaultPrevented"] is False
+
+
+def test_focus_belongs_to_the_target_not_to_the_letter(jumps):
+    # N's job is to put the cursor in the box; rebinding it to A must not turn
+    # the jump into navigation-only.
+    scene = jumps["reboundStillFocuses"]
+    assert _scrolled(scene) == ["noteHead"]
+    assert _focused(scene) == ["noteBox"]
+
+
+def test_turning_every_jump_off_is_honoured_rather_than_overruled(jumps):
+    # `{}` is a deliberate choice. Falling back to the shipped letters here -
+    # the obvious `bindings || DEFAULTS` - would be a switch that turns itself
+    # back on, which is the one behaviour this whole feature must not have.
+    scene = jumps["allUnbound"]
+    assert _scrolled(scene) == []
+    assert scene["defaultPrevented"] is False
+
+
+def test_a_page_with_no_attribute_keeps_the_shipped_letters(jumps):
+    # A tab cached from before the setting existed, or a template rendered
+    # somewhere else: the keys degrade to their defaults, not to nothing.
+    assert _scrolled(jumps["attributeAbsent"]) == ["journalHead"]
+
+
+def test_an_unreadable_attribute_falls_back_instead_of_throwing(jumps):
+    # A throw here would abort the whole script tag, taking every other
+    # behaviour in app.js with it - so this is not only about the jumps.
+    for name in ("bindingsNotJson", "bindingsNotAnObject"):
+        assert _scrolled(jumps[name]) == ["journalHead"], name
+
+
+def test_an_entry_the_handler_could_not_act_on_is_dropped(jumps):
+    # A multi-character key can never match a keydown, and an empty or junk
+    # target list would give a letter that swallows the keystroke and goes
+    # nowhere - worse than an unbound key, because the browser never sees it.
+    assert _scrolled(jumps["bindingsJunkEntriesDropped"]) == ["journalHead"]
+    assert jumps["bindingsAllTargetsJunk"]["defaultPrevented"] is False
+    assert _scrolled(jumps["bindingsAllTargetsJunk"]) == []

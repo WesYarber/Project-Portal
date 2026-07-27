@@ -275,7 +275,7 @@
 <section class="settings-panel" id="panel-appearance" data-panel="appearance">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="appearance">
-    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority">
+    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority,{{ jump_keys|map(attribute='field')|join(',') }}">
     <div class="card">
       <p class="hint" style="margin-top:0;">Every layer is independent, so you can keep the parts of
         the terminal look you like and drop the parts that make text tiring. Applies on save.</p>
@@ -299,6 +299,29 @@
         least-recently-touched first, which is a fair round-robin. Priority earns its keep when
         there is not enough allowance to go round and some projects should get the runs;
         with plenty of headroom it mostly just sits at 0.</p>
+
+      {# Keyboard jumps. The rows come from app/jumpkeys.py, so a new jumpable
+         section appears here on its own - there is no list of sections in this
+         template to forget to update. `state` is what the row reports back
+         after a save, which is how a rejected duplicate letter is visible
+         without a flash message. #}
+      <h3 class="settings-subhead">Keyboard jumps</h3>
+      <p class="hint">One letter each, pressed while you are not typing in a box, scrolls that
+        section to the top of the window. Leave a field blank to unbind it. Two sections cannot
+        share a letter &mdash; the one listed first here keeps it and the other is unbound, and
+        the line under each field says what the key actually is now.</p>
+      <div class="grid grid-2 field-grid">
+        {% for row in jump_keys %}
+        <div class="field">
+          <label for="{{ row.field }}">{{ row.label }}</label>
+          <input type="text" id="{{ row.field }}" name="{{ row.field }}" value="{{ row.key }}"
+                 maxlength="1" size="1" autocomplete="off" autocapitalize="off"
+                 spellcheck="false" class="jump-key-input">
+          <p class="hint">{{ row.hint }} &middot; <strong>{{ row.state }}</strong></p>
+        </div>
+        {% endfor %}
+      </div>
+
       <div class="button-row"><button type="submit">save appearance</button></div>
     </div>
   </form>
