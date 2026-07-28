@@ -57,7 +57,9 @@ async def notify(
             # a second person's copy keeps its buttons until they tap one, which
             # still answers correctly - it is a stale-looking message, not a
             # wrong one. Recording the *first* rather than the last is only
-            # about being deterministic. See todo #412.
+            # about being deterministic. Fixing it properly means a table of
+            # (question, chat, message id) rather than one column, which is on
+            # the project's todo list.
             await _send_telegram(
                 token, chat_id, decorated, question_id, record_msg_id=(index == 0)
             )
