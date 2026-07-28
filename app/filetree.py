@@ -38,6 +38,15 @@ HIDDEN_DIRS = {".git"}
 # keeps an `attachments/` folder deeper in its own source still shows it.
 ROOT_ONLY_HIDDEN = {"attachments"}
 
+# Hidden by exact relative path rather than by name. The journal mirror is the
+# portal's own file, written into the workspace before each run so an agent can
+# read a journal entry its prompt only summarized (app/journalfile.py). Its
+# content is already on this very page, rendered properly, in the journal
+# timeline - and at its natural size it is over `fileview.MAX_TEXT_BYTES`, so
+# the row would open on "too large to display" anyway. The rest of `.portal/`
+# stays visible: report.json and serve.json are small and worth a look.
+HIDDEN_PATHS = {".portal/journal.md"}
+
 # `count_files` stops here rather than walking a pathological tree to the end.
 # The header then reads "5000+ files", which tells the reader the same thing
 # the true number would ("more than you want to scroll") for a bounded cost.
@@ -91,6 +100,8 @@ def children(workspace: Path, rel: str = "") -> list[Entry]:
         if not _visible(item.name, at_root=at_root, is_dir=is_dir):
             continue
         path = f"{rel}/{item.name}" if rel else item.name
+        if path in HIDDEN_PATHS:
+            continue
         entries.append(Entry(name=item.name, path=path, is_dir=is_dir))
 
     # Directories first, then files, each case-insensitively alphabetical - the
@@ -114,7 +125,11 @@ def count_files(workspace: Path, cap: int = COUNT_CAP) -> tuple[int, bool]:
         dirs[:] = [
             d for d in dirs if _visible(d, at_root=at_root, is_dir=True)
         ]
-        total += len(files)
+        rel = Path(root).relative_to(workspace).as_posix()
+        total += sum(
+            1 for f in files
+            if (f if at_root else f"{rel}/{f}") not in HIDDEN_PATHS
+        )
         if total >= cap:
             return cap, True
     return total, False

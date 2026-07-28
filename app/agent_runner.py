@@ -13,8 +13,8 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, limits, memory, notes, orphans, people, promptbudget,
-    qdedupe, runlimit, runlog, spawnauth, subprojects, todos,
+    attachments, config, db, journalfile, limits, memory, notes, orphans, people,
+    promptbudget, qdedupe, runlimit, runlog, spawnauth, subprojects, todos,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -723,6 +723,9 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
             for row in journal
         ],
         _budget_bytes("prompt_journal_kb", 24),
+        # Where a shortened entry can be read in full. Empty unless the file is
+        # actually on disk in this workspace - see journalfile.pointer.
+        journalfile.pointer(project),
     )
     parts.append(f"## Recent journal (last {len(journal)})\n{journal_txt}")
 

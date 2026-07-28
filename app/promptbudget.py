@@ -244,7 +244,8 @@ def digest(body: str, cap: int = 700) -> str:
     return text
 
 
-def journal_for_prompt(entries: Iterable[JournalEntry], budget: int) -> str:
+def journal_for_prompt(entries: Iterable[JournalEntry], budget: int,
+                       full_path: str = "") -> str:
     """The journal tail under a byte budget, degrading depth before breadth.
 
     Three levels, and the order they are given up in is the point:
@@ -257,7 +258,13 @@ def journal_for_prompt(entries: Iterable[JournalEntry], budget: int) -> str:
 
     The newest entry is exempt and is always whole. It is the handover from the
     run immediately before this one, and trimming it to save bytes would be
-    saving them in precisely the wrong place.
+    saving them in precisely the wrong place. That exemption is also what lets
+    `journalfile` mirror the journal to disk without locking anything - see the
+    ordering argument at the top of that module.
+
+    `full_path` is where the untrimmed text can be read, if anywhere. Passing ""
+    keeps the older wording, which points at the project page: a human can open
+    that and an agent cannot, which is the gap the file closes.
     """
     rows = list(entries)
     if not rows:
@@ -292,10 +299,12 @@ def journal_for_prompt(entries: Iterable[JournalEntry], budget: int) -> str:
 
     text = "\n".join(chosen)
     if trimmed:
+        where = (f"read the full text of any of them in `{full_path}` in this "
+                 "workspace, searching for the timestamp above" if full_path
+                 else "the full text of any of them is on the project page")
         text += (
             f"\n\n({len(trimmed)} older entries above are shortened to their heading "
             "and opening paragraph to keep this prompt bounded. Every entry is listed, "
-            "so nothing is hidden - the full text of any of them is on the project "
-            "page.)"
+            f"so nothing is hidden - {where}.)"
         )
     return text

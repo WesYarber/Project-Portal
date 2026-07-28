@@ -13,9 +13,9 @@ from string import Template
 from typing import Optional
 
 from app import (
-    agent_runner, config, crashloop, daycycle, db, hookguard, limits, memory, modelwatch,
-    notify, oneoff, orphans, pacing, preview, proof, quickreplies, report_schema, runlimit,
-    runlog, selfreview, subprojects, todos,
+    agent_runner, config, crashloop, daycycle, db, hookguard, journalfile, limits, memory,
+    modelwatch, notify, oneoff, orphans, pacing, preview, proof, quickreplies,
+    report_schema, runlimit, runlog, selfreview, subprojects, todos,
 )
 
 log = logging.getLogger("portal.worker")
@@ -632,6 +632,12 @@ async def run_project_task(
 
     if run_id is None:
         run_id = db.create_run(project["id"], task, model)
+    # Strictly before the prompt is built. The prompt's journal section shortens
+    # older entries and points at this file for their full text; writing it after
+    # would let an entry created in between be shortened in the prompt and absent
+    # from the file. Written first, the same race can only ever affect the newest
+    # entry - which the prompt always shows whole. See app/journalfile.py.
+    journalfile.write(project, workspace)
     prompt = agent_runner.build_prompt(task, project)
     # For the meta-project, remember the source HEAD so we can detect a
     # self-update and restart the service to load the new code.
@@ -963,6 +969,12 @@ def _ensure_workspace(workspace: Path) -> None:
             subprocess.run(["git", "init"], cwd=str(workspace), check=True, capture_output=True)
         except (subprocess.CalledProcessError, FileNotFoundError) as exc:
             log.warning("git init failed for %s: %s", workspace, exc)
+    # .portal/ is the portal's own drop box in someone else's repository: a
+    # report, a serve recipe, and now a journal mirror rewritten before every
+    # run. Left visible it is a permanent dirty `git status` and a diff on every
+    # single commit. (Twelve workspaces have already committed a report.json;
+    # .git/info/exclude cannot untrack those, but it does keep the new file out.)
+    _exclude_from_git(workspace, ".portal/")
     _sync_skills(workspace)
 
 
