@@ -54,27 +54,88 @@ def is_pending(row: db.sqlite3.Row) -> bool:
         return False
 
 
+def _author(row: db.sqlite3.Row):
+    """The person who wrote a note row, falling back to the owner.
+
+    The fallback is not a guess. A note with no `person_id` was written before
+    people existed, and every one of those was the owner's - which is exactly
+    what the backfill in `db._backfill_people` asserts by stamping them.
+
+    Never raises on a row from a query that did not select `person_id`: the
+    template passes rows around freely, and a KeyError here would take out a
+    prompt rather than just a byline.
+    """
+    from app import people
+
+    try:
+        person_id = row["person_id"]
+    except (IndexError, KeyError):
+        person_id = None
+    return (people.get(person_id) if person_id else None) or people.owner()
+
+
 def render(rows: list[db.sqlite3.Row]) -> str:
     """The block, without touching the database - so a test (and a preview of
-    what an agent would see) can have the text without spending the notes."""
+    what an agent would see) can have the text without spending the notes.
+
+    Whose notes these are is now a real question rather than a rhetorical one:
+    more than one person can use the portal, and two of them can leave notes
+    between the same pair of runs. Three shapes come out of that:
+
+    - one note, or several from the same person: their name in the heading, as
+      it always read.
+    - notes from more than one person: no name in the heading (it would be a
+      lie) and every note carries its own byline instead.
+    - a note with no person on it at all - written before people existed, or by
+      a path that has not been taught to record one: the owner, which is who it
+      was in every case that can exist today.
+
+    The pronoun comes from the person too. It used to be a hard-coded "He",
+    which was the one string in the whole prompt that the de-personalisation
+    work missed, and which would have started misgendering somebody the moment
+    a second person left a note.
+    """
     if not rows:
         return ""
-    if len(rows) == 1:
+    from app import people
+
+    authors = [_author(row) for row in rows]
+    named = [people.name_of(a) for a in authors]
+    distinct = sorted(set(named))
+    mixed = len(distinct) > 1
+
+    if mixed:
+        who = " and ".join([", ".join(distinct[:-1]), distinct[-1]] if len(distinct) > 2
+                           else distinct)
         head = (
-            f"## A note from {config.SITE.owner} since your last run\n"
-            "He wrote this after the previous run finished. Treat it as part of "
-            "your instructions for this run, not as background."
+            f"## {len(rows)} notes since your last run, from {who}\n"
+            "They were written after the previous run finished, oldest first, and "
+            "each is signed. Treat them together as your instructions for this run, "
+            "not as background - read all of them before you start, because a later "
+            "one may correct an earlier one, and answer each person in their own "
+            "terms."
         )
     else:
-        head = (
-            f"## {len(rows)} notes from {config.SITE.owner} since your last run\n"
-            "He wrote these after the previous run finished, oldest first. Treat "
-            "them together as one instruction for this run, not as background - "
-            "and read all of them before you start, because a later one may "
-            "correct an earlier one."
-        )
+        name = named[0]
+        they = people.pronouns_of(authors[0])[0].capitalize()
+        if len(rows) == 1:
+            head = (
+                f"## A note from {name} since your last run\n"
+                f"{they} wrote this after the previous run finished. Treat it as "
+                "part of your instructions for this run, not as background."
+            )
+        else:
+            head = (
+                f"## {len(rows)} notes from {name} since your last run\n"
+                f"{they} wrote these after the previous run finished, oldest first. "
+                "Treat them together as one instruction for this run, not as "
+                "background - and read all of them before you start, because a later "
+                "one may correct an earlier one."
+            )
+
     body = "\n\n".join(
-        f"**[{row['ts']}]**\n{(row['content_md'] or '').strip()}" for row in rows
+        f"**[{row['ts']}]{f' {who}' if mixed else ''}**\n{(row['content_md'] or '').strip()}"
+        for row, who in zip(rows, named)
     )
     return f"{head}\n\n{body}"
 

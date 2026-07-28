@@ -2557,3 +2557,99 @@ a.btn:hover { text-decoration: none; }
 /* The footer's keyboard hint. The explicit [hidden] rule is defensive: an
    author `display` would otherwise silently beat the HTML hidden attribute. */
 .jump-hint[hidden] { display: none; }
+
+/* --- People ---------------------------------------------------------------
+   Wes, 2026-07-28: "would it be feasible to add additional users that can have
+   their own projects?" See app/people.py. */
+
+/* A label that a screen reader reads and nobody sees. The switcher in the
+   masthead is a bare <select>; without this its only label would be the name
+   currently showing, which reads as "Wes, combo box, Wes". */
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+/* Who is reading this, in the window chrome. Sized to its content rather than
+   the shared `select { width: 100% }`, which would push the handle off the
+   masthead.
+
+   The visible control here is NOT the <select>. app.js wraps every select in a
+   `.sel` and lays a `.sel-trigger` button over the top of it, leaving the
+   native control at `opacity: 0` underneath (see the block above). So the
+   trigger is what gets sized, and the bare select is reached through the CHILD
+   combinator - which matches only on a page with scripting off, where no
+   wrapper exists.
+
+   That distinction is the whole bug this rule was born with. The first version
+   styled `.whoami select` as a descendant, including `opacity: 0.85`, which
+   beat `.sel select { opacity: 0 }` and un-hid the deliberately invisible
+   native control on top of its own replacement: doubled text, two borders, two
+   carets, in the corner of every page. No DOM test can see that - the test
+   shims apply no CSS - so it was found by looking at a screenshot, and it is
+   pinned rule-level in tests/test_people_web.py.
+
+   The caret is two triangles that MEET to form one chevron, so these two
+   offsets must differ by exactly `background-size` (0.3rem). */
+.whoami { display: flex; align-items: center; margin: 0; }
+.whoami .sel { width: auto; }
+.whoami .sel-trigger,
+.whoami > select {
+  width: auto;
+  min-width: 5rem;
+  max-width: 11rem;
+  height: auto;
+  min-height: 0;
+  padding: 0.15rem 1.5rem 0.15rem 0.45rem;
+  background-position: right 0.75rem center, right 0.45rem center;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+.whoami .sel-trigger:hover, .whoami .sel-trigger:focus,
+.whoami > select:hover, .whoami > select:focus { opacity: 1; }
+
+/* One person, in Settings. */
+.person-row {
+  border-top: 1px solid var(--window-border);
+  padding-top: 0.9rem;
+  margin-top: 0.9rem;
+}
+.person-row:first-of-type { border-top: 0; padding-top: 0; margin-top: 0; }
+.person-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+/* Qualified by the element, not just the class: `input[type="text"]` is an
+   attribute selector and outranks a bare class, so `.person-head input` alone
+   would lose to the form-wide `width: 100%` and render full width. */
+.person-head input[type="text"] { width: auto; flex: 1 1 12rem; min-width: 0; }
+/* The pronouns dropdown is sized through its `.sel` wrapper, not the <select>:
+   app.js wraps every select and the wrapper carries `width: 100%`, so sizing
+   the select alone left the name and the pronouns stacked in two full-width
+   rows instead of sharing a line. Same lesson as `.whoami` above - the visible
+   control is the wrapper and its trigger. */
+.person-head .sel { width: auto; flex: 0 0 auto; }
+.person-head .sel-trigger { width: auto; min-width: 8rem; }
+.person-head .hint { flex: 1 1 100%; }
+.person-actions { display: flex; justify-content: flex-end; }
+.person-archive {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.4rem;
+}
+.person-add h3 { margin: 0 0 0.5rem; font-size: 0.95rem; }
+
+/* Whose project this is, on the project page. */
+.members { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin: 0; }
+.members-label { color: var(--terminal-dim); font-size: 0.8rem; }
+.member-box { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; }
+.member-box input { width: auto; min-height: 0; height: auto; margin: 0; }

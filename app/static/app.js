@@ -2218,3 +2218,51 @@ function jumpHintSync() {
   slot.hidden = false;
 }
 document.addEventListener("DOMContentLoaded", jumpHintSync);
+
+// ---------------------------------------------------------------------------
+// Escape lets go of the field.
+//
+// Wes, 2026-07-28: "hitting escape should de-select whatever text field is
+// selected."
+//
+// This is the missing half of the jump keys rather than a separate nicety. The
+// jumps deliberately do nothing while you are typing (see `typingInto`), and N
+// deliberately puts the cursor in the note box - so once you have jumped, every
+// letter you press is text and there is no keyboard way back out to the keys.
+// Escape is that way out: blur, focus falls to <body>, and n/j/t/p answer again.
+//
+// Three things about where this sits:
+//
+// - It is the LAST keydown listener in this file, on purpose. Every other
+//   Escape handler here reads `ev.target` to find the thing it closes (the
+//   tag-add form, the context menu, the rename input), and blurring first would
+//   not break that - the target is the field either way - but running last
+//   means those handlers decide first and this only ever adds to what they did.
+//   Each of them hides its field anyway, so letting go of it is never wrong.
+// - The lightbox's handler is on the capture phase and calls stopPropagation,
+//   so while the image viewer is open Escape closes the viewer and this never
+//   runs. That is the right precedence: the modal owns the key.
+// - No preventDefault. Escape has browser-level meanings (stopping a load,
+//   dismissing an IME candidate window) and swallowing it to blur a textarea
+//   would be taking more than was asked for.
+//
+// Deliberately NOT reconfigurable, unlike the jumps. Escape-to-let-go is a
+// convention older than this app - it is what Escape does in vim, in a native
+// dialog and in every <select> - and a setting that could turn it off would be
+// a setting that strands the cursor.
+function escapeBlurTarget(el) {
+  if (!el) return null;
+  if (el.isContentEditable) return el;
+  var tag = el.tagName;
+  // Same set as `typingInto`, minus OPTION: an <option> is never focused
+  // itself, and the browser owns Escape while a select popup is open.
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return el;
+  return null;
+}
+
+document.addEventListener("keydown", function (ev) {
+  if (ev.key !== "Escape") return;
+  var el = escapeBlurTarget(ev.target);
+  if (!el || typeof el.blur !== "function") return;
+  el.blur();
+});

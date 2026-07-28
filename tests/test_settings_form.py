@@ -300,7 +300,7 @@ def test_lifecycle_through_the_test_client(temp_data_dir):
 
 def test_settings_page_renders_all_panels(client):
     body = client.get("/settings").text
-    for panel in ("agent", "appearance", "notifications", "access"):
+    for panel in ("agent", "appearance", "notifications", "people", "access"):
         assert f'id="panel-{panel}"' in body
         assert f'data-panel="{panel}"' in body
 

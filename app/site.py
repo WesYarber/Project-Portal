@@ -114,6 +114,20 @@ def _pronoun_key(raw: str) -> str:
     return first if first in PRONOUNS else DEFAULT_PRONOUNS
 
 
+# The same normalisation, published. `app/people.py` stores a pronoun per person
+# now that more than one person uses the portal, and it must land on exactly the
+# same three keys and the same never-raise fallback as the site config does - so
+# it calls these rather than keeping a second copy of the rules that could drift.
+def pronoun_key(raw: str) -> str:
+    """The stored form of a pronoun string: one of `they`, `he`, `she`."""
+    return _pronoun_key(raw)
+
+
+def pronoun_forms(raw: str) -> tuple[str, str, str, str]:
+    """(they, them, their, theirs) for a pronoun string, defaulting to they."""
+    return PRONOUNS[_pronoun_key(raw)]
+
+
 @dataclass(frozen=True)
 class Site:
     """One installation's identity. Frozen: this is read at import and shared."""

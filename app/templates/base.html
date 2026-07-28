@@ -77,6 +77,25 @@
       </div>
       <a class="wordmark" href="/">PR<span class="o-blue">O</span>JECT&nbsp;P<span class="o-orange">O</span>RTAL</a>
       <div class="window-stats">
+        {# Who the portal thinks is reading this. Only rendered once there is
+           more than one person it could be: on a single-person install the
+           question has one answer and a control asking it would be clutter.
+           A <select> that submits on change rather than a menu, because the
+           whole interaction is "no, I'm the other one" on a phone. #}
+        {% set folk = everyone() %}
+        {% if folk | length > 1 %}
+        {% set current = me() %}
+        <form method="post" action="/whoami" class="whoami">
+          <input type="hidden" name="next" value="{{ path }}">
+          <label for="whoami" class="visually-hidden">who is using this</label>
+          <select id="whoami" name="person" onchange="this.form.submit()">
+            {% for person in folk %}
+            <option value="{{ person.slug }}" {{ 'selected' if current and person.id == current.id }}>{{ person.name }}</option>
+            {% endfor %}
+          </select>
+          <noscript><button type="submit">switch</button></noscript>
+        </form>
+        {% endif %}
         <span>{% block header_stat %}{{ SITE.handle }}{% endblock %}</span>
       </div>
     </div>

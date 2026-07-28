@@ -148,6 +148,30 @@
   </div>
   {% endif %}
 
+  {# Whose project this is. Wes, 2026-07-28: "All current projects should be
+     assigned to me, and they should be able to be reassigned if desired."
+
+     Only rendered once there is more than one person it could belong to - on a
+     single-person install every project is that person's and a row of one
+     ticked box says nothing. Unticking the last box does not empty the project:
+     people.set_members falls back to the owner, because a project with nobody
+     on it appears on no dashboard. #}
+  {% set folk = everyone() %}
+  {% if folk | length > 1 %}
+  {% set mine = project_members(project.id) | map(attribute='id') | list %}
+  <form method="post" action="/project/{{ project.slug }}/members" class="members">
+    <span class="members-label">whose:</span>
+    {% for person in folk %}
+    <label class="member-box">
+      <input type="checkbox" name="member" value="{{ person.id }}"
+             {{ 'checked' if person.id in mine }} onchange="this.form.submit()">
+      {{ person.name }}
+    </label>
+    {% endfor %}
+    <noscript><button type="submit">save</button></noscript>
+  </form>
+  {% endif %}
+
   {# The description is shown read-only until you open the editor, because it
      is the thing you read on this page far more often than you edit it. #}
   <details class="details-editor" {{ 'open' if not project.description else '' }}>

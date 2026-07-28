@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import logging
 import shutil
 import sqlite3
@@ -45,6 +46,7 @@ from app import (
     notify,
     oneoff,
     pacing,
+    people,
     preview,
     quoting,
     runlimit,
@@ -66,6 +68,108 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 log = logging.getLogger("portal.main")
 
 app = FastAPI(title="Project Portal")
+
+
+# --------------------------------------------------------------------------
+# Which of them is holding the phone
+# --------------------------------------------------------------------------
+#
+# More than one person uses this portal now (see app/people.py). Every page has
+# to know which one is reading it - to sign a note, to tick the right box, to
+# show the right name in the corner - and every page means every template,
+# which rules out a per-route context value: one route that forgot to pass it
+# would show the wrong person's name in the masthead and there would be no
+# obvious symptom.
+#
+# So it goes where `body_classes()` and `show_priority()` already live: a
+# zero-argument Jinja global. Those can read settings, but they cannot read a
+# request - hence the ContextVar, set once per request by the middleware below
+# and read by `me()` during the render.
+_CURRENT_PERSON: contextvars.ContextVar = contextvars.ContextVar(
+    "portal_current_person", default=None
+)
+
+
+def _client_ip(request: Request) -> str:
+    """The address this request actually arrived from.
+
+    Deliberately NOT X-Forwarded-For. That header is whatever the client typed
+    unless a trusted proxy is verified to have set it, and the only thing this
+    address is used for is a `tailscale whois` hint - so believing a spoofable
+    header would let anyone claim to be anybody, in exchange for nothing.
+    """
+    client = request.client
+    return client.host if client else ""
+
+
+def resolve_person(request: Request):
+    """Who is making this request. See `people.resolve` for the precedence."""
+    slug = request.cookies.get(people.COOKIE, "")
+    login = ""
+    # The whois lookup is skipped entirely while there is one person, which is
+    # every install until somebody adds a second: no subprocess, no cache, no
+    # cost at all for a feature nobody is using. It is also skipped when the
+    # cookie already answers, because the cookie outranks it anyway.
+    if not slug:
+        try:
+            if len(people.everyone()) > 1:
+                login = people.tailnet_login_cached(_client_ip(request))
+        except Exception:  # pragma: no cover - defensive
+            log.debug("Could not take a tailnet reading", exc_info=True)
+    return people.resolve(slug, login)
+
+
+@app.middleware("http")
+async def _identify(request: Request, call_next):
+    """Resolve the acting person once, for the whole request.
+
+    Never fails a request: identity is a nicety on a home-LAN tool, not an
+    authorisation decision, and a portal that 500s because a whois call went
+    wrong would be a strictly worse portal than the single-person one it
+    replaced. The token is reset in `finally` so a worker thread cannot inherit
+    a stale person from whichever request happened to run on it last.
+    """
+    token = None
+    try:
+        token = _CURRENT_PERSON.set(resolve_person(request))
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Could not resolve who is making this request")
+    try:
+        return await call_next(request)
+    finally:
+        if token is not None:
+            _CURRENT_PERSON.reset(token)
+
+
+def _person_id(request: Request) -> Optional[int]:
+    """The acting person's id, for a row about to be written.
+
+    Resolves from the request rather than reading the ContextVar, because a
+    route may be reached in ways the middleware did not wrap (a test client
+    calling the function directly, a sub-application), and the id that gets
+    stamped onto a note is not a thing to be approximate about.
+    """
+    try:
+        return int(resolve_person(request)["id"])
+    except Exception:  # pragma: no cover - defensive
+        log.debug("Could not resolve the acting person for a write", exc_info=True)
+        return None
+
+
+def me():
+    """The acting person, for a template. Falls back to the owner.
+
+    The fallback matters on the paths with no request behind them at all - a
+    template rendered from the worker, an error page - where the owner is both
+    the only defensible answer and what the portal did before people existed.
+    """
+    person = _CURRENT_PERSON.get()
+    if person is not None:
+        return person
+    try:
+        return people.owner()
+    except Exception:  # pragma: no cover - defensive
+        return None
 
 
 # Registered BEFORE the /static mount, which would otherwise swallow the path
@@ -408,6 +512,14 @@ templates.env.globals["display_state"] = db.display_state
 # route that forgot to pass it would leave one of those three still showing it.
 templates.env.globals["show_priority"] = db.show_priority
 templates.env.globals["jump_keys_json"] = jump_keys_json
+# Who is reading this page, and everybody who could be. Globals rather than
+# per-route context for the same reason `show_priority` is: the acting person
+# appears in the masthead of every page and in the member boxes on two more,
+# and a route that forgot to pass it would show somebody the wrong name.
+templates.env.globals["me"] = me
+templates.env.globals["everyone"] = people.everyone
+templates.env.globals["project_members"] = people.members
+templates.env.globals["person_pronouns"] = people.pronouns_of
 templates.env.globals["is_side_thread"] = db.is_side_thread
 templates.env.globals["summary_bullet"] = db.summary_bullet
 templates.env.filters["status_badge"] = config.status_badge
@@ -954,6 +1066,7 @@ async def update_priority(slug: str, priority: int = Form(...)) -> RedirectRespo
 
 @app.post("/project/{slug}/note")
 async def add_note(
+    request: Request,
     slug: str,
     note: str = Form(""),
     then: str = Form(""),
@@ -1019,7 +1132,9 @@ async def add_note(
     if errors:
         body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
 
-    journal_id = db.add_journal(project["id"], "user", "note", body)
+    journal_id = db.add_journal(
+        project["id"], "user", "note", body, person_id=_person_id(request)
+    )
     for a in stored:
         db.set_attachment_journal(a["id"], journal_id)
 
@@ -1733,6 +1848,13 @@ async def settings_page(request: Request) -> HTMLResponse:
             # the template, so a new jumpable section grows its settings field
             # without anyone remembering to add one.
             "jump_keys": jumpkeys.rows(settings),
+            # Archived people included on purpose: this is the one page where
+            # bringing somebody back has to be possible, and a person who has
+            # vanished from every screen is a person nobody can un-archive.
+            "people_rows": people.everyone(include_archived=True),
+            "PRONOUN_CHOICES": [
+                (key, "/".join(forms[:2])) for key, forms in site.PRONOUNS.items()
+            ],
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
             "push_sent": request.query_params.get("push_sent"),
@@ -1782,6 +1904,117 @@ async def save_settings(request: Request) -> RedirectResponse:
     if section:
         url += f"#{quote(section)}"
     return RedirectResponse(url=url, status_code=303)
+
+
+# --------------------------------------------------------------------------
+# People (see app/people.py)
+# --------------------------------------------------------------------------
+
+def _safe_next(raw: str, fallback: str = "/") -> str:
+    """A redirect target that cannot leave this portal.
+
+    Every one of these routes takes a "come back to where I was" parameter, and
+    an open redirect is the one thing a form field like that can turn into. A
+    path starting with a single `/` is this site; `//evil.example` is not (the
+    browser reads it as a protocol-relative URL), which is the case a naive
+    `startswith("/")` misses.
+    """
+    raw = (raw or "").strip()
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return fallback
+
+
+@app.post("/whoami")
+async def set_whoami(
+    person: str = Form(""),
+    next: str = Form("/"),
+) -> RedirectResponse:
+    """Say which person is using this browser.
+
+    The cookie is the top of `people.resolve`'s precedence: somebody who has
+    said "I am Erin" on this device has made a statement about themselves, and
+    nothing the network infers may overrule it.
+
+    Ten years, and not httponly. Not a session - expiring it would silently
+    start attributing her notes to him, which is the exact failure the whole
+    feature exists to prevent - and not a secret, because it says a first name
+    a browser is welcome to read. `samesite=lax` so it survives following a
+    link in from Telegram.
+    """
+    target = _safe_next(next)
+    response = RedirectResponse(url=target, status_code=303)
+    row = people.by_slug(person)
+    if row is None:
+        return response
+    response.set_cookie(
+        people.COOKIE,
+        row["slug"],
+        max_age=people.COOKIE_MAX_AGE,
+        httponly=False,
+        samesite="lax",
+    )
+    return response
+
+
+@app.post("/people/add")
+async def add_person(
+    name: str = Form(""),
+    pronouns: str = Form("they"),
+    background: str = Form(""),
+) -> RedirectResponse:
+    if (name or "").strip():
+        people.add(name=name, pronouns=pronouns, background=background)
+    return RedirectResponse(url="/settings?saved=people#people", status_code=303)
+
+
+@app.post("/people/{person_id}/edit")
+async def edit_person(
+    person_id: int,
+    name: str = Form(""),
+    pronouns: str = Form(""),
+    background: str = Form(""),
+    tailnet_login: str = Form(""),
+) -> RedirectResponse:
+    # `people.update` ignores name and pronouns for the owner - those belong to
+    # portal.toml, because SITE.owner already names that person in the agent
+    # contract and the todo headings. The panel renders them as read-only text
+    # for the owner, so this is the belt to that braces.
+    people.update(
+        person_id,
+        name=name,
+        pronouns=pronouns,
+        background=background,
+        tailnet_login=tailnet_login,
+    )
+    return RedirectResponse(url="/settings?saved=people#people", status_code=303)
+
+
+@app.post("/people/{person_id}/archive")
+async def archive_person(person_id: int, restore: str = Form("")) -> RedirectResponse:
+    if restore:
+        people.restore(person_id)
+    else:
+        people.archive(person_id)
+    return RedirectResponse(url="/settings?saved=people#people", status_code=303)
+
+
+@app.post("/project/{slug}/members")
+async def set_project_members(
+    request: Request,
+    slug: str,
+    member: list[int] = Form(default=[]),
+) -> RedirectResponse:
+    """Whose project this is. Wes: "they should be able to be reassigned if
+    desired."
+
+    An empty selection is not refused here but in `people.set_members`, which
+    falls back to the owner: it is reachable by unticking the last box, and a
+    project with nobody on it shows on no dashboard.
+    """
+    project = _get_project_or_404(slug)
+    people.set_members(project["id"], member)
+    return RedirectResponse(url=f"/project/{slug}#project", status_code=303)
 
 
 @app.post("/settings/test-notification")

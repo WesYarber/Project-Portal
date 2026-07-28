@@ -34,8 +34,97 @@
   <button type="button" class="subtab" data-panel="agent">agent</button>
   <button type="button" class="subtab" data-panel="appearance">appearance</button>
   <button type="button" class="subtab" data-panel="notifications">notifications</button>
+  <button type="button" class="subtab" data-panel="people">people</button>
   <button type="button" class="subtab" data-panel="access">access</button>
 </nav>
+
+<!-- People --------------------------------------------------------------- -->
+{# Wes, 2026-07-28: "would it be feasible to add additional users that can have
+   their own projects?"
+
+   Not an account system - there is no password here and no permission. It is a
+   way for the portal, and for the agent, to tell apart the people who share a
+   house and a home server. See app/people.py. #}
+<section class="settings-panel" id="panel-people" data-panel="people">
+  <div class="card">
+    <h2 id="people">who uses this portal</h2>
+    <p class="hint">
+      Everyone here shares the whole of a project they are on - one journal, one
+      todo list, one run history - and each of them can prompt it separately.
+      What is not shared is who you are: the agent is told who wrote each note
+      and what that person already knows, so it can pitch an answer at the
+      person reading it.
+    </p>
+
+    {% for person in people_rows %}
+    <form method="post" action="/people/{{ person.id }}/edit" class="person-row">
+      <div class="person-head">
+        {% if person.is_owner %}
+        <strong>{{ person.name }}</strong>
+        <span class="badge">owner</span>
+        <span class="hint">
+          name and pronouns come from <code>portal.toml</code> - they name this
+          same person in the agent contract and on the todo list, so there is
+          one place to change them
+        </span>
+        {% else %}
+        <input type="text" name="name" value="{{ person.name }}" aria-label="name">
+        <select name="pronouns" aria-label="pronouns">
+          {% for key, forms in PRONOUN_CHOICES %}
+          <option value="{{ key }}" {{ 'selected' if person.pronouns == key }}>{{ forms }}</option>
+          {% endfor %}
+        </select>
+        {% endif %}
+        {% if person.archived_at %}<span class="badge warn">archived</span>{% endif %}
+      </div>
+      <label class="field">
+        <span>what they already know</span>
+        <textarea name="background" rows="2"
+          placeholder="e.g. newer to self-hosting and to agent tooling - explain the concepts rather than naming them">{{ person.background }}</textarea>
+      </label>
+      <label class="field">
+        <span>tailscale login <span class="hint">optional - identifies them on sight, once they are their own tailnet user</span></span>
+        <input type="text" name="tailnet_login" value="{{ person.tailnet_login }}"
+               placeholder="name@example.com">
+      </label>
+      <div class="person-actions">
+        <button type="submit">save</button>
+      </div>
+    </form>
+    {% if not person.is_owner %}
+    <form method="post" action="/people/{{ person.id }}/archive" class="person-archive">
+      {% if person.archived_at %}
+      <input type="hidden" name="restore" value="1">
+      <button type="submit" class="ghost">bring back</button>
+      {% else %}
+      <button type="submit" class="ghost">archive</button>
+      <span class="hint">takes them out of the pickers; nothing they wrote is deleted</span>
+      {% endif %}
+    </form>
+    {% endif %}
+    {% endfor %}
+
+    <form method="post" action="/people/add" class="person-row person-add">
+      <h3>add someone</h3>
+      <div class="person-head">
+        <input type="text" name="name" placeholder="their name" aria-label="name" required>
+        <select name="pronouns" aria-label="pronouns">
+          {% for key, forms in PRONOUN_CHOICES %}
+          <option value="{{ key }}">{{ forms }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <label class="field">
+        <span>what they already know</span>
+        <textarea name="background" rows="2"
+          placeholder="e.g. newer to self-hosting and to agent tooling - explain the concepts rather than naming them"></textarea>
+      </label>
+      <div class="person-actions">
+        <button type="submit">add</button>
+      </div>
+    </form>
+  </div>
+</section>
 
 <!-- Agent ---------------------------------------------------------------- -->
 <section class="settings-panel" id="panel-agent" data-panel="agent">

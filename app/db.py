@@ -234,6 +234,52 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
     last_ok_at TEXT,
     failures INTEGER NOT NULL DEFAULT 0
 );
+
+-- The people who use this portal. Wes, 2026-07-28: "would it be feasible to
+-- add additional users that can have their own projects? ... They should be
+-- able to belong to multiple users who can each prompt separately while using
+-- the same context of work history and whatnot."
+--
+-- Note what is NOT here: no password, no email, no role. This is not an auth
+-- system and does not pretend to be one - it is a way for the portal (and the
+-- agent) to tell apart the two or three people who share a house and a home
+-- server. See app/people.py for the identity rule and why it is that way round.
+CREATE TABLE IF NOT EXISTS people (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    -- Stable handle. This is the cookie value, so it must survive a database
+    -- restore; it is reissued (together with the name) on a rename.
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    -- One of `they` / `he` / `she`, normalised by site.pronoun_key.
+    pronouns TEXT NOT NULL DEFAULT 'they',
+    -- What the agent should assume this person already knows, in their own
+    -- words. Free text on purpose rather than a level enum: "newer to
+    -- self-hosting, teach the concepts" tells a model something a 1-5 scale
+    -- cannot, and it is a sentence somebody can grow as they learn.
+    background TEXT NOT NULL DEFAULT '',
+    -- The `tailscale whois` LoginName that identifies this person on sight,
+    -- or ''. Only useful once two people are two tailnet users.
+    tailnet_login TEXT NOT NULL DEFAULT '',
+    -- The person the install was set up for (config's OWNER). Exactly one row
+    -- carries it, and it buys one thing only: people.owner() can never return
+    -- None, so there is always somebody to attribute a note to.
+    is_owner INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    -- Retired from the pickers without deleting what they wrote.
+    archived_at TEXT
+);
+
+-- Which projects are whose. A project can have several members who each prompt
+-- it separately and share all of its context, so this is a plain join table and
+-- emphatically NOT a tenant column: nothing about a journal, a todo or a run is
+-- partitioned by person.
+CREATE TABLE IF NOT EXISTS project_people (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    added_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, person_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_people_person ON project_people(person_id);
 """
 
 
@@ -313,7 +359,15 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # by app/notes.py at the moment the note goes into a prompt, never before.
     # Only meaningful for user notes; everything else is back-filled at creation
     # (see below) so it can never masquerade as pending.
-    "journal": [("delivered_at", "TEXT")],
+    # Who wrote this entry, once more than one person could have. NULL means
+    # "written before people existed, or written by the portal itself" - the
+    # backfill in init_db turns the first kind into the owner and leaves the
+    # second alone, because an agent's progress report has no person behind it.
+    #
+    # Deliberately NOT declared REFERENCES, for the same reason as
+    # projects.parent_id: SQLite cannot add a column with a foreign key to a
+    # populated table, and this is added by ALTER on every existing portal.db.
+    "journal": [("delivered_at", "TEXT"), ("person_id", "INTEGER")],
 }
 
 
@@ -405,6 +459,52 @@ def init_db() -> None:
 
     if is_new:
         _seed_data()
+
+    _backfill_people()
+
+
+def _backfill_people() -> None:
+    """Everything that existed before people did belongs to the owner.
+
+    Wes, 2026-07-28: "All current projects should be assigned to me, and they
+    should be able to be reassigned if desired."
+
+    Two halves, and the second is why this needs a flag rather than being a
+    plain idempotent statement:
+
+    - `ensure_owner` runs unconditionally, because a portal with no owner has
+      nobody to attribute the next note to. It writes only when there is no
+      owner, so it is free on every boot after the first.
+    - The membership and journal backfills run ONCE. "Reassigned if desired"
+      means somebody may take themselves off a project on purpose, and an
+      unconditional `INSERT OR IGNORE ... SELECT id FROM projects` would put
+      them back on the next restart - the portal overruling a decision a person
+      made, which is the same bug class as the `delivered_at` backfill note
+      above.
+
+    Only `author = 'user'` journal rows are attributed. An agent's progress
+    entry and a system status line have no person behind them, and stamping the
+    owner on them would make the byline meaningless everywhere it appears.
+    """
+    from app import people  # local: people imports db, so this cannot be top-level
+
+    people.ensure_owner()
+    if get_setting(people.BACKFILL_KEY) == "1":
+        return
+    owner_id = int(people.owner()["id"])
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "INSERT OR IGNORE INTO project_people (project_id, person_id, added_at) "
+            "SELECT id, ?, ? FROM projects",
+            (owner_id, now()),
+        )
+        conn.execute(
+            "UPDATE journal SET person_id = ? WHERE person_id IS NULL AND author = 'user'",
+            (owner_id,),
+        )
+        conn.commit()
+    set_setting(people.BACKFILL_KEY, "1")
 
 
 def _migrate_status_to_stage(conn: sqlite3.Connection) -> None:
@@ -689,6 +789,7 @@ def create_project(
     slug: Optional[str] = None,
     parent_id: Optional[int] = None,
     build_approved: Optional[bool] = None,
+    person_id: Optional[int] = None,
 ) -> sqlite3.Row:
     conn = get_conn()
     ts = now()
@@ -719,6 +820,15 @@ def create_project(
         )
         conn.commit()
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+    # A new project belongs to whoever made it, and to the owner if nobody said.
+    # Done here rather than at each call site because a project with no members
+    # is the one genuinely broken state - it would show on no dashboard and the
+    # prompt would have nobody to address - and there are six places that create
+    # one (the form, Telegram, the agent report, the sub-project split, ...).
+    from app import people  # local: people imports db
+
+    people.add_member(int(row["id"]), int(person_id) if person_id else int(people.owner()["id"]))
     return row
 
 
@@ -1203,21 +1313,34 @@ def is_note(author: str, kind: str) -> bool:
     return author == "user" and kind == "note"
 
 
-def add_journal(project_id: Optional[int], author: str, kind: str, content_md: str) -> int:
+def add_journal(
+    project_id: Optional[int],
+    author: str,
+    kind: str,
+    content_md: str,
+    person_id: Optional[int] = None,
+) -> int:
     """Returns the new entry's id, so a caller that has uploads in hand (see
     the note route) can attach them to the entry it just wrote.
 
     Anything that is not one of Wes's notes is stamped delivered immediately:
     only a note has an edit window, and a NULL on a status line would make the
-    pending-notes query depend on its own WHERE clause being exactly right."""
+    pending-notes query depend on its own WHERE clause being exactly right.
+
+    `person_id` is who wrote it, once more than one person could have. It stays
+    optional with a None default on purpose: every existing caller keeps
+    working unchanged, and the ones that have no person behind them (an agent's
+    report, a system status line) are supposed to pass nothing rather than be
+    forced to invent an author."""
     ts = now()
     delivered = None if is_note(author, kind) else ts
     conn = get_conn()
     with _LOCK:
         cur = conn.execute(
-            "INSERT INTO journal (project_id, ts, author, kind, content_md, delivered_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (project_id, ts, author, kind, content_md, delivered),
+            "INSERT INTO journal (project_id, ts, author, kind, content_md, "
+            "delivered_at, person_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (project_id, ts, author, kind, content_md, delivered,
+             int(person_id) if person_id is not None else None),
         )
         conn.commit()
         return int(cur.lastrowid)

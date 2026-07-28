@@ -13,8 +13,8 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, limits, memory, notes, orphans, qdedupe, runlimit, runlog,
-    spawnauth, subprojects, todos,
+    attachments, config, db, limits, memory, notes, orphans, people, qdedupe, runlimit,
+    runlog, spawnauth, subprojects, todos,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -647,6 +647,21 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         family_txt = ""
     if family_txt:
         parts.append(family_txt)
+
+    # Who uses this portal, when that is more than one person - above the notes
+    # on purpose, because the very next section is signed and an agent has to
+    # know whose signature it is reading before it reads it.
+    #
+    # Empty on a single-person install, which is every install until somebody
+    # adds a second person, so an ordinary prompt is byte-for-byte unchanged and
+    # none of the existing behaviour shifts under a feature nobody is using.
+    try:
+        people_txt = people.prompt_section(project["id"])
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Could not build the people section for %s", project["slug"])
+        people_txt = ""
+    if people_txt:
+        parts.append(people_txt)
 
     # Everything Wes has written since the last run, as one block above the
     # journal rather than as scattered lines inside it. This also *spends* those
