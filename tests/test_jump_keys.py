@@ -16,7 +16,7 @@ Two halves, and both are needed:
 - The templates declare their own targets with `data-jump`, so these tests pin
   that the four sections on a project page and the one on the dashboard are
   actually marked up. app.js knows no template structure at all.
-- The behaviour runs for real under bun (tests/js/jump_keys.mjs) against a stub
+- The behavior runs for real under bun (tests/js/jump_keys.mjs) against a stub
   DOM. Matching strings in app.js would only prove it mentions scrollIntoView;
   this proves the section top is what gets aligned, the cursor lands in the box,
   and - the one that matters most - the key does nothing at all while you are
@@ -179,7 +179,7 @@ def test_the_ring_is_held_before_it_fades():
 
 
 # --------------------------------------------------------------------------
-# The behaviour, run for real under bun
+# The behavior, run for real under bun
 # --------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -208,7 +208,7 @@ def test_n_scrolls_the_note_heading_to_the_top_and_focuses_the_box(jumps):
     scene = jumps["noteOnProject"]
     assert _scrolled(scene) == ["noteHead"]
     # block:start is the ask: the section's top edge at the top of the window,
-    # not centred and not merely scrolled into view.
+    # not centered and not merely scrolled into view.
     assert scene["scrolls"][0]["opts"]["block"] == "start"
     assert _focused(scene) == ["noteBox"]
     assert scene["classAdds"] == [["noteBox", "jump-flash"]]
@@ -348,10 +348,10 @@ def test_focus_belongs_to_the_target_not_to_the_letter(jumps):
     assert _focused(scene) == ["noteBox"]
 
 
-def test_turning_every_jump_off_is_honoured_rather_than_overruled(jumps):
+def test_turning_every_jump_off_is_honored_rather_than_overruled(jumps):
     # `{}` is a deliberate choice. Falling back to the shipped letters here -
     # the obvious `bindings || DEFAULTS` - would be a switch that turns itself
-    # back on, which is the one behaviour this whole feature must not have.
+    # back on, which is the one behavior this whole feature must not have.
     scene = jumps["allUnbound"]
     assert _scrolled(scene) == []
     assert scene["defaultPrevented"] is False
@@ -365,7 +365,7 @@ def test_a_page_with_no_attribute_keeps_the_shipped_letters(jumps):
 
 def test_an_unreadable_attribute_falls_back_instead_of_throwing(jumps):
     # A throw here would abort the whole script tag, taking every other
-    # behaviour in app.js with it - so this is not only about the jumps.
+    # behavior in app.js with it - so this is not only about the jumps.
     for name in ("bindingsNotJson", "bindingsNotAnObject"):
         assert _scrolled(jumps[name]) == ["journalBox"], name
 

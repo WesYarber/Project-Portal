@@ -31,19 +31,19 @@ records the eleven models that exist today silently. Announcing them would be
 eleven notifications about nothing, and would teach him to ignore the next one,
 which is the only one that matters.
 
-After that, an id that was not in the catalogue is news, and gets:
+After that, an id that was not in the catalog is news, and gets:
 
 - a notification, so it reaches the phone; and
 - an open question on the meta-project with one-tap options, because "Opus 6 is
   out - adopt it?" is a decision, and the portal already knows how to turn a
   tap into a woken project and a run (see app/quickreplies.py). Answering is
   what makes the adoption happen; the watcher itself changes no settings. It
-  cannot: a new id in the catalogue is not proof the CLI can spawn it, as Opus
+  cannot: a new id in the catalog is not proof the CLI can spawn it, as Opus
   5 demonstrated, so switching the default model automatically would have
   pointed every run at a model that 404s.
 
 Fails open and quiet throughout: no credentials, a 500 from Anthropic, a
-garbled payload - the catalogue is simply not updated that day. A watcher that
+garbled payload - the catalog is simply not updated that day. A watcher that
 cannot see is never a reason for the portal to stop working.
 """
 from __future__ import annotations
@@ -62,9 +62,9 @@ log = logging.getLogger("portal.modelwatch")
 
 MODELS_URL = "https://api.anthropic.com/v1/models?limit=100"
 
-# The catalogue as last fetched (for the settings card), and the ids already
+# The catalog as last fetched (for the settings card), and the ids already
 # announced. Two keys rather than one because they change for different
-# reasons: the catalogue is overwritten by every successful poll, the seen-set
+# reasons: the catalog is overwritten by every successful poll, the seen-set
 # only ever grows and is what makes an announcement once-only.
 CATALOG_KEY = "model_catalog_json"
 SEEN_KEY = "model_ids_seen_json"
@@ -158,7 +158,7 @@ def parse_models(payload: Any) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# The catalogue
+# The catalog
 # ---------------------------------------------------------------------------
 
 def catalog() -> dict:
@@ -203,7 +203,7 @@ def new_models(models: list[dict], seen: set[str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def check(models: Optional[list[dict]] = None) -> dict:
-    """Fold a fetch into the catalogue and report what is new.
+    """Fold a fetch into the catalog and report what is new.
 
     Pure enough to test: pass `models` to skip the network. Returns
     {"ok", "seeded", "new": [...], "error"}. `seeded` is True on the very first

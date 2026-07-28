@@ -253,11 +253,11 @@ pruned to the newest 200 when a run starts.
 console and the run page) SIGKILLs the run's whole process group — the `claude`
 CLI plus every tool child it spawned, which is why runs are started in their own
 session. Live processes are tracked in an in-memory registry keyed by run id; a
-"running" row with no entry there is a leftover from a restart, so cancelling it
+"running" row with no entry there is a leftover from a restart, so canceling it
 just settles the row (leaving it would deadlock the worker via
 `is_run_running()`).
 
-Cancelled is its own run status, not an error: cancelled runs are excluded from
+Canceled is its own run status, not an error: canceled runs are excluded from
 the failure count and from the success rate, which is computed over runs that
 actually reached a verdict.
 
@@ -269,7 +269,7 @@ daily reflect) get their own row so the shares still sum to the window total,
 and if nothing in the window has a recorded cost the shares fall back to run
 counts rather than drawing every bar empty.
 
-### Cancelling from Telegram
+### Canceling from Telegram
 
 `/stop` (or just "stop that") kills whatever run is in flight, via the same
 `worker.cancel_run` path as the web button. If a project is named it must be
@@ -298,7 +298,7 @@ workspace would fight over the same files and the same git checkout, so a
 project with a run in flight is skipped for scheduled picks, and a manual "Run
 now" on it is re-queued for a later tick rather than dropped or doubled up.
 
-Free slots are not licence to launch everything at once — the pacing interval
+Free slots are not license to launch everything at once — the pacing interval
 still applies to scheduled runs. While anything is in flight the interval is
 measured from the most recent run *start* rather than the last run's end (a run
 that has not ended has no `ended_at`, which would otherwise leave the gate

@@ -162,7 +162,7 @@ def parse_intent(
     slug = data.get("project_slug")
     slug = slug if isinstance(slug, str) and slug in valid_slugs else None
 
-    # The old vocabulary ("inbox", "building", "waiting_user") is normalised
+    # The old vocabulary ("inbox", "building", "waiting_user") is normalized
     # rather than rejected - the router model has seen it in old journals.
     status = config.normalize_state(str(data.get("status") or ""))
 
@@ -248,7 +248,7 @@ def router_model() -> str:
 
     Separate from `worker_model` on purpose: this runs on every single message
     and is judged on latency, while the agent model is judged on capability.
-    An unrecognised stored value falls back to the default rather than being
+    An unrecognized stored value falls back to the default rather than being
     passed to `claude --model`, where it would fail every message.
     """
     value = (db.get_setting("telegram_model") or "").strip()

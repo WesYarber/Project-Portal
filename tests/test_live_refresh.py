@@ -10,7 +10,7 @@ read by a dedicated observer connection so every commit the app makes is seen
 without instrumenting any write path. The client half is the morph in app.js,
 which cannot run under pytest - so its load-bearing rules (what is preserved,
 what defers a patch, what replaces a reload) are pinned as source assertions,
-and the behaviour was verified for real in a browser on render-box.
+and the behavior was verified for real in a browser on render-box.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ def client(temp_data_dir):
     from app import main
 
     # Not a context manager on purpose: lifespan would start the worker and
-    # Telegram pollers. The DB is already initialised by the autouse fixture.
+    # Telegram pollers. The DB is already initialized by the autouse fixture.
     return TestClient(main.app)
 
 

@@ -11,7 +11,7 @@ There are two halves to that, and both are needed:
 
 1. **Prevention.** The run prompt used to carry `## Answered questions` and
    nothing about the ones still *open*, so an agent had no way to know what it
-   had already asked - re-asking was the only behaviour available to it.
+   had already asked - re-asking was the only behavior available to it.
    `prompt_section()` puts the waiting questions in front of it.
 2. **Enforcement.** Prompts are advice; `db.file_question` refuses a near
    duplicate outright, so a run that ignores the advice (or two runs racing on
@@ -72,7 +72,7 @@ GENERIC_ANSWERS = frozenset(
 # Jaccard, not overlap-coefficient: a short question must not be swallowed just
 # because its every word appears in a longer one.
 #
-# 0.6 is where the two real cases sit on opposite sides. "Which colour for the
+# 0.6 is where the two real cases sit on opposite sides. "Which color for the
 # header?" vs "...for the footer?" scores 0.33 (different questions that read
 # almost identically - which is why this is token-based and not an edit-distance
 # ratio, which scores that pair 0.85 and would merge them). "Should I use design
@@ -89,7 +89,7 @@ SAME_ANSWERS_FLOOR = 0.3
 
 _URL_RE = re.compile(
     r"(?:https?://)?(?P<host>[\w-]+(?:\.[\w-]+)*\.(?:com|net|org|io|app|dev|sh|local)"
-    # A bare host is only recognised by its port, which the lookahead keeps out
+    # A bare host is only recognized by its port, which the lookahead keeps out
     # of the captured name - a token carrying a digit is dropped downstream, so
     # "myserver:8500" would otherwise vanish entirely instead of collapsing.
     r"|[\w-]+(?=:\d{2,5}))(?::\d{2,5})?(?P<path>[/\w\-.?=&%#]*)",
@@ -282,7 +282,7 @@ def similarity(a: str, b: str, a_options: Any = None, b_options: Any = None) -> 
         return 0.0
     if not ta or not tb:
         # Nothing to compare on. Identical scaffolding ("Should I?" twice) is
-        # still worth catching, so fall back to the normalised strings.
+        # still worth catching, so fall back to the normalized strings.
         na = re.sub(r"\W+", " ", (a or "").lower()).strip()
         nb = re.sub(r"\W+", " ", (b or "").lower()).strip()
         return 1.0 if na and na == nb else 0.0

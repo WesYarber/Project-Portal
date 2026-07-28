@@ -86,7 +86,7 @@ def test_equal_rank_is_not_upgraded(temp_data_dir):
     assert pacing.route_for_spend("fable") == ("fable", "")
 
 
-def test_a_custom_target_is_honoured(temp_data_dir):
+def test_a_custom_target_is_honored(temp_data_dir):
     _spend_down_on()
     db.set_setting(pacing.SPEND_MODEL_SETTING, "sonnet")
     assert pacing.route_for_spend("haiku")[0] == "sonnet"

@@ -188,6 +188,45 @@ def test_each_kind_of_line_is_classified_by_the_real_reader(drawn):
     assert kinds["    def foo():"] == "say"
 
 
+def test_a_paragraph_of_reasoning_does_not_draw_a_column_of_tildes(drawn):
+    """runlog writes one `~ ` per SOURCE line, so a wrapped thought arrives as
+    a run of marked lines. Drawn, the marker is dropped: `.cl-think` is the
+    only kind that sits at the margin in italic, so it already says everything
+    the tilde said, and three lines of reasoning were showing three tildes.
+
+    The machinery keeps its markers deliberately - `.cl-tool` and `.cl-result`
+    are styled identically, so `>` and `<` are the only thing distinguishing a
+    call from its answer.
+    """
+    lines = drawn["thinkingParagraph"]
+    assert [line["kind"] for line in lines] == ["think"] * 3 + ["tool", "result"]
+
+    thoughts = [line["text"] for line in lines if line["kind"] == "think"]
+    assert not any(text.startswith("~") for text in thoughts), thoughts
+    assert thoughts[0] == "The settings page is 500ing. That smells like a template"
+    assert thoughts[2] == "check is whether it was rendered since the last restart."
+
+    # ...and the call/answer pair still says which way it went.
+    assert lines[3]["text"] == "> Read(app/main.py)"
+    assert lines[4]["text"] == "< ok (3 lines)"
+
+
+def test_the_raw_log_still_marks_every_line_of_thinking():
+    """The marker is dropped when DRAWING, not when writing.
+
+    Two reasons it has to stay in the file. The reader classifies one line at a
+    time with no memory, which is what makes a line split across two polls come
+    out right; and `cat`ing the log has to show the same shape the browser does.
+    """
+    lines = runlog.render_event(
+        {
+            "type": "assistant",
+            "message": {"content": [{"type": "thinking", "thinking": "one\ntwo\nthree"}]},
+        }
+    )
+    assert lines == ["~ one", "~ two", "~ three"]
+
+
 def test_a_transcript_draws_one_element_per_line(drawn):
     assert drawn["wholeTranscript"] == [
         {"kind": "status", "text": "* session start"},

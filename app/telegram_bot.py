@@ -8,7 +8,7 @@ Message handling is two-layered:
 2. Anything else goes to `nl.classify`, which works out what Wes meant
    (an answer, a new idea, a note on a project, a status request, ...). If the
    NL router is disabled or unavailable, plain text falls back to the v1
-   behaviour of "treat it as a new idea".
+   behavior of "treat it as a new idea".
 
 All outbound text goes through `persona.say` so the GLaDOS voice can be
 toggled off in Settings.

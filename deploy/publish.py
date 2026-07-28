@@ -71,7 +71,7 @@ def publishable() -> tuple[list[str], list[str]]:
 def stage(target: Path, files: list[str]) -> None:
     """Copy into a clean directory, preserving the .git of an existing repo.
 
-    Wiping and re-initialising every time would give the public repo a fresh
+    Wiping and re-initializing every time would give the public repo a fresh
     history on every publish, which defeats the point of the second run onwards.
     """
     keep_git = target / ".git"

@@ -75,7 +75,7 @@ INLINE_DOC_TYPES = {"application/pdf"}
 
 MARKDOWN_SUFFIXES = {".md", ".markdown", ".mdown", ".mkd"}
 
-# The pygments class prefix; the matching colours live in style.css under
+# The pygments class prefix; the matching colors live in style.css under
 # `.highlight` so the file viewer is themed with the rest of the portal rather
 # than by an injected <style> block.
 CSS_CLASS = "highlight"
@@ -143,7 +143,7 @@ def highlight_text(path: Path, text: str) -> tuple[str, str]:
 
     Lexing is by filename only. `guess_lexer` on the *content* is the obvious
     alternative and it is worse here: it happily calls a short config file
-    Perl, and a plausible-but-wrong language colours the file misleadingly
+    Perl, and a plausible-but-wrong language colors the file misleadingly
     rather than not at all. An unknown extension falls back to plain text,
     which still gets the escaping and the styled block.
     """

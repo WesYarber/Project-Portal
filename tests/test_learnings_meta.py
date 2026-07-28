@@ -2,7 +2,7 @@
 
 learnings.md is fed into every run of every project, and Wes asked for its lines
 to read as durable facts rather than a dated log - so the dates live in a
-sidecar, keyed by the same normalised text the write gate dedupes on, never in
+sidecar, keyed by the same normalized text the write gate dedupes on, never in
 the prompt-facing file. The point these tests defend: a re-observed fact (which
 the write gate already drops as a NOOP) is *confirmation* the fact still holds,
 so the gate records it - and a line confirmed often and recently is plainly
@@ -63,7 +63,7 @@ def test_supersede_of_an_untracked_line_dates_from_today():
 
 
 def test_supersede_in_place_keeps_the_entry():
-    # A rephrasing whose normalised key is unchanged must not delete itself.
+    # A rephrasing whose normalized key is unchanged must not delete itself.
     meta = {"k": {"added": "2026-04-01", "confirmed": "2026-05-01", "count": 2}}
     memory.meta_supersede(meta, "k", "k", day="2026-07-23")
     assert meta["k"] == {"added": "2026-04-01", "confirmed": "2026-07-23", "count": 3}

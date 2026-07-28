@@ -172,7 +172,7 @@ def test_labels_are_the_stored_names():
     assert all(" - " not in label for label in labels.values())
 
 
-def test_project_page_renders_the_shortlist_and_colourises_it(client, project):
+def test_project_page_renders_the_shortlist_and_colorizes_it(client, project):
     body = client.get(f"/project/{project['slug']}").text
     assert "status-select status-active" in body
     assert ">paused</option>" in body
@@ -190,7 +190,7 @@ def test_control_bar_replaces_the_mismatched_inputs(client, project):
 
 
 def test_status_route_still_accepts_the_old_vocabulary(client, project):
-    # Old bookmarks and pre-deploy pages post the old names; they normalise.
+    # Old bookmarks and pre-deploy pages post the old names; they normalize.
     client.post(f"/project/{project['slug']}/status", data={"status": "needs_input"})
     assert db.get_project_by_slug(project["slug"])["stage"] == "active"
 

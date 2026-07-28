@@ -6,7 +6,7 @@ continuing to build where we are unblocked approach".
 
 What these pin down:
 
-- tags are short kebab labels, normalised so the same tag typed two ways is
+- tags are short kebab labels, normalized so the same tag typed two ways is
   one tag, capped in count and length so a chip stays a chip;
 - 'blocked' is the one tag with teeth: an open agent item wearing it is not
   workable, and a project where nothing is workable is not scheduled;
@@ -37,15 +37,15 @@ def project():
     )
 
 
-# --- normalisation ----------------------------------------------------------
+# --- normalization ----------------------------------------------------------
 
-def test_a_tag_is_normalised_to_kebab():
+def test_a_tag_is_normalized_to_kebab():
     assert db.normalize_todo_tag("Ready to Build ") == "ready-to-build"
     assert db.normalize_todo_tag("blocked") == "blocked"
     assert db.normalize_todo_tag("[weird,punct!]") == "weird-punct"
 
 
-def test_junk_tags_normalise_to_nothing():
+def test_junk_tags_normalize_to_nothing():
     assert db.normalize_todo_tag("") == ""
     assert db.normalize_todo_tag("!!!") == ""
     assert db.normalize_todo_tag(None) == ""
@@ -75,7 +75,7 @@ def test_add_and_remove_one_tag(project):
     db.add_todo_tag(row["id"], "blocked")
     db.add_todo_tag(row["id"], "blocked")  # idempotent, not a duplicate chip
     assert db.todo_tags(db.get_todo(row["id"])) == ["blocked"]
-    db.remove_todo_tag(row["id"], "Blocked")  # normalises before matching
+    db.remove_todo_tag(row["id"], "Blocked")  # normalizes before matching
     assert db.todo_tags(db.get_todo(row["id"])) == []
 
 
@@ -131,13 +131,13 @@ def test_one_workable_item_keeps_a_blocked_project_scheduling(project):
 
 
 def test_a_question_with_only_blocked_todos_parks_the_rotation(project):
-    db.create_question(project["id"], "Which colour?")
-    db.add_todo(project["id"], "depends on the colour", "agent", tags=["blocked"])
+    db.create_question(project["id"], "Which color?")
+    db.add_todo(project["id"], "depends on the color", "agent", tags=["blocked"])
     assert worker._pick_project(None) == (None, False)
 
 
 def test_an_empty_list_with_nothing_waiting_still_schedules(project):
-    """Unchanged behaviour, pinned: on many projects the agent picks its own
+    """Unchanged behavior, pinned: on many projects the agent picks its own
     next chunk, so no todos does not mean no work."""
     picked, _ = worker._pick_project(None)
     assert picked is not None and picked["id"] == project["id"]

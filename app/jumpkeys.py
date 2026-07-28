@@ -151,7 +151,7 @@ def deconflict(keys: Mapping[str, str]) -> dict[str, str]:
     Losing the letter is not silent. The loser comes back as OFF, its settings
     row reads "no key - nothing jumps here", and the footer hint on every page
     stops listing it. The alternative - handing app.js two entries for one
-    letter - resolves to whichever the JSON serialiser wrote last, which is a
+    letter - resolves to whichever the JSON serializer wrote last, which is a
     coin toss nobody can see.
 
     Only the names present in `keys` are considered, so this is safe to run

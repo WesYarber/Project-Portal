@@ -498,7 +498,7 @@ def _skills_section() -> str:
 
 
 def _promote_skills_section() -> str:
-    """The compaction agent's licence to lift a procedure out of learnings.md
+    """The compaction agent's license to lift a procedure out of learnings.md
     into a real skill (#226, the last piece of the memory overhaul).
 
     Dynamic rather than part of TASK_GUIDANCE because the destination is an
@@ -834,7 +834,7 @@ _CANCEL_REQUESTED: set[int] = set()
 def cancel_run(run_id: int) -> bool:
     """SIGKILL the process group of a live run.
 
-    Returns True if a process was signalled. False means this process isn't
+    Returns True if a process was signaled. False means this process isn't
     supervising that run - it already finished, or it was started by a previous
     incarnation of the service - and the caller should settle the DB row itself.
     """
@@ -850,7 +850,7 @@ def cancel_run(run_id: int) -> bool:
             proc.kill()
         except ProcessLookupError:
             return False
-    log.info("Cancelled run %s", run_id)
+    log.info("Canceled run %s", run_id)
     return True
 
 
@@ -1100,7 +1100,7 @@ async def _supervise(
     # non-zero return code. That is a deliberate stop, not a failure, so it gets
     # its own result flag rather than being reported as an error.
     if cancel_requested(run_id):
-        return RunResult(ok=False, cancelled=True, result_text="Run cancelled")
+        return RunResult(ok=False, cancelled=True, result_text="Run canceled")
 
     stdout = "".join(raw_parts)
     stderr = stderr_b.decode(errors="replace")

@@ -53,27 +53,27 @@ def _project(**kw):
 
 
 # --------------------------------------------------------------------------
-# quoting.normalise
+# quoting.normalize
 # --------------------------------------------------------------------------
 
 def test_a_selection_is_tidied_not_reproduced_verbatim():
     raw = "  first line   \n\n\n\n  second\tline  \n"
-    assert quoting.normalise(raw) == "first line\n\n  second line"
+    assert quoting.normalize(raw) == "first line\n\n  second line"
 
 
 def test_crlf_and_lone_cr_become_newlines():
-    assert quoting.normalise("a\r\nb\rc") == "a\nb\nc"
+    assert quoting.normalize("a\r\nb\rc") == "a\nb\nc"
 
 
-def test_an_empty_or_whitespace_selection_normalises_away():
-    assert quoting.normalise("") == ""
-    assert quoting.normalise("   \n\n\t ") == ""
-    assert quoting.normalise(None) == ""
+def test_an_empty_or_whitespace_selection_normalizes_away():
+    assert quoting.normalize("") == ""
+    assert quoting.normalize("   \n\n\t ") == ""
+    assert quoting.normalize(None) == ""
 
 
 def test_a_runaway_selection_is_capped_at_a_word_boundary():
     raw = ("word " * 400).strip()
-    out = quoting.normalise(raw)
+    out = quoting.normalize(raw)
     assert len(out) <= quoting.MAX_QUOTE_CHARS + 4  # + the " ..." marker
     assert out.endswith(" ...")
     # Cut between words, so the quote never ends mid-word.
@@ -81,7 +81,7 @@ def test_a_runaway_selection_is_capped_at_a_word_boundary():
 
 
 def test_a_long_run_with_no_spaces_is_still_capped():
-    out = quoting.normalise("x" * 5000)
+    out = quoting.normalize("x" * 5000)
     assert out.endswith(" ...")
     assert len(out) <= quoting.MAX_QUOTE_CHARS + 4
 
@@ -373,11 +373,11 @@ def selbar_geometry():
 
 
 def test_a_wide_window_parks_the_bar_in_the_gutter_beside_the_journal(selbar_geometry):
-    # 1080px page column centred in a 1920px window -> a 420px gutter each side.
+    # 1080px page column centered in a 1920px window -> a 420px gutter each side.
     wide = selbar_geometry["wide"]
     assert wide["side"] is True
     assert wide["left"] == 1510  # journal right edge (1500) + the 10px gap
-    # Vertically centred on the selection (top 400, height 24) for a 66px bar.
+    # Vertically centered on the selection (top 400, height 24) for a 66px bar.
     assert wide["top"] == 379
     assert wide["hidden"] is False
     assert wide["quote"] == "a quoted passage"
@@ -385,10 +385,10 @@ def test_a_wide_window_parks_the_bar_in_the_gutter_beside_the_journal(selbar_geo
 
 def test_a_phone_falls_back_to_floating_above_the_selection(selbar_geometry):
     # The journal card runs to the window edge: no gutter, so the bar goes back
-    # over the selection as a row, horizontally centred on it.
+    # over the selection as a row, horizontally centered on it.
     narrow = selbar_geometry["narrow"]
     assert narrow["side"] is False
-    assert narrow["left"] == 50   # selection centre 170 - half of a 240px row
+    assert narrow["left"] == 50   # selection center 170 - half of a 240px row
     assert narrow["top"] == 358   # selection top 400 - 34px row - the 8px gap
 
 

@@ -86,7 +86,7 @@ def test_a_second_save_merges_rather_than_replaces(client):
     }
 
 
-def test_an_unrecognised_key_or_value_is_never_stored(client):
+def test_an_unrecognized_key_or_value_is_never_stored(client):
     """This is the boundary between a form and a `<body>` class name.
 
     A value that got through would be painted into the page as `scan-<junk>`
@@ -161,7 +161,7 @@ def test_an_override_beats_the_install(client):
     assert look["ui_density"] == "compact"
 
 
-def test_the_install_still_backs_an_unrecognised_stored_setting(client):
+def test_the_install_still_backs_an_unrecognized_stored_setting(client):
     """The pre-existing guard has not been lost under the new tier."""
     from app import main
 

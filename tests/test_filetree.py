@@ -133,7 +133,7 @@ def test_the_route_cannot_escape_the_workspace(client, project, workspace):
     """Asserted against the resolver, not over HTTP.
 
     An `http://.../tree/x/../..` is collapsed by the *client* before it is
-    sent, so a request-level test proves the client normalises paths and
+    sent, so a request-level test proves the client normalizes paths and
     nothing about this code. The containment check is what has to hold.
     """
     from fastapi import HTTPException

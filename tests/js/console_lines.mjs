@@ -8,7 +8,7 @@
 // non-indented text that is not dimmed."
 //
 // String-matching for "cl-tool" would only prove the file contains the word.
-// This proves the behaviour: which class each kind of line actually gets, that
+// This proves the behavior: which class each kind of line actually gets, that
 // markdown prose is not mistaken for machinery, and - the part no static check
 // could reach - that a chunk arriving split across two polls ends up as one
 // correctly classified line rather than two wrong ones.
@@ -136,6 +136,24 @@ for (const line of [
   api.renderConsole(out, "> Read(a)\n", true);
   api.renderConsole(out, "> Read(b)\n", true);
   result.afterReplace = drawn(out);
+}
+
+// 6. A paragraph of reasoning: runlog writes one "~ " per SOURCE line, so a
+//    wrapped thought arrives as several marked lines in a row. Drawn, they
+//    must not leave a column of tildes down the left - while the machinery
+//    around them keeps the markers that say which way a call went.
+{
+  const out = makeOut();
+  api.renderConsole(
+    out,
+    "~ The settings page is 500ing. That smells like a template\n" +
+      "~ meeting a handler that has moved on, so the first thing to\n" +
+      "~ check is whether it was rendered since the last restart.\n" +
+      "> Read(app/main.py)\n" +
+      "< ok (3 lines)\n",
+    true,
+  );
+  result.thinkingParagraph = drawn(out);
 }
 
 console.log(JSON.stringify(result, null, 2));

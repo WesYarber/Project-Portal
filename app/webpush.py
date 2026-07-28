@@ -71,7 +71,7 @@ def _b64u_decode(text: str) -> bytes:
 
 def _keys_path() -> Path:
     # Beside the DB, not in it: a keypair is a credential, and Wes can rotate
-    # it by deleting the file (every device then needs to re-enrol).
+    # it by deleting the file (every device then needs to re-enroll).
     return config.DATA_DIR / "vapid.json"
 
 

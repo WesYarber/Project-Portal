@@ -247,7 +247,7 @@ def idle_reason() -> str:
     """Why no agent is running right now, phrased for the dashboard.
 
     Computed from the same predicates `_tick` decides with, so the answer can't
-    drift from the real behaviour. Empty string when a run is in flight.
+    drift from the real behavior. Empty string when a run is in flight.
 
     One deliberate difference from the tick's order: project eligibility is
     checked before the pacing interval. The tick checks pacing first because it
@@ -423,7 +423,7 @@ async def _start_one() -> bool:
         if manual_project_id in db.running_project_ids():
             # Already working on that project. Re-queue rather than drop the
             # request or put two agents in one workspace; the next tick that
-            # finds it free will honour it.
+            # finds it free will honor it.
             await manual_queue.put(manual_project_id)
             return False
     elif not worker_enabled:
@@ -653,9 +653,9 @@ async def run_project_task(
     _note_memory_kill(project, task, result)
 
     if result.cancelled:
-        db.finish_run(run_id, "cancelled", summary="Cancelled from the portal.")
-        db.add_journal(project["id"], "system", "status", f"Run ({task}) cancelled from the portal.")
-        _note_orphaned_work(project, task, "was cancelled")
+        db.finish_run(run_id, "cancelled", summary="Canceled from the portal.")
+        db.add_journal(project["id"], "system", "status", f"Run ({task}) canceled from the portal.")
+        _note_orphaned_work(project, task, "was canceled")
         return
 
     if result.is_rate_limited:
@@ -1275,7 +1275,7 @@ MAX_LEARNINGS_PER_RUN = 3
 
 
 def _learning_key(text: str) -> str:
-    """A learning normalised for duplicate detection: case, punctuation and
+    """A learning normalized for duplicate detection: case, punctuation and
     whitespace removed. Two runs noticing the same thing an hour apart phrase
     it slightly differently, so an exact-match check would catch almost none of
     the repetition that actually happens."""
@@ -1311,7 +1311,7 @@ def _clean_learning(text: str) -> str:
 
 
 def _parse_learning(item) -> Optional[tuple[str, str]]:
-    """Normalise one report learning into (op, text), or None to skip.
+    """Normalize one report learning into (op, text), or None to skip.
 
     A plain string is the common case and leaves the op to the gate ("auto").
     A run may also be explicit with {"op": "add|update|delete", "text": ...} -
@@ -1340,7 +1340,7 @@ def _append_learnings(learnings: list, *, when: Optional[datetime] = None) -> No
     each dead line is a tax on every future run. Plain appending only ever grew
     it, so every incoming learning is now classified:
 
-      NOOP   - an exact (normalised) duplicate of an existing bullet is dropped.
+      NOOP   - an exact (normalized) duplicate of an existing bullet is dropped.
       UPDATE - a bullet highly similar to an existing one replaces it in place,
                so a refined rephrasing supersedes the old wording instead of
                piling up beside it. A run may force this with op "update".
@@ -1365,7 +1365,7 @@ def _append_learnings(learnings: list, *, when: Optional[datetime] = None) -> No
         lines = []
 
     # The freshness sidecar (added / last-confirmed / observation count per
-    # entry). Kept beside the file, keyed by the same normalised text this gate
+    # entry). Kept beside the file, keyed by the same normalized text this gate
     # dedupes on - see memory.load_learnings_meta. Every classification below
     # feeds it: a NOOP is a confirmation, not a wasted re-observation.
     meta = memory.load_learnings_meta()
@@ -1586,7 +1586,7 @@ def cancel_run(run_id: int) -> str:
         return "cancelled"
     db.finish_run(
         run_id, "cancelled",
-        summary="Cancelled: no live process owned this run (orphaned by a restart).",
+        summary="Canceled: no live process owned this run (orphaned by a restart).",
     )
     log.warning("Cancel requested for run %s with no live process; row settled", run_id)
     return "orphaned"
@@ -1659,7 +1659,7 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
         hookguard.end(run_id)
 
     if result.cancelled:
-        db.finish_run(run_id, "cancelled", summary="Cancelled from the portal.")
+        db.finish_run(run_id, "cancelled", summary="Canceled from the portal.")
         db.add_oneoff_message(task_id, "system", "Run stopped from the portal.", run_id=run_id)
         return
 
@@ -1786,12 +1786,12 @@ async def _maybe_reflect() -> None:
     # worker disabled and watching it start a reflect anyway.
     if not scheduled_work_enabled():
         return
-    # The reflect summarises the whole day across every project, so it waits
+    # The reflect summarizes the whole day across every project, so it waits
     # for a genuinely quiet moment rather than running alongside a build.
     if db.is_run_running() or REFLECT_SLOT in _inflight:
         return
     # Reflect once per portal day, and only once the day has actually turned
-    # over - the reflect summarises the day that just ended, so it runs just
+    # over - the reflect summarizes the day that just ended, so it runs just
     # after the boundary rather than just before it.
     today = daycycle.current_day()
     if (db.get_setting("last_reflect_date") or "") == today:
@@ -1827,7 +1827,7 @@ async def run_reflect() -> None:
     )
 
     if result.cancelled:
-        db.finish_run(run_id, "cancelled", summary="Reflect cancelled from the portal.")
+        db.finish_run(run_id, "cancelled", summary="Reflect canceled from the portal.")
         return
 
     if result.is_rate_limited:
@@ -1965,7 +1965,7 @@ async def run_compaction() -> None:
     )
 
     if result.cancelled:
-        db.finish_run(run_id, "cancelled", summary="Learnings compaction cancelled from the portal.")
+        db.finish_run(run_id, "cancelled", summary="Learnings compaction canceled from the portal.")
         return
     if result.is_rate_limited:
         until, why = await _rate_limit_backoff()

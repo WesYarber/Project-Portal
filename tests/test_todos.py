@@ -6,7 +6,7 @@ When new requests are given to you, you need to add the relevant entries to the
 todo list for yourself so that things don't get left behind in long context
 windows."
 
-The behaviours that make that true, and which these tests pin down:
+The behaviors that make that true, and which these tests pin down:
 
 - the list is split by owner, and both halves survive a run;
 - the agent's half is written into every run prompt, so a request made ten runs

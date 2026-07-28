@@ -108,7 +108,7 @@ def test_ask_model_ignores_junk(temp_data_dir):
     assert ask.ask_model() == config.ASK_MODEL
 
 
-def test_ask_model_honours_a_valid_setting(temp_data_dir):
+def test_ask_model_honors_a_valid_setting(temp_data_dir):
     db.set_setting("ask_model", "haiku")
     assert ask.ask_model() == "haiku"
 

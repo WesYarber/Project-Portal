@@ -60,7 +60,7 @@
     <span class="stat"><em>{{ history.totals.success_rate }}%</em>succeeded</span>
     <span class="stat"><em>{{ history.totals.failed }}</em>failed</span>
     {% if history.totals.cancelled %}
-    <span class="stat"><em>{{ history.totals.cancelled }}</em>cancelled</span>
+    <span class="stat"><em>{{ history.totals.cancelled }}</em>canceled</span>
     {% endif %}
     <span class="stat"><em>{{ history.totals.cost|cost(2) }}</em>total {{ cost_noun() }}</span>
     <span class="stat"><em>{{ history.totals.avg_cost|cost(3) }}</em>per run</span>
@@ -90,7 +90,7 @@
         <td class="small">{{ g.cost|cost(2) }} <span class="muted">({{ g.share }}%)</span></td>
         <td class="small">{{ g.runs }}</td>
         <td class="small">{{ g.ok }}</td>
-        <td class="small">{{ g.failed }}{% if g.cancelled %} <span class="muted">+{{ g.cancelled }} cancelled</span>{% endif %}</td>
+        <td class="small">{{ g.failed }}{% if g.cancelled %} <span class="muted">+{{ g.cancelled }} canceled</span>{% endif %}</td>
         <td class="small">{{ g.avg_duration_sec // 60 }}m</td>
       </tr>
       {% endfor %}

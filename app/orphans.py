@@ -206,7 +206,7 @@ def _git(repo: Path, *args: str, quiet: bool = False) -> Optional[str]:
 
 def journal_note(slug: str, task: str, how: str) -> Optional[str]:
     """The markdown the worker adds when a run ends badly, or None if the repo
-    is clean. `how` is why the run ended - "errored", "timed out", "cancelled".
+    is clean. `how` is why the run ended - "errored", "timed out", "canceled".
     """
     work = scan(repo_for(slug))
     if work is None:

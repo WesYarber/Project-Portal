@@ -157,7 +157,7 @@ def test_archiving_keeps_the_person_and_takes_them_out_of_the_pickers():
     assert pid in {int(p["id"]) for p in people.everyone(include_archived=True)}
     # And they still resolve from a live cookie: archiving retires somebody
     # from the pickers, it is not a lockout, and silently becoming a different
-    # person mid-session is worse than seeing a greyed-out name.
+    # person mid-session is worse than seeing a grayed-out name.
     assert int(people.resolve(cookie_slug="erin")["id"]) == pid
 
 

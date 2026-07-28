@@ -5,7 +5,7 @@ signal (added / last-confirmed dates, observation counts) to choose its cuts.
 Grouped by the claim they defend: where promoted skills live (beside the
 agents' cwd, never inside it), how they reach workspaces and prompts (the same
 two channels the built-in skills use, built-in winning a name collision), what
-the compaction prompt now says (the promotion licence with an absolute
+the compaction prompt now says (the promotion license with an absolute
 destination, and the entry-ages digest stalest-first), and the /memory window
 with its traversal-guarded view/delete - because Wes distrusts memory he
 cannot see or prune.
@@ -180,7 +180,7 @@ def test_prompt_index_lists_promoted_skills(temp_data_dir, builtin_skills):
 
 
 # --------------------------------------------------------------------------
-# The compaction prompt: the promotion licence + the entry-ages digest
+# The compaction prompt: the promotion license + the entry-ages digest
 # --------------------------------------------------------------------------
 
 def test_compact_prompt_licenses_promotion_with_an_absolute_path(temp_data_dir):

@@ -18,7 +18,7 @@ The machine defaults are why a fresh clone needs no configuration at all:
 LAN, `getpass.getuser()` is the account you would SSH in as, and the account's
 GECOS field is the owner's real name. On the author's own box those three
 resolve to exactly the values that used to be hard-coded, so introducing this
-file changed no behaviour there - and on someone else's box they resolve to
+file changed no behavior there - and on someone else's box they resolve to
 *their* values without them touching anything.
 
 The one thing that cannot be guessed is a host that is only reachable by an
@@ -384,7 +384,7 @@ def load(
                 values[key] = _coerce(key, value, defaults()[key])
         # `pronouns = "he"` is what this field was called before 2026-07-28.
         # An install that answered it once has answered it - `gender_key`
-        # already understands the three values it could hold, so honouring
+        # already understands the three values it could hold, so honoring
         # the old key costs one line and saves every existing install from
         # silently reverting to they/them at the next boot. An explicit
         # `gender` always wins.

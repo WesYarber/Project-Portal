@@ -146,7 +146,7 @@ async def _identify(request: Request, call_next):
     """Resolve the acting person once, for the whole request.
 
     Never fails a request: identity is a nicety on a home-LAN tool, not an
-    authorisation decision, and a portal that 500s because a whois call went
+    authorization decision, and a portal that 500s because a whois call went
     wrong would be a strictly worse portal than the single-person one it
     replaced. The token is reset in `finally` so a worker thread cannot inherit
     a stale person from whichever request happened to run on it last.
@@ -492,7 +492,7 @@ def open_question_total() -> int:
 
 def install_appearance() -> dict[str, str]:
     """The install's look: the settings rows, each falling back to its default
-    if unset or unrecognised.
+    if unset or unrecognized.
 
     This is what a person who has chosen nothing sees, and what a new person
     starts from.
@@ -770,7 +770,7 @@ async def on_shutdown() -> None:
 async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     # `?sort=` both applies and sticks, so the order survives the next visit
     # without needing a settings trip. An unknown name is ignored entirely.
-    # The menu, not the full catalogue: with priority hidden, "priority, then
+    # The menu, not the full catalog: with priority hidden, "priority, then
     # recent" is not a sort this install offers, so a stored preference for it
     # falls back here rather than quietly ranking by an invisible number.
     sorts = db.project_sorts()
@@ -801,7 +801,7 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             shelf = db.project_shelf(p, question_counts.get(p["id"], 0))
         shelves[shelf].append(p)
     # Each shelf is re-ordered so a sub-project sits directly under the project
-    # it was split out of, indented and labelled. Children stay real cards -
+    # it was split out of, indented and labeled. Children stay real cards -
     # hiding them inside the parent would make a game an agent is actively
     # building on invisible from the one page Wes checks.
     for name, rows in list(shelves.items()):
@@ -1693,7 +1693,7 @@ def _after_question(question: sqlite3.Row, next: str) -> str:
     Answering from the questions tab keeps you on the questions tab - working
     through a stack of them shouldn't bounce you into a project page and back
     for each one. Without an explicit `next` (the project page's own form) the
-    old behaviour of returning to the project stands.
+    old behavior of returning to the project stands.
     """
     if next:
         return _safe_next(next)
@@ -2206,7 +2206,7 @@ async def save_settings(request: Request) -> RedirectResponse:
     than being named as handler parameters. That is what makes the page safely
     splittable: each section declares the settings it owns, so saving
     Appearance can never blank out the Telegram token, and a field the running
-    code does not recognise is dropped loudly at one choke point instead of
+    code does not recognize is dropped loudly at one choke point instead of
     being silently ignored by FastAPI's form binding.
     """
     form = await request.form()
@@ -2435,7 +2435,7 @@ async def push_unsubscribe(request: Request) -> JSONResponse:
 @app.post("/push/remove/{sub_id}")
 async def push_remove(sub_id: int) -> RedirectResponse:
     """The settings-page remove button. The device keeps its OS-level
-    subscription until it re-enrols or revokes it, but the portal stops
+    subscription until it re-enrolls or revokes it, but the portal stops
     sending to it immediately."""
     db.delete_push_subscription_by_id(sub_id)
     return RedirectResponse(url="/settings#notifications", status_code=303)
@@ -2545,7 +2545,7 @@ async def raw_file(slug: str, path: str) -> FileResponse:
     else 415s and stays on the attachment-only download route. Two headers do
     the rest of the work:
 
-      * nosniff, so a browser cannot decide a mislabelled .png is really HTML
+      * nosniff, so a browser cannot decide a mislabeled .png is really HTML
         and run it on the portal's origin;
       * a sandbox CSP, which is what actually contains a hostile PDF - PDF
         viewers run script, and this file was written by an agent.
@@ -2774,7 +2774,7 @@ async def api_usage_history(days: int = 14, project: str = "") -> JSONResponse:
 async def hooks_pre_tool(request: Request, run: int = 0, token: str = "") -> JSONResponse:
     """PreToolUse guardrail endpoint: every guarded run's tool calls arrive
     here (relayed by app/hookrelay.py) and get an allow/deny back. Loopback
-    traffic from runs this portal spawned itself; anything unrecognisable
+    traffic from runs this portal spawned itself; anything unrecognizable
     fails open to allow - see app/hookguard.py."""
     try:
         payload = await request.json()

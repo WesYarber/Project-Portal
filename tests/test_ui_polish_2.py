@@ -143,19 +143,19 @@ def test_a_disabled_or_multiple_select_is_left_alone():
     assert "if (sel.multiple || sel.size > 1 || sel.dataset.enhanced) return;" in js()
 
 
-def test_the_status_options_carry_their_colour(client, project):
+def test_the_status_options_carry_their_color(client, project):
     body = client.get(f"/project/{project['slug']}").text
     assert 'data-opt-class="status-active"' in body
     assert 'data-opt-class="status-review"' in body
 
 
-def test_the_priority_options_carry_a_colour_band(client, project):
+def test_the_priority_options_carry_a_color_band(client, project):
     body = client.get(f"/project/{project['slug']}").text
     assert 'data-opt-class="prio-high"' in body
     assert 'data-opt-class="prio-low"' in body
 
 
-def test_the_option_rows_are_coloured_like_the_closed_control():
+def test_the_option_rows_are_colored_like_the_closed_control():
     sheet = css()
     for state in ["active", "review", "paused", "abandoned"]:
         assert f".sel-opt.status-{state}" in sheet

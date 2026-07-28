@@ -2,7 +2,7 @@
 // DOM and prints what it did, as JSON.
 //
 // String-matching the source would only prove the file mentions "scrollIntoView";
-// this proves the behaviour Wes asked for - that the section's top edge is what
+// this proves the behavior Wes asked for - that the section's top edge is what
 // gets aligned, that the cursor lands in the box, and above all that the key
 // does nothing while you are typing a letter into a field. Called by
 // tests/test_jump_keys.py.

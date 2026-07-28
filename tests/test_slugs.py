@@ -38,7 +38,7 @@ def _fresh(project):
 
 def test_clean_title_strips_control_characters():
     # The real bug: a title pasted into the form arrived as "SimpleClickTrack\r"
-    # and the CR travelled into notification text and ssh commands unseen.
+    # and the CR traveled into notification text and ssh commands unseen.
     assert db.clean_title("SimpleClickTrack\r") == "SimpleClickTrack"
     assert db.clean_title("Life\tOS\n") == "Life OS"
     assert db.clean_title("  spaced   out  ") == "spaced out"

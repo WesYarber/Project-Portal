@@ -205,7 +205,7 @@ async def serve_loop() -> None:
 
     A second process would need its own unit, its own restart-on-self-update
     and its own log; a second uvicorn Server in this loop gets all three for
-    free and dies with the portal, which is the behaviour you want from
+    free and dies with the portal, which is the behavior you want from
     something whose only job is to make the portal's links work.
     """
     import contextlib
@@ -220,7 +220,7 @@ async def serve_loop() -> None:
         the second one to start wins and `systemctl stop project-portal` would
         stop *the preview server* while the portal itself carried on ignoring
         the signal. The outer uvicorn keeps the signals; this one exits when
-        its task is cancelled, which is what the shutdown handler already does.
+        its task is canceled, which is what the shutdown handler already does.
         """
 
         def install_signal_handlers(self) -> None:  # pragma: no cover - trivial

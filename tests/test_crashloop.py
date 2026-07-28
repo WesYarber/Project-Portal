@@ -349,7 +349,7 @@ def _die(project_id: int, n: int) -> None:
 
 
 def test_a_looping_project_is_passed_over_for_a_healthy_one(projects):
-    """The behaviour Wes actually needed: OpenJournal stops hogging the slots
+    """The behavior Wes actually needed: OpenJournal stops hogging the slots
     it cannot use, and the rest of the board gets them."""
     from app import worker
 

@@ -684,7 +684,7 @@ def _backfill_build_approval() -> None:
 
     The `build_approved` gate arrived after a run of agents had already promoted
     themselves out of triage and started building things Wes never asked for, so
-    defaulting every project to "approved" would preserve exactly the behaviour
+    defaulting every project to "approved" would preserve exactly the behavior
     the gate exists to stop. Instead the back-fill only trusts evidence that Wes
     himself asked for the build: a `user`-authored status entry moving the
     project into `building` (written by both the web UI and Telegram), plus the
@@ -931,7 +931,7 @@ def create_project(
     # Creating a project already approved for building is a deliberate act by a
     # human (an agent can only ever ask later), passed explicitly - the old
     # implicit rule was `status == "building"`, which the legacy vocabulary
-    # still honours. New ideas land in `backlog` (or `active` for the "add and
+    # still honors. New ideas land in `backlog` (or `active` for the "add and
     # start planning" button) and stay unapproved until Wes says otherwise.
     if build_approved is None:
         build_approved = stage == "building"
@@ -1716,7 +1716,7 @@ def create_question(
 ) -> sqlite3.Row:
     """Back-compatible shim: the row, whether it was inserted now or matched.
 
-    Callers that send a notification want `file_question` so they can honour
+    Callers that send a notification want `file_question` so they can honor
     `created`; this stays for the ones that only want a row back.
     """
     return file_question(project_id, question, context, quick_options).row
@@ -2338,7 +2338,7 @@ def hook_denials_for_run(run_id: int) -> list[sqlite3.Row]:
 # --------------------------------------------------------------------------
 
 def add_push_subscription(endpoint: str, p256dh: str, auth: str, ua: str = "") -> None:
-    """Enrol a device, or refresh one that re-subscribed: the endpoint is the
+    """Enroll a device, or refresh one that re-subscribed: the endpoint is the
     identity, and fresh keys replace stale ones in place (a browser is allowed
     to rotate a subscription's keys whenever it likes)."""
     conn = get_conn()
@@ -2827,7 +2827,7 @@ def effective_max_runs() -> int:
 
 def max_parallel_runs() -> int:
     """How many agent runs may be in flight at once. 1 restores the old
-    strictly-serial behaviour."""
+    strictly-serial behavior."""
     try:
         return max(1, int(get_setting("max_parallel_runs") or "2"))
     except ValueError:

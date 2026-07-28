@@ -265,15 +265,15 @@ def test_open_questions_alone_do_not_stop_scheduling(temp_data_dir):
     """The contract says asking does not mean stopping - a project with an
     open question and workable todos keeps its place in the rotation."""
     p = db.create_project("Fridge", slug="fridge", stage="active", build_approved=True)
-    db.create_question(p["id"], "Which colour?")
-    db.add_todo(p["id"], "everything except the colour", owner="agent")
+    db.create_question(p["id"], "Which color?")
+    db.add_todo(p["id"], "everything except the color", owner="agent")
     picked, _ = worker._pick_project(None)
     assert picked is not None
 
 
 def test_a_question_with_no_workable_todos_parks_the_rotation(temp_data_dir):
     p = db.create_project("Fridge", slug="fridge", stage="active", build_approved=True)
-    db.create_question(p["id"], "Which colour?")
+    db.create_question(p["id"], "Which color?")
     assert worker._pick_project(None) == (None, False)
 
 

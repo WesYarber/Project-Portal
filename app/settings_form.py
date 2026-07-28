@@ -219,7 +219,7 @@ def declared_fields(raw: Optional[str]) -> list[str]:
     """The settings a submitted form claims to own.
 
     A missing `_fields` means an older form (or a test) posting everything at
-    once, which is the legacy whole-page behaviour: every known key is in play.
+    once, which is the legacy whole-page behavior: every known key is in play.
     Unknown names are dropped here so a stale form can't write junk keys.
     """
     if raw is None:
@@ -256,7 +256,7 @@ def _deconflict_jump_keys(out: dict[str, str]) -> dict[str, str]:
     The loser is written as blank rather than left alone, deliberately: the
     stored value and the settings row then agree with each other and with what
     the browser will actually do. Leaving the old letter in place would give a
-    settings page that shows a binding the page has just refused to honour.
+    settings page that shows a binding the page has just refused to honor.
     """
     submitted = {
         name: out[jumpkeys.setting_key(name)]

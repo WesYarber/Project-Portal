@@ -1,6 +1,6 @@
 """Scheduling against the real Claude limits (app/pacing.py).
 
-Two behaviours pulling opposite ways: stop scheduled runs short of a full
+Two behaviors pulling opposite ways: stop scheduled runs short of a full
 window, and spend a weekly window's leftovers before they evaporate. Nothing
 here touches the network - every test hands `pacing` a snapshot in the shape
 `limits.parse()` produces.
@@ -86,7 +86,7 @@ def test_nonsense_threshold_falls_back_to_the_default(value):
 
 def test_a_missing_or_stale_reading_never_holds():
     """An outage at Anthropic's end must not be able to idle the portal - the
-    worst case has to degrade to the old behaviour (run, and back off if it
+    worst case has to degrade to the old behavior (run, and back off if it
     fails), not to silence."""
     assert pacing.scheduled_hold({"ok": False, "error": "no snapshot", "windows": []}) is None
     assert pacing.scheduled_hold(snapshot(five=99.0, stale=True)) is None
@@ -289,7 +289,7 @@ def test_status_line_only_speaks_while_the_window_is_open():
 
 
 # --------------------------------------------------------------------------
-# The worker honouring all of it
+# The worker honoring all of it
 # --------------------------------------------------------------------------
 
 
@@ -425,7 +425,7 @@ def test_a_reset_a_week_apart_is_a_different_window():
 
 def test_a_percent_in_the_yes_sets_the_session_guard():
     """'Yes, but don't go over my 5hr limit past 70%' is an instruction, not
-    colour - the number becomes the burst session guard."""
+    color - the number becomes the burst session guard."""
     meta_project()
     question = pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
     db.answer_question_and_resume(question["id"], "Yes, spend it down. Don't go past 65%, though.")

@@ -27,7 +27,7 @@ Everything here is deliberately conservative and self-correcting:
   so one fluke cannot move the number.
 * It clamps the result to a sane band; anything outside it is ignored rather
   than acted on.
-* Every reader falls back to the old `resets_at`/seven-day behaviour when
+* Every reader falls back to the old `resets_at`/seven-day behavior when
   nothing has been learned yet, so the portal on day one behaves exactly as it
   did before this module existed.
 """
@@ -221,7 +221,7 @@ def effective_resets_in_sec(entry: dict, now: Optional[datetime] = None) -> Opti
     The endpoint's own countdown and the learned prediction, whichever is
     closer, because the risk being managed is headroom evaporating unspent and
     the sooner reset is the one that does it. Falls back to the endpoint's
-    figure alone when nothing has been learned, so behaviour is unchanged until
+    figure alone when nothing has been learned, so behavior is unchanged until
     the cadence is established.
     """
     now = _now(now)

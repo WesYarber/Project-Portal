@@ -8,7 +8,7 @@ A journal image is wrapped by mediamd in a portal self-link
 (`<a class="journal-media-link" data-lightbox href="<raw>">`). app.js
 intercepts a plain left-click on that link and opens a zoomable, pannable
 overlay instead of navigating to the raw file. These tests pin the marker the
-JS keys off, the JS behaviour that matters (intercept, but never on a modified
+JS keys off, the JS behavior that matters (intercept, but never on a modified
 click), and the CSS that makes the overlay a fixed in-page popup.
 """
 from __future__ import annotations
@@ -51,7 +51,7 @@ def test_video_is_a_player_not_a_lightbox_link():
 
 
 # --------------------------------------------------------------------------
-# The JS behaviour
+# The JS behavior
 # --------------------------------------------------------------------------
 
 def _js():
@@ -91,7 +91,7 @@ def test_wheel_zoom_is_proportional_to_delta_not_a_fixed_step():
     assert "Math.exp(-dy * 0.0025)" in js
     # ...and the old fixed-step expression is gone.
     assert "ev.deltaY < 0 ? 1.15 : 1 / 1.15" not in js
-    # deltaMode is normalised to pixels and the per-event delta is clamped so a
+    # deltaMode is normalized to pixels and the per-event delta is clamped so a
     # single chunky mouse notch can't leap.
     assert "ev.deltaMode === 1" in js
     assert "Math.max(-50, Math.min(50, dy))" in js

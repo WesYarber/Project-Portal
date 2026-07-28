@@ -262,7 +262,7 @@ def test_a_folder_row_carries_no_extra_gap():
 def test_a_label_styled_as_a_button_carries_no_bottom_margin():
     # This is why `attach files` sat visibly higher than `add note`: the global
     # `label` rule's 0.35rem bottom margin is part of the box that the row
-    # centres.
+    # centers.
     css = (config.APP_ROOT / "app" / "static" / "style.css").read_text()
     assert "label.btn { margin-bottom: 0; }" in css
 

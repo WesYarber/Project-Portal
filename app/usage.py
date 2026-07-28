@@ -164,7 +164,7 @@ def summarize(buckets: Sequence[dict]) -> dict:
     ok = sum(b["ok"] for b in buckets)
     failed = sum(b["failed"] for b in buckets)
     # Graded = runs that actually reached a verdict. Runs still in flight and
-    # runs cancelled by hand have no verdict to average in.
+    # runs canceled by hand have no verdict to average in.
     graded = ok + failed
     return {
         "runs": runs,

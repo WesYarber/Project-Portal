@@ -311,7 +311,7 @@ def archived_learnings(limit: int = 200) -> list[ArchivedLearning]:
 # last-confirmed date per entry, so the compaction job - and Wes on /memory -
 # can tell a fact that many runs keep re-noticing from one added once months ago
 # and never seen since. So the dates live in a sidecar keyed by the same
-# normalised text the write gate dedupes on, never in the prompt-facing file.
+# normalized text the write gate dedupes on, never in the prompt-facing file.
 #
 # The key idea: the write gate already drops a re-observed duplicate as a NOOP.
 # That NOOP is *evidence the fact is still true* - so rather than discard it

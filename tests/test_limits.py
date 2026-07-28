@@ -223,7 +223,7 @@ def test_cached_recomputes_countdowns_against_now():
 
 
 def test_the_poll_presents_itself_as_the_real_cli(monkeypatch):
-    """An unrecognised User-Agent lands this endpoint's requests in a punitive
+    """An unrecognized User-Agent lands this endpoint's requests in a punitive
     rate-limit bucket, so the poll must look like the genuine Claude CLI."""
     import io
     import urllib.request as urlreq

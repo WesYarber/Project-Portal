@@ -129,7 +129,7 @@ a:hover { text-decoration: underline; }
   user-select: none;
   flex-wrap: wrap;
 }
-/* Equal flex basis either side keeps the centre item truly centred on the
+/* Equal flex basis either side keeps the center item truly centered on the
    window, not on whatever room the dots and the stat happened to leave. */
 .window-controls, .window-stats { flex: 1 1 0; min-width: 0; }
 .window-controls { display: flex; gap: 8px; flex-shrink: 0; }
@@ -259,7 +259,7 @@ a:hover { text-decoration: underline; }
 .badge::before { content: "["; opacity: 0.55; }
 .badge::after { content: "]"; opacity: 0.55; }
 
-/* Colour a badge (or anything else) by state. */
+/* Color a badge (or anything else) by state. */
 .accent-blue { color: var(--ansi-blue); border-color: var(--ansi-blue); }
 .accent-cyan { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
 .accent-green { color: var(--ansi-green); border-color: var(--ansi-green); }

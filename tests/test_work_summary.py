@@ -6,7 +6,7 @@ should be an 'Acknowledged' button under it that basically resets that context
 window and clears the update and returns the space that it used to occupy
 visually."
 
-The behaviours that make that true, and which these tests pin down:
+The behaviors that make that true, and which these tests pin down:
 
 - a run's one-line `summary` from report.json is recorded against the run;
 - the project page shows the summaries Wes has not acknowledged, newest first;

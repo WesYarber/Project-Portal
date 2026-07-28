@@ -1,7 +1,7 @@
 """Stopping a run mid-flight.
 
 The interesting cases aren't "does killpg work" but the bookkeeping around it:
-a cancelled run must not read as a failure, must not leave the `runs` row stuck
+a canceled run must not read as a failure, must not leave the `runs` row stuck
 on 'running' (which would deadlock the worker via `is_run_running()`), and must
 still settle sanely when the process it names no longer exists.
 """
@@ -53,7 +53,7 @@ async def test_cancel_stops_a_live_run(tmp_path, fake_claude):  # noqa: F811
 
 
 @pytest.mark.asyncio
-async def test_cancelling_a_live_run_marks_it_cancelled_not_errored(tmp_path, fake_claude, project):  # noqa: F811
+async def test_canceling_a_live_run_marks_it_canceled_not_errored(tmp_path, fake_claude, project):  # noqa: F811
     fake_claude("sleep 120\n")
     task = asyncio.create_task(worker.run_project_task(project, "build"))
 
@@ -76,7 +76,7 @@ async def test_cancelling_a_live_run_marks_it_cancelled_not_errored(tmp_path, fa
     assert db.is_run_running() is False
 
 
-def test_cancelling_an_orphaned_row_settles_it(project):
+def test_canceling_an_orphaned_row_settles_it(project):
     """A 'running' row with no live process is a leftover from a restart.
     Killing nothing and leaving it alone would block the worker forever."""
     run_id = db.create_run(project["id"], "build", "opus")
@@ -90,7 +90,7 @@ def test_cancelling_an_orphaned_row_settles_it(project):
     assert db.is_run_running() is False
 
 
-def test_cancelling_a_finished_or_missing_run_is_a_no_op(project):
+def test_canceling_a_finished_or_missing_run_is_a_no_op(project):
     run_id = db.create_run(project["id"], "build", "opus")
     db.finish_run(run_id, "ok")
     assert worker.cancel_run(run_id) == "not_running"
@@ -101,7 +101,7 @@ def test_cancelling_a_finished_or_missing_run_is_a_no_op(project):
 
 def test_cancel_registry_does_not_leak_between_runs():
     """A stale entry in `_CANCEL_REQUESTED` would make the *next* run using that
-    id report itself cancelled the moment it finished."""
+    id report itself canceled the moment it finished."""
     assert agent_runner.cancel_run(4242) is False
     assert agent_runner.cancel_requested(4242) is False
     assert 4242 not in agent_runner._CANCEL_REQUESTED  # noqa: SLF001
@@ -114,7 +114,7 @@ def test_cancel_registry_does_not_leak_between_runs():
 
 
 # --------------------------------------------------------------------------
-# Cancelled runs in the usage maths
+# Canceled runs in the usage maths
 # --------------------------------------------------------------------------
 
 def _run(status: str, cost: float = 0.0, ts: str = "2026-07-21T10:00:00+00:00") -> dict:
@@ -122,7 +122,7 @@ def _run(status: str, cost: float = 0.0, ts: str = "2026-07-21T10:00:00+00:00") 
             "num_turns": 1, "project_id": None}
 
 
-def test_cancelled_runs_are_not_counted_as_failures():
+def test_canceled_runs_are_not_counted_as_failures():
     buckets = usage.bucket_by_day(
         [_run("ok"), _run("cancelled"), _run("error")], days=1, today="2026-07-21"
     )
@@ -130,8 +130,8 @@ def test_cancelled_runs_are_not_counted_as_failures():
     assert (day["ok"], day["failed"], day["cancelled"], day["runs"]) == (1, 1, 1, 3)
 
 
-def test_success_rate_ignores_cancelled_and_running_runs():
-    """Cancelling a run is Wes's decision; it shouldn't dent the success rate,
+def test_success_rate_ignores_canceled_and_running_runs():
+    """Canceling a run is Wes's decision; it shouldn't dent the success rate,
     and neither should a run that hasn't finished yet."""
     buckets = usage.bucket_by_day(
         [_run("ok"), _run("cancelled"), _run("running")], days=1, today="2026-07-21"
@@ -141,7 +141,7 @@ def test_success_rate_ignores_cancelled_and_running_runs():
     assert totals["cancelled"] == 1
 
 
-def test_cancelled_is_a_filterable_run_status():
-    """`/activity?status=` only honours values in RUN_STATUSES, so a cancelled
+def test_canceled_is_a_filterable_run_status():
+    """`/activity?status=` only honors values in RUN_STATUSES, so a canceled
     run would be unfilterable if it were missing here."""
     assert "cancelled" in config.RUN_STATUSES

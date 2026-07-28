@@ -306,8 +306,8 @@ def test_the_offline_art_still_reads_as_offline():
     assert art.startswith("  ___")
 
 
-def test_the_art_is_not_centred_line_by_line():
-    """The box centres its text, and a centred <pre> centres every LINE
+def test_the_art_is_not_centered_line_by_line():
+    """The box centers its text, and a centered <pre> centers every LINE
     independently - which shears the letterforms apart. That, as much as the
     mistyped glyphs, is what made this look broken."""
     css = STYLE.read_text(encoding="utf-8")

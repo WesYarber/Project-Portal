@@ -313,7 +313,7 @@ def decide_stop(run_id: int, token: str, payload: dict) -> tuple[str, str]:
     most once per run, and only when the run demonstrably has not delivered
     its report; every uncertain case allows (same fail-open contract as
     `decide`). A wrong block costs one extra turn; a missed one is just
-    today's behaviour."""
+    today's behavior."""
     try:
         scope = _SCOPES.get(run_id)
         if scope is None or scope.token != token:

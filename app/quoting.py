@@ -41,7 +41,7 @@ QUOTE_CAPTION = "_(highlighted in the journal)_"
 _BLANK_RUN = re.compile(r"\n{3,}")
 
 
-def normalise(raw: str) -> str:
+def normalize(raw: str) -> str:
     """Tidy a raw browser selection into something worth quoting.
 
     A selection dragged across rendered markdown arrives with the page's own
@@ -79,7 +79,7 @@ def frame(quote: str, body: str) -> str:
     plain form with no selection at all.
     """
     body = (body or "").strip()
-    cleaned = normalise(quote)
+    cleaned = normalize(quote)
     if not cleaned:
         return body
     parts = [as_blockquote(cleaned), QUOTE_CAPTION]

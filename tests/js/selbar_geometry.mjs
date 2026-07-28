@@ -57,7 +57,7 @@ function run(scene) {
   };
 }
 
-// A desktop monitor: the 1080px page column centred in a 1920px window leaves
+// A desktop monitor: the 1080px page column centered in a 1920px window leaves
 // a 420px gutter each side, so the bar goes beside the journal.
 const wide = run({
   winW: 1920, winH: 1080,

@@ -200,7 +200,7 @@ def test_blocked_and_asking_projects_sit_in_the_paused_shelf(client):
     blocked = _project("Parked", "parked")
     db.update_project(blocked["id"], blocked_on="waiting on a part")
     asking = _project("Asking", "asking")
-    db.create_question(asking["id"], "Which colour?")
+    db.create_question(asking["id"], "Which color?")
 
     html = client.get("/").text
     active = html[html.index("<h2>Active</h2>"):html.index("<h2>Review</h2>")]
@@ -284,7 +284,7 @@ def test_the_header_carries_no_run_count(client):
 
 def test_a_manual_pause_takes_its_questions_out_of_the_badge(client):
     p = _project("Fridge", "fridge")
-    db.create_question(p["id"], "Which colour?")
+    db.create_question(p["id"], "Which color?")
     assert client.get("/").text.count('class="nav-count"') == 1
 
     db.pause_project(p["id"])
@@ -296,7 +296,7 @@ def test_a_blocked_projects_question_still_counts(client):
     """The distinction Wes drew explicitly: a project waiting on him because an
     agent asked something is exactly what the badge is for."""
     p = _project("Fridge", "fridge")
-    db.create_question(p["id"], "Which colour?")
+    db.create_question(p["id"], "Which color?")
     db.update_project(p["id"], blocked_on="an answer")
 
     html = client.get("/").text
@@ -305,7 +305,7 @@ def test_a_blocked_projects_question_still_counts(client):
 
 def test_a_backlog_projects_questions_are_not_in_the_badge(client):
     p = _project("Fridge", "fridge", stage="backlog")
-    db.create_question(p["id"], "Which colour?")
+    db.create_question(p["id"], "Which color?")
     assert 'class="nav-count"' not in client.get("/").text
 
 
@@ -313,7 +313,7 @@ def test_the_dashboard_banner_matches_the_badge(client):
     """The "N open questions waiting on you" banner counts the same things the
     badge does, or the two disagree on the same screen."""
     p = _project("Fridge", "fridge")
-    db.create_question(p["id"], "Which colour?")
+    db.create_question(p["id"], "Which color?")
     db.pause_project(p["id"])
     html = client.get("/").text
     assert "banner-alert" not in html

@@ -168,7 +168,7 @@ def test_bash_plain_command_allowed(portal_layout):
     assert _eval(portal_layout, "Bash", {"command": "bun test && git commit -m 'x'"}) is None
 
 
-def test_bash_normalises_dotdot_in_absolute_paths(portal_layout):
+def test_bash_normalizes_dotdot_in_absolute_paths(portal_layout):
     sneaky = f"{portal_layout['own']}/../other-project/secret.txt"
     assert _eval(portal_layout, "Bash", {"command": f"cat {sneaky}"}) is not None
 

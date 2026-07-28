@@ -39,7 +39,7 @@ STATIC = config.APP_ROOT / "app" / "static"
 
 
 def tokens(css: str) -> dict[str, str]:
-    """Custom properties, values whitespace-normalised (--scanlines spans
+    """Custom properties, values whitespace-normalized (--scanlines spans
     several lines in both files). First definition wins: style.css redefines
     --font-body under body.font-sans etc for the font-switch setting, and the
     comparable value is the :root default, not a scoped override."""

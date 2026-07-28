@@ -11,7 +11,7 @@ portal.
 The artwork is RGBA with a soft glow fading to transparent at the edges. iOS
 composites an apple-touch-icon onto white, which would put a white halo around
 a deliberately dark icon, so everything is flattened onto the terminal
-background colour first.
+background color first.
 
 The artwork is NOT used for the 16-32px tab favicon. Downscaled that far the
 two words collapse into an unreadable smudge - it is a home-screen icon, drawn
@@ -66,10 +66,10 @@ def portal_mark(edge: int) -> Image.Image:
     d = ImageDraw.Draw(img)
     # viewBox 0 0 64 64: ellipses at cx 24/42, cy 32, rx 12, ry 19, stroke 6.
     k = s / 64
-    for cx, colour in ((24, BLUE), (42, ORANGE)):
+    for cx, color in ((24, BLUE), (42, ORANGE)):
         d.ellipse(
             [(cx - 12) * k, (32 - 19) * k, (cx + 12) * k, (32 + 19) * k],
-            outline=colour,
+            outline=color,
             width=max(1, round(6 * k)),
         )
     return img.resize((edge, edge), Image.LANCZOS)

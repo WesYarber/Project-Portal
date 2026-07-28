@@ -53,7 +53,7 @@ def spawned(monkeypatch):
 
     async def fake_execute(project, task, run_id, model):
         started.append((project["slug"], task))
-        await asyncio.Event().wait()  # in flight until cancelled
+        await asyncio.Event().wait()  # in flight until canceled
 
     monkeypatch.setattr(worker, "_execute_run", fake_execute)
     return started
@@ -126,7 +126,7 @@ async def test_the_cap_is_respected(projects, spawned, pacing_open):
 
 
 @pytest.mark.asyncio
-async def test_cap_of_one_restores_serial_behaviour(projects, spawned, pacing_open):
+async def test_cap_of_one_restores_serial_behavior(projects, spawned, pacing_open):
     db.set_setting("max_parallel_runs", "1")
     for _ in range(3):
         await tick()
@@ -135,7 +135,7 @@ async def test_cap_of_one_restores_serial_behaviour(projects, spawned, pacing_op
 
 @pytest.mark.asyncio
 async def test_pacing_holds_a_second_scheduled_run_back(projects, spawned):
-    """Free slots are not licence to launch everything at once - the interval
+    """Free slots are not license to launch everything at once - the interval
     still spaces scheduled runs out."""
     db.set_setting("max_parallel_runs", "3")
     await tick()

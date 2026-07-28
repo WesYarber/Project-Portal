@@ -77,7 +77,7 @@ def test_the_spellings_for_a_subscription_all_mean_subscription(raw):
 
 
 @pytest.mark.parametrize("raw", ["", "  ", "bedrock", "gpt", "yes please"])
-def test_an_unrecognised_mode_falls_back_to_subscription(raw):
+def test_an_unrecognized_mode_falls_back_to_subscription(raw):
     """Never raise, and never fall back to the mode that can spend money."""
     assert spawnauth.mode(a_site(auth_mode=raw)) == spawnauth.MODE_SUBSCRIPTION
 

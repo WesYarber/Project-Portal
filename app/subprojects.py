@@ -346,7 +346,7 @@ def apply_report(project: sqlite3.Row, report: dict) -> list[sqlite3.Row]:
 
     created: list[sqlite3.Row] = []
     # Titles already used by this family, so a run that repeats last run's list
-    # does not create a second copy of every game. Compared on the normalised
+    # does not create a second copy of every game. Compared on the normalized
     # title rather than the slug, because the slug is uniquified and would
     # therefore never collide.
     existing = {

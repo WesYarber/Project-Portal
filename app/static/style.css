@@ -222,10 +222,10 @@ body.anim-off *, body.anim-off *::before, body.anim-off *::after {
 
 /* The wordmark sits in the middle of the title bar. `space-between` alone put
    it wherever the two side items happened to leave room, which is why it read
-   as off-centre: the traffic-light dots are a fixed 60px and the right-hand
+   as off-center: the traffic-light dots are a fixed 60px and the right-hand
    stat is however long today's numbers are. Giving both sides an equal flex
    basis of 0 makes them claim the same width whatever they contain, so the
-   wordmark is centred on the window rather than on the leftovers. */
+   wordmark is centered on the window rather than on the leftovers. */
 .window-controls, .window-stats { flex: 1 1 0; min-width: 0; }
 .window-stats { justify-content: flex-end; }
 .wordmark { flex: 0 0 auto; text-align: center; }
@@ -1384,7 +1384,7 @@ summary:hover { color: var(--ansi-blue); }
 .run-status-running { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
 .run-status-error { color: var(--ansi-red); border-color: var(--ansi-red); }
 .run-status-timeout { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
-/* Cancelled is a deliberate stop, not a failure - dim rather than red. */
+/* Canceled is a deliberate stop, not a failure - dim rather than red. */
 .run-status-cancelled { color: var(--terminal-dim); border-color: var(--terminal-dim); }
 .run-table tr.run-cancelled td { color: var(--terminal-dim); }
 
@@ -1528,11 +1528,11 @@ select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red);
   padding: 1.75rem;
   background: var(--window-bg);
 }
-/* The box centres its text, and a centred <pre> centres every LINE of the art
+/* The box centers its text, and a centered <pre> centers every LINE of the art
    independently - so any line shorter than the widest one is shifted right by
    half the difference and the letterforms shear apart. That, as much as the
    mistyped glyphs, is what made this look broken. inline-block + left makes
-   the art one centred object whose interior alignment is its own. */
+   the art one centered object whose interior alignment is its own. */
 .offline-art {
   display: inline-block;
   text-align: left;
@@ -1681,7 +1681,7 @@ input.jump-key-input {
    higher than `record audio` and `add note`. The global `label` rule carries a
    0.35rem bottom margin (it is written for a label above a field), and in an
    `align-items: center` row that margin is part of the item's box - so
-   centring it lifts the label by half of it. Every label styled as a button
+   centering it lifts the label by half of it. Every label styled as a button
    has the same problem, so the rule is written against `label.btn`. */
 .file-btn { cursor: pointer; }
 label.btn { margin-bottom: 0; }
@@ -2371,13 +2371,13 @@ a.btn:hover { text-decoration: none; }
   height: var(--control-h);
   /* `display: block`, and it has to be stated here. The trigger is a
      <button>, so the shared `button` rule gives it `display: inline-flex;
-     justify-content: center` - and a flex container centres its anonymous
+     justify-content: center` - and a flex container centers its anonymous
      text run and ignores both `text-align: left` and `text-overflow`
-     entirely. That is why a long option label rendered centred and sheared
+     entirely. That is why a long option label rendered centered and sheared
      off at BOTH ends ("onsole only (not on text -yo"): it was not too wide
-     for the box, it was centred in a box it was too wide for, with no
+     for the box, it was centered in a box it was too wide for, with no
      ellipsis available to say so.
-     Vertical centring then comes from the line height rather than from the
+     Vertical centering then comes from the line height rather than from the
      flexbox, minus the 2px of border. */
   display: block;
   line-height: calc(var(--control-h) - 2px);
@@ -2848,8 +2848,8 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
   position: absolute;
   top: calc(100% + 0.4rem);
   /* Anchored to the dot's LEFT edge and clamped to the viewport rather than
-     centred on it: these sit at the end of a label near the left of a column,
-     so a centred bubble runs off the left of a phone screen and a right-
+     centered on it: these sit at the end of a label near the left of a column,
+     so a centered bubble runs off the left of a phone screen and a right-
      anchored one runs off the right. */
   left: 0;
   z-index: 40;

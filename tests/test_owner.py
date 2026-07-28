@@ -71,7 +71,7 @@ def render_as(template: str, resolved: site.Site = OTHER) -> str:
         ("he", "he", "him", "his"),
         ("she/her", "she", "her", "her"),
         ("they", "they", "them", "their"),
-        # Nothing recognisable must fall back, never raise: a typo in a config
+        # Nothing recognizable must fall back, never raise: a typo in a config
         # file misgendering somebody is a worse failure than a boot error, and
         # a boot error is a worse failure than either.
         ("xe", "they", "them", "their"),
@@ -100,7 +100,7 @@ def test_gender_comes_from_the_config_file_and_the_environment(tmp_path):
 def test_an_old_config_files_pronouns_key_still_answers_the_question(tmp_path):
     """`pronouns = "he"` is what this was called before 2026-07-28.
 
-    Honouring it is what stops every existing install silently reverting to
+    Honoring it is what stops every existing install silently reverting to
     they/them at the next boot - the failure would be invisible in the config
     file, which still says what it always said.
     """

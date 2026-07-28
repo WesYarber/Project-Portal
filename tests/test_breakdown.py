@@ -87,7 +87,7 @@ def test_shares_fall_back_to_run_count_when_nothing_has_a_cost():
     assert "█" in beta["bar"]
 
 
-def test_group_success_rate_ignores_cancelled_runs():
+def test_group_success_rate_ignores_canceled_runs():
     groups = usage.by_project([_row(1, "ok"), _row(1, "cancelled"), _row(1, "error")], NAMES)
     assert groups[0]["cancelled"] == 1
     assert groups[0]["failed"] == 1
@@ -179,6 +179,6 @@ def test_cancel_never_redirects_off_site(client, project, target):
     assert resp.headers["location"] == "/"
 
 
-def test_cancelling_an_unknown_run_is_harmless(client):
+def test_canceling_an_unknown_run_is_harmless(client):
     resp = client.post("/run/4242/cancel", data={"next": "/"}, follow_redirects=False)
     assert resp.status_code == 303

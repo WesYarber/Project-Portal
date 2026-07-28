@@ -16,7 +16,7 @@ From his notes of 2026-07-21, in the order he sent them:
 
 Most of these are markup, so most of these tests read markup. The two that are
 not - the scroll restore and the pin-to-bottom - live in app.js and are pinned
-here by asserting the behaviour the page depends on being wired up, since there
+here by asserting the behavior the page depends on being wired up, since there
 is no browser in this environment to drive.
 """
 from __future__ import annotations
@@ -200,7 +200,7 @@ def test_scroll_position_is_stashed_on_submit_and_restored():
     assert "sessionStorage.setItem(SCROLL_KEY" in js
     # One-shot: consumed on read, so an ordinary later visit starts at the top.
     assert "sessionStorage.removeItem(SCROLL_KEY)" in js
-    # A cancelled [data-confirm] never navigates - it must not leave an entry
+    # A canceled [data-confirm] never navigates - it must not leave an entry
     # that fires on whatever page loads next.
     assert "if (ev.defaultPrevented) return;" in js
     # An explicit #anchor - a link the user followed on purpose - still wins.
@@ -359,8 +359,8 @@ def test_apple_touch_icon_is_180px_and_opaque():
     raw = (STATIC / "apple-touch-icon.png").read_bytes()
     w, h = struct.unpack(">II", raw[16:24])
     assert (w, h) == (180, 180)
-    colour_type = raw[25]
-    assert colour_type in (0, 2, 3)  # greyscale / truecolour / palette, no alpha
+    color_type = raw[25]
+    assert color_type in (0, 2, 3)  # grayscale / truecolor / palette, no alpha
 
 
 def test_the_tidied_names_replaced_the_attachment_filename():

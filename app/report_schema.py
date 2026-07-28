@@ -3,7 +3,7 @@
 Since CLI 2.1.2xx, `--json-schema` makes the CLI expose a StructuredOutput
 tool to the agent and validate what it submits at the tool-call layer (the
 model is shown the mismatch and retries), returning the parsed object in the
-result event's `structured_output` field. That replaces the honour-system
+result event's `structured_output` field. That replaces the honor-system
 ".portal/report.json" convention as the primary report channel - the file
 stays accepted forever as a fallback (see agent_runner._pick_report).
 

@@ -47,7 +47,7 @@ def _running(task: str = "build") -> tuple[int, int]:
     return project["id"], run_id
 
 
-# --- cancelling -----------------------------------------------------------
+# --- canceling -----------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_cancel_stops_the_live_run(sent, cancels):
@@ -318,6 +318,6 @@ async def test_a_telegram_reply_still_resolves_by_row_id(sent, monkeypatch):
 @pytest.mark.asyncio
 async def test_status_lists_questions_by_slot_and_project(sent, monkeypatch):
     monkeypatch.setattr(telegram_bot.nl, "classify", _never_called)
-    _open_question("Which colour?")
+    _open_question("Which color?")
     await _say("/status")
-    assert "Q1: [Dice Tower]: Which colour?" in sent[0][1]
+    assert "Q1: [Dice Tower]: Which color?" in sent[0][1]

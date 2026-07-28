@@ -1,5 +1,5 @@
 """Web push (app/webpush.py): VAPID, RFC 8291 encryption, delivery and the
-enrolment surface.
+enrollment surface.
 
 The encryption is pinned two independent ways: RFC 8291's own Appendix A test
 vector byte-for-byte (proving interop with every conforming push service), and
@@ -246,7 +246,7 @@ def fake_push_service(monkeypatch):
     return _FakeClient
 
 
-def _enrol(endpoint: str = "https://web.push.apple.com/sub1") -> str:
+def _enroll(endpoint: str = "https://web.push.apple.com/sub1") -> str:
     ua_private = ec.generate_private_key(ec.SECP256R1())
     ua_public = ua_private.public_key().public_bytes(
         serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint
@@ -257,7 +257,7 @@ def _enrol(endpoint: str = "https://web.push.apple.com/sub1") -> str:
 
 @pytest.mark.anyio
 async def test_push_all_sends_an_encrypted_declarative_message(temp_data_dir, fake_push_service):
-    endpoint = _enrol()
+    endpoint = _enroll()
     sent = await webpush.push_all("Project Portal", "Run finished.", urgency="high")
     assert sent == 1
     (call,) = fake_push_service.calls
@@ -278,7 +278,7 @@ async def test_push_all_sends_an_encrypted_declarative_message(temp_data_dir, fa
 
 @pytest.mark.anyio
 async def test_a_410_from_the_push_service_drops_the_subscription(temp_data_dir, fake_push_service):
-    _enrol()
+    _enroll()
     fake_push_service.outcome = 410
     sent = await webpush.push_all("t", "m")
     assert sent == 0
@@ -287,7 +287,7 @@ async def test_a_410_from_the_push_service_drops_the_subscription(temp_data_dir,
 
 @pytest.mark.anyio
 async def test_a_500_counts_a_failure_but_keeps_the_row(temp_data_dir, fake_push_service):
-    _enrol()
+    _enroll()
     fake_push_service.outcome = 500
     assert await webpush.push_all("t", "m") == 0
     row = db.list_push_subscriptions()[0]
@@ -296,7 +296,7 @@ async def test_a_500_counts_a_failure_but_keeps_the_row(temp_data_dir, fake_push
 
 @pytest.mark.anyio
 async def test_push_all_never_raises_even_when_the_network_does(temp_data_dir, fake_push_service):
-    _enrol()
+    _enroll()
     fake_push_service.outcome = RuntimeError("network down")
     assert await webpush.push_all("t", "m") == 0
     assert db.list_push_subscriptions()[0]["failures"] == 1
@@ -310,8 +310,8 @@ async def test_push_all_without_subscriptions_touches_nothing(temp_data_dir, fak
 
 @pytest.mark.anyio
 async def test_one_dead_device_does_not_mute_the_rest(temp_data_dir, monkeypatch):
-    _enrol("https://push.example/dead")
-    _enrol("https://push.example/alive")
+    _enroll("https://push.example/dead")
+    _enroll("https://push.example/alive")
 
     async def flaky(sub, body, urgency="normal"):
         if "dead" in sub["endpoint"]:

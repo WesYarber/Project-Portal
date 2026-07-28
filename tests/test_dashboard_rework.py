@@ -160,7 +160,7 @@ def test_the_drag_and_menu_wiring_exists():
 def test_the_menu_is_styled_by_the_page_not_the_platform():
     css = (STATIC / "style.css").read_text()
     assert ".ctx-menu {" in css
-    assert ".ctx-item.status-building" in css  # move-to entries wear status colours
+    assert ".ctx-item.status-building" in css  # move-to entries wear status colors
     assert ".ctx-item.ctx-danger" in css
 
 
@@ -179,7 +179,7 @@ def test_model_labels_are_just_the_model_names():
         assert "capable" not in label and "fastest" not in label
 
 def test_status_line_separates_text_from_the_heatmap(client):
-    """The tall heatmap in the same wrap container centred the text lines
+    """The tall heatmap in the same wrap container centered the text lines
     across its whole height - the "messed up spacing" screenshot."""
     html = client.get("/").text
     assert 'class="status-items"' in html

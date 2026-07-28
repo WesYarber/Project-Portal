@@ -69,8 +69,8 @@ def test_word_order_does_not_matter():
 def test_one_word_apart_but_a_different_decision():
     """The pair that rules out edit-distance similarity: these two read 85%
     alike as strings and are two different answers."""
-    a = "Which colour do you want for the header?"
-    b = "Which colour do you want for the footer?"
+    a = "Which color do you want for the header?"
+    b = "Which color do you want for the footer?"
     assert qdedupe.similarity(a, b) < qdedupe.THRESHOLD
 
 
@@ -96,7 +96,7 @@ def test_different_hosts_are_different_questions():
 
 
 def test_unrelated_questions_score_near_zero():
-    a = "Which colour for the header?"
+    a = "Which color for the header?"
     b = "Should I buy the e-ink panel now or wait for the sale?"
     assert qdedupe.similarity(a, b) < qdedupe.THRESHOLD
 
@@ -115,7 +115,7 @@ def test_a_duplicate_is_not_inserted(project):
 
 def test_a_different_question_still_gets_through(project):
     db.file_question(project["id"], SPEND_A)
-    other = db.file_question(project["id"], "Which colour for the header?")
+    other = db.file_question(project["id"], "Which color for the header?")
     assert other.created is True
     assert len(db.open_questions(project["id"])) == 2
 
@@ -191,9 +191,9 @@ def test_create_question_shim_returns_the_matched_row(project):
 # --- the prevention half: the agent can see what it already asked ----------
 
 def test_open_questions_reach_the_run_prompt(project):
-    db.file_question(project["id"], "Which colour for the header?")
+    db.file_question(project["id"], "Which color for the header?")
     section = qdedupe.prompt_section(project["id"])
-    assert "Which colour for the header?" in section
+    assert "Which color for the header?" in section
     assert "Do NOT ask any of them again" in section
 
 
@@ -202,7 +202,7 @@ def test_no_heading_when_nothing_is_waiting(project):
 
 
 def test_answered_questions_are_not_listed_as_waiting(project):
-    q = db.file_question(project["id"], "Which colour for the header?")
+    q = db.file_question(project["id"], "Which color for the header?")
     db.answer_question(q.row["id"], "blue")
     assert qdedupe.prompt_section(project["id"]) == ""
 
@@ -210,10 +210,10 @@ def test_answered_questions_are_not_listed_as_waiting(project):
 def test_the_prompt_carries_the_waiting_block(project):
     from app import agent_runner
 
-    db.file_question(project["id"], "Which colour for the header?")
+    db.file_question(project["id"], "Which color for the header?")
     prompt = agent_runner.build_prompt("BUILD.", db.get_project(project["id"]))
     assert "Questions already waiting for an answer" in prompt
-    assert "Which colour for the header?" in prompt
+    assert "Which color for the header?" in prompt
 
 
 def test_the_contract_forbids_re_asking():
@@ -226,7 +226,7 @@ def test_the_contract_forbids_re_asking():
 
 def test_empty_and_junk_never_raise():
     assert qdedupe.similarity("", "") == 0.0
-    assert qdedupe.similarity("Which colour?", "") == 0.0
+    assert qdedupe.similarity("Which color?", "") == 0.0
     # No topic words at all on either side: identical scaffolding is still a
     # repeat, but anything less is left alone rather than guessed at.
     assert qdedupe.similarity("Should I?", "Should I?") == 1.0

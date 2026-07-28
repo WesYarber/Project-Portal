@@ -30,7 +30,7 @@ todos, runs, questions - stays exactly as shared as it already was. That is a
 much smaller change than a tenant model, and it is the one that matches what he
 asked for: he and his wife building a tool *together*, not two portals.
 
-## What "the model recognises us" actually needs
+## What "the model recognizes us" actually needs
 
 Not an access-control system. The agent needs two facts at prompt time:
 
@@ -613,7 +613,7 @@ def resolve(
 
     An archived person still resolves from a live cookie. Archiving retires
     somebody from the pickers; it is not a lockout, and silently becoming a
-    different person mid-session is worse than seeing a greyed-out name.
+    different person mid-session is worse than seeing a grayed-out name.
     """
     person = by_slug(cookie_slug)
     if person is not None:
@@ -700,7 +700,7 @@ def prompt_section(project_id: Optional[int]) -> str:
     The empty return is the point of this function. A single-person install -
     which is every install until somebody adds a second person - gets no block
     at all, so the prompt is byte-for-byte what it was and none of the existing
-    behaviour shifts under a feature nobody is using. The section appears the
+    behavior shifts under a feature nobody is using. The section appears the
     moment there is genuinely more than one person to tell apart.
     """
     folk = everyone()

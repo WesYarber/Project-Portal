@@ -2,7 +2,7 @@
 
 Three of Wes's notes converge here:
 
-- questions should be labelled `Q7: [project]: <question>`, with the numbers
+- questions should be labeled `Q7: [project]: <question>`, with the numbers
   recycled rather than climbing forever;
 - the dismiss button on the questions tab did nothing at all;
 - dismissing should clear the notification without erasing the question from
@@ -107,7 +107,7 @@ def test_existing_questions_get_slots_backfilled(temp_data_dir, project):
     assert slots == [1, 2, 3]
 
 
-# --- labelling -------------------------------------------------------------
+# --- labeling -------------------------------------------------------------
 
 def test_question_prefix_is_q_number_then_project():
     assert persona.question_prefix(7, "Dice Tower") == "Q7: [Dice Tower]"

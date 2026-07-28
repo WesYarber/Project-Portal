@@ -154,7 +154,7 @@ def test_the_note_names_the_changed_files():
     assert "2 front-end files" in note
 
 
-def test_the_note_summarises_the_overflow():
+def test_the_note_summarizes_the_overflow():
     note = proof.missing_proof_note([f"f{i}.css" for i in range(12)])
     assert "...and 4 more" in note  # MAX_NAMED_FILES is 8
 

@@ -21,7 +21,7 @@ document.addEventListener("submit", function (ev) {
 // start typing, and the return key then arrives as a keydown with
 // shiftKey === true. That made every Enter on a phone submit the note
 // mid-sentence. Shift+Enter stays for anything with a fine pointer (a mouse,
-// hence a hardware keyboard); touch devices get plain newline behaviour and
+// hence a hardware keyboard); touch devices get plain newline behavior and
 // keep Ctrl/Cmd+Enter for the keyboard-case users.
 function hasHardwareKeyboard() {
   return !!(window.matchMedia && window.matchMedia("(pointer: fine)").matches);
@@ -182,7 +182,7 @@ document.addEventListener("DOMContentLoaded", function () {
 //
 // The <h1> and the <input> are the same string in the same form; clicking swaps
 // which one is showing. Enter submits (it is a lone text input in a form, so
-// that is the browser's own behaviour, not ours), Escape puts the original text
+// that is the browser's own behavior, not ours), Escape puts the original text
 // back and closes without submitting.
 //
 // Blur does NOT save. An edit that commits when you click away is a rename you
@@ -272,7 +272,7 @@ var SCROLL_KEY = "portal:scroll-after-submit";
 var pendingScroll = null;
 
 document.addEventListener("submit", function (ev) {
-  // A [data-confirm] form that was cancelled never navigates - remembering
+  // A [data-confirm] form that was canceled never navigates - remembering
   // where it was would fire on whatever page loads next instead.
   if (ev.defaultPrevented) return;
   var form = ev.target;
@@ -685,10 +685,29 @@ function consoleKind(line) {
   return "say";
 }
 
+// Thinking is the one marked kind that is drawn WITHOUT its marker.
+//
+// A marker earns its place when it carries something the styling does not.
+// For the machinery it does: .cl-tool and .cl-result are deliberately styled
+// the same (one quiet indented column), so ">" and "<" are the only thing
+// saying which is the call and which is the answer. For thinking there is
+// nothing left to say - it sits at the margin in italic, which no other kind
+// does - and a "~" per SOURCE line means a wrapped paragraph of reasoning
+// draws a column of tildes down the left of the page.
+//
+// The log itself keeps the marker on every line. Stripping it here rather
+// than at the writer is what lets the classifier stay per-line and stateless,
+// which is what makes a line split across two polls classify correctly; and
+// `cat`ing the raw log still shows what each line is.
 function consoleLine(line) {
+  var kind = consoleKind(line);
   var el = document.createElement("span");
-  el.className = "cl cl-" + consoleKind(line);
-  el.textContent = line;
+  el.className = "cl cl-" + kind;
+  // A marked line is exactly "<marker> <text>", so dropping two characters is
+  // lossless. Prose is never touched: its leading space may be the escape from
+  // runlog.escape_prose or may be a fenced code block's own indentation, and
+  // nothing here can tell those apart.
+  el.textContent = kind === "think" ? line.slice(2) : line;
   return el;
 }
 
@@ -1968,7 +1987,7 @@ function lbBuild() {
     natW: 0, natH: 0,
     pointers: {}, // active pointers by id, for pinch
     pinchDist: 0,
-    // Pixels travelled since the pointer went down, so the click handler can
+    // Pixels traveled since the pointer went down, so the click handler can
     // tell a click on the backdrop from the end of a pan across it.
     moved: 0,
     dragId: null, dragX: 0, dragY: 0,
@@ -2106,13 +2125,13 @@ function lbPointerCenter() {
 }
 
 // Keep the image within sane bounds: never let it drift entirely out of the
-// stage. x/y are the offset of the image centre from the stage centre.
+// stage. x/y are the offset of the image center from the stage center.
 function lbClamp() {
   var rect = lb.stage.getBoundingClientRect();
   var halfW = (lb.natW * lb.scale) / 2;
   var halfH = (lb.natH * lb.scale) / 2;
   // Allow panning up to the point where an edge of the image reaches the
-  // centre of the stage - generous, but never fully off-screen.
+  // center of the stage - generous, but never fully off-screen.
   var maxX = Math.max(halfW, rect.width / 2);
   var maxY = Math.max(halfH, rect.height / 2);
   lb.x = Math.max(-maxX, Math.min(maxX, lb.x));
@@ -2120,8 +2139,8 @@ function lbClamp() {
 }
 
 function lbApply() {
-  // The img is anchored at the stage centre (top/left 50%) with origin 0,0,
-  // so we translate by -half the scaled size (to centre it) plus the pan
+  // The img is anchored at the stage center (top/left 50%) with origin 0,0,
+  // so we translate by -half the scaled size (to center it) plus the pan
   // offset, then scale.
   var tx = lb.x - (lb.natW * lb.scale) / 2;
   var ty = lb.y - (lb.natH * lb.scale) / 2;
@@ -2136,7 +2155,7 @@ function lbSetScale(s) {
 }
 
 function lbZoomBy(f) {
-  // Zoom about the stage centre.
+  // Zoom about the stage center.
   lbSetScale(lb.scale * f);
   lbClamp();
   lbApply();
@@ -2146,7 +2165,7 @@ function lbZoomBy(f) {
 // cursor/fingers.
 function lbZoomAt(f, px, py) {
   var rect = lb.stage.getBoundingClientRect();
-  var cx = px - rect.width / 2;   // point relative to stage centre
+  var cx = px - rect.width / 2;   // point relative to stage center
   var cy = py - rect.height / 2;
   var before = lb.scale;
   lbSetScale(lb.scale * f);
@@ -2158,7 +2177,7 @@ function lbZoomAt(f, px, py) {
   lbApply();
 }
 
-// Fit the image to the stage (the default view), centred.
+// Fit the image to the stage (the default view), centered.
 function lbFit() {
   var rect = lb.stage.getBoundingClientRect();
   if (!lb.natW || !lb.natH) { lb.minScale = 1; lb.scale = 1; }
@@ -2292,7 +2311,7 @@ function selBarShow(hit) {
 
   // Wes, 2026-07-25: "if there is room off to the right side of the journal
   // area for them to show without going off the monitor, show them off to the
-  // right side instead." The page column is a fixed max-width centred in the
+  // right side instead." The page column is a fixed max-width centered in the
   // window, so on a desktop monitor there is a real gutter beside the journal
   // card, and a bar parked there covers no text at all. The buttons stack into
   // a narrow column in that mode (`.side`), because a gutter wide enough for
@@ -2306,7 +2325,7 @@ function selBarShow(hit) {
   var w = root.offsetWidth;
   var h = root.offsetHeight;
   if (jr && jr.right + SEL_GAP + w + SEL_EDGE <= window.innerWidth) {
-    // Vertically centred on the selection, so it still reads as belonging to
+    // Vertically centered on the selection, so it still reads as belonging to
     // the passage, then clamped so a selection near an edge stays on screen.
     var sideTop = hit.rect.top + hit.rect.height / 2 - h / 2;
     sideTop = Math.max(SEL_EDGE, Math.min(window.innerHeight - h - SEL_EDGE, sideTop));
@@ -2502,7 +2521,7 @@ function jumpTarget(key) {
 }
 
 // Smooth unless the reader has asked for stillness - the appearance setting
-// paints `anim-off` on <body>, and the OS-level preference is honoured too,
+// paints `anim-off` on <body>, and the OS-level preference is honored too,
 // because a long page scrolling under you is exactly the motion both mean.
 function jumpBehavior() {
   if (document.body.classList.contains("anim-off")) return "auto";
@@ -2538,7 +2557,7 @@ function jumpTo(el) {
     jumpFlash(field);
   }
   // block:start is the whole ask: the section's top edge against the top of
-  // the window, not centred and not scrolled just barely into view.
+  // the window, not centered and not scrolled just barely into view.
   el.scrollIntoView({ block: "start", behavior: jumpBehavior() });
 }
 

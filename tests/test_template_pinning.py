@@ -63,7 +63,7 @@ def test_auto_reload_is_off_so_the_cache_is_not_rechecked():
 
 
 def test_a_template_edited_after_boot_does_not_reach_a_render(tmp_path):
-    """The behaviour, in a FRESH interpreter - the only way to see it.
+    """The behavior, in a FRESH interpreter - the only way to see it.
 
     Within one process this is untestable, and the first version of this test
     proved nothing because of it: rendering the page to get a "before" loads

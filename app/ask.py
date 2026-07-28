@@ -78,7 +78,7 @@ def ask_model() -> str:
 
     Separate from `worker_model` for the same reason the Telegram router is:
     an ask is judged on how fast a straight answer comes back, not on how much
-    code it can write. An unrecognised stored value falls back to the default
+    code it can write. An unrecognized stored value falls back to the default
     rather than being handed to `claude --model`, where it would fail.
     """
     value = (db.get_setting("ask_model") or "").strip()

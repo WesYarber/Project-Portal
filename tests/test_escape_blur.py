@@ -10,7 +10,7 @@ way back out and every letter was text.
 
 Two kinds of test here, because two different things can break:
 
-- The behaviour, run for real under bun (tests/js/escape_blur.mjs) against a
+- The behavior, run for real under bun (tests/js/escape_blur.mjs) against a
   stub DOM. That is what proves the field is actually let go of.
 - The source ORDER, checked here. app.js has six other Escape handlers, each of
   which reads `ev.target` to find the thing it closes, and this one is last on
@@ -32,7 +32,7 @@ APP_JS = STATIC / "app.js"
 
 
 # --------------------------------------------------------------------------
-# The behaviour, run for real under bun
+# The behavior, run for real under bun
 # --------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")

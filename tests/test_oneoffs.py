@@ -238,7 +238,7 @@ async def test_a_mere_failure_never_throws_away_a_live_session(task, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_a_cancelled_run_says_so_and_does_not_continue(task, monkeypatch):
+async def test_a_canceled_run_says_so_and_does_not_continue(task, monkeypatch):
     _fake_run(monkeypatch, agent_runner.RunResult(ok=False, cancelled=True))
     db.add_oneoff_message(task["id"], "wes", "queued while running")
     called = []

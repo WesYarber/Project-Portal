@@ -8,7 +8,7 @@ From Wes's notes:
   "Add a button to clear all completed TODO items from view (they still should
    be able to be viewed in the history)."
 
-The behaviours that make that true, and which these tests pin down:
+The behaviors that make that true, and which these tests pin down:
 
 - a freshly ticked item stays on the list (you have to be able to see what you
   just did), and drops off on its own once it is 16 hours old;

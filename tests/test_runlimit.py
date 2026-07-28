@@ -166,7 +166,7 @@ def test_scope_names_are_unique_per_run_and_per_portal_process():
     assert runlimit.scope_name(7) != runlimit.scope_name(8)
     assert str(os.getpid()) in runlimit.scope_name(7)
     assert runlimit.scope_name(None).endswith(".scope")
-    # Stable for the life of one run, so the watcher can recognise its cgroup.
+    # Stable for the life of one run, so the watcher can recognize its cgroup.
     assert runlimit.scope_name(7) == runlimit.scope_name(7)
 
 
@@ -359,7 +359,7 @@ def test_nothing_is_journalled_when_the_cap_never_fired():
     assert db.list_journal(project["id"]) == []
 
 
-def test_the_settings_field_stores_only_sizes_it_will_honour():
+def test_the_settings_field_stores_only_sizes_it_will_honor():
     """A stored typo would sit on the page looking like a cap that is in force
     while runlimit ignores it, and the field is the only place anyone looks to
     find out what the cap is."""
@@ -452,7 +452,7 @@ async def test_a_greedy_tool_dies_and_the_run_carries_on(tmp_path, monkeypatch):
     not runlimit.available(refresh=True),
     reason="no user systemd manager to make a transient scope in",
 )
-async def test_cancelling_a_scoped_run_still_kills_all_of_it():
+async def test_canceling_a_scoped_run_still_kills_all_of_it():
     """The cancel button and the timeout both go through `_kill_group`, which
     SIGKILLs the spawn's *process group*. Wrapping the spawn in `systemd-run`
     puts another process between the portal and the CLI, so this checks the kill

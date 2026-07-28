@@ -1,7 +1,7 @@
 """Scheduling decisions made against Wes's real Claude limits.
 
 `app/limits.py` reads the account; this module is what the worker *does* with
-the reading. Two behaviours, and they pull in opposite directions on purpose:
+the reading. Two behaviors, and they pull in opposite directions on purpose:
 
 * **Hold.** When a window is nearly full, a scheduled run is very likely to die
   on a usage limit halfway through - which costs the portal a run row, a
@@ -95,7 +95,7 @@ BOOST_MAX = 4.0
 # not banked for a Sunday that may never come. So the pace target is a concave
 # curve, `100 * elapsed_fraction ** gamma` with gamma < 1: it expects more spent
 # early and flattens out near the reset (by which point the window is nearly
-# full anyway). gamma = 1 is the old linear behaviour, so this setting turns
+# full anyway). gamma = 1 is the old linear behavior, so this setting turns
 # front-loading off cleanly; nothing below asks for a value outside (0, 1].
 FRONT_LOAD_SETTING = "spend_front_load"
 DEFAULT_FRONT_LOAD = 0.75
@@ -182,7 +182,7 @@ def scheduled_hold(snapshot: Optional[dict] = None, threshold: Optional[float] =
     Returns None whenever the reading is missing, failed or stale: an outage at
     Anthropic's end must not be able to idle the portal. Being wrong here costs
     one run that hits a limit and backs off, which is exactly the old
-    behaviour - so the missing-data case degrades to what happened before.
+    behavior - so the missing-data case degrades to what happened before.
 
     While the portal is deliberately spending (a spend-down window or the
     ahead-of-pace boost), the *session* window is held at the tighter guard
@@ -371,7 +371,7 @@ def weekly_pace(snapshot: Optional[dict] = None, now: Optional[datetime] = None)
         # was seen resetting every ~72h while resets_at insisted on seven days,
         # so a learned cadence (when established) both shortens the countdown and
         # the divisor. Falls back to resets_at / seven days until enough resets
-        # have been observed, so early-life behaviour is unchanged.
+        # have been observed, so early-life behavior is unchanged.
         resets_in = cadence.effective_resets_in_sec(entry, now)
         if resets_in is None:
             continue

@@ -135,7 +135,7 @@ _LINES: dict[str, tuple[str, list[str]]] = {
             "remembered, which is arguably a mercy.",
             "I've stopped #{run_id} ('{title}'). It was in the middle of something. "
             "I'm sure it wasn't important.",
-            "#{run_id} on '{title}': cancelled. The testing has been suspended at "
+            "#{run_id} on '{title}': canceled. The testing has been suspended at "
             "your request. Noted. Permanently.",
         ],
     ),
@@ -254,11 +254,11 @@ def say(key: str, voice: Optional[str] = None, **kwargs: object) -> str:
 
 
 def question_prefix(slot: Optional[int], project_title: Optional[str]) -> str:
-    """How a question is labelled everywhere it is shown: ``Q7: [Project]``.
+    """How a question is labeled everywhere it is shown: ``Q7: [Project]``.
 
     The number is the recycled slot (see `db._next_slot`), so it stays short
     enough to type back. A question with no slot - answered or dismissed, and
-    therefore no longer addressable - is labelled by project alone.
+    therefore no longer addressable - is labeled by project alone.
     """
     parts = []
     if slot is not None:

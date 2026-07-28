@@ -106,7 +106,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "worker_interval_min": "10",
     "max_runs_per_day": "8",
     # Agent runs allowed in flight at once, always on different projects. 1 is
-    # the old strictly-serial behaviour; the ceiling is MAX_PARALLEL_LIMIT.
+    # the old strictly-serial behavior; the ceiling is MAX_PARALLEL_LIMIT.
     "max_parallel_runs": "2",
     # A one-day-only boost on top of max_runs_per_day. `bonus_runs_date` is the
     # portal-day the boost applies to, so it expires by itself at the reset.
@@ -178,7 +178,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # Off does NOT mean "hide a lever that is still pulling". Priority is the
     # first key in every ORDER BY the scheduler and the dashboard use, so a
     # hidden 6 would go on front-running the queue with nothing on screen to
-    # explain it - the silent-behaviour failure this project keeps refusing to
+    # explain it - the silent-behavior failure this project keeps refusing to
     # ship. Off therefore drops it from the ordering too, and the queue falls
     # back to least-recently-touched. See db.project_order().
     "show_priority": "1",
@@ -375,7 +375,7 @@ LEGACY_STATUS_STAGE = {
 
 
 def normalize_state(value: str) -> str | None:
-    """A user-chosen state (picker, drag, Telegram, old URL) normalised to the
+    """A user-chosen state (picker, drag, Telegram, old URL) normalized to the
     new vocabulary, or None if it is not a state at all. `waiting_user` comes
     back as the `paused` pseudo-state because that is what choosing it meant."""
     value = (value or "").strip()
@@ -428,7 +428,7 @@ def ssh_command(slug: str) -> str:
 
 # The Claude CLI version, and a User-Agent that matches the real client.
 # -----------------------------------------------------------------------------
-# Anthropic's usage endpoint sorts requests carrying an unrecognised User-Agent
+# Anthropic's usage endpoint sorts requests carrying an unrecognized User-Agent
 # into a punitive rate-limit bucket (hours-long 429s), so the portal's usage
 # poller must present itself as the genuine CLI - `claude-cli/<version>
 # (external, cli)` - rather than a made-up name. The version is discovered once

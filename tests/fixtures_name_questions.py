@@ -104,7 +104,7 @@ NAME_QUESTIONS = [
         "OpenJournal is finished apart from its name — everything phases 1–4 called for is "
         "built, tested and running as two federating nodes on testhost "
         "(http://testhost:4747, password openjournal-demo). It now has an AGPL-3.0 "
-        "licence and a full protocol spec, so the only thing standing between it and a public "
+        "license and a full protocol spec, so the only thing standing between it and a public "
         "repo plus a domain is what to call it. You asked about 'Off-line' and it lost badly: "
         "offline.com is American Eagle's OFFLINE by Aerie brand, there's an Offline Social "
         "app on both stores and Offline Diary and Offline Journal on Play — but the real "

@@ -13,7 +13,7 @@ access token the CLI already stores in `~/.claude/.credentials.json`. That
 endpoint reports, for each window, how much of it is spent and when it comes
 back. This module reads exactly that, and nothing else.
 
-Two deliberate non-behaviours:
+Two deliberate non-behaviors:
 
 * **It never refreshes the token.** The refresh flow rotates the refresh token,
   and this process shares the credentials file with the CLI that the portal
@@ -233,7 +233,7 @@ def _scoped_windows(raw: dict, now: datetime) -> list[dict]:
 
 
 def parse(payload: dict, now: Optional[datetime] = None) -> dict:
-    """Normalise a raw endpoint response into the portal's own shape.
+    """Normalize a raw endpoint response into the portal's own shape.
 
     A pure function over the payload so the whole decision layer is testable
     without a network or a token.
@@ -337,7 +337,7 @@ def backoff_until(snapshot: dict, now: Optional[datetime] = None, fallback_min: 
 
     Prefers the real reset of whichever window is actually full. Falls back to
     a flat hour only when there is no usable snapshot - which is the old
-    behaviour, kept as the floor rather than as the rule.
+    behavior, kept as the floor rather than as the rule.
 
     A cap of six hours applies: if the *weekly* window is what is full, waiting
     for it would idle the portal for days, and the useful thing to do instead

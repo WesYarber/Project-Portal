@@ -23,7 +23,7 @@ Two things make this safe rather than a trap:
   unparseable answer, an empty diff, any exception - all resolve to "surface it".
   The cost of a wrong hold is a project stuck off Wes's radar, which is far worse
   than the cost of a wrong pass (he reviews something not-quite-done, exactly
-  today's behaviour), so every uncertain case surfaces.
+  today's behavior), so every uncertain case surfaces.
 - **It will not bounce the same work forever.** The critic is shown the recent
   journal, which already contains any prior hold note, and is told to pass work
   through rather than hold it a second time on gaps that are not being closed.
@@ -66,7 +66,7 @@ MAX_DIFF_CHARS = 40_000
 
 def enabled() -> bool:
     """Whether the self-review gate is on. Default on; a stored '0' turns it off
-    cleanly (the pre-self-review behaviour: review-bound work surfaces at once)."""
+    cleanly (the pre-self-review behavior: review-bound work surfaces at once)."""
     return (db.get_setting("self_review") or "1") != "0"
 
 
@@ -80,7 +80,7 @@ def wants_review(report: Optional[dict], task: str) -> bool:
 
     Both the current `new_stage: 'review'` and the legacy `new_status: 'review'`
     count - a contract change is executed by old-shape runs first, so both
-    vocabularies must be honoured forever. A research burst never surfaces work
+    vocabularies must be honored forever. A research burst never surfaces work
     for review (it writes RESEARCH.md), so it is exempt regardless of what its
     report says, matching how _apply_report already strips a burst's stage moves.
     """

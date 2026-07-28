@@ -2,7 +2,7 @@
 
 Startup is bypassed (`raise_server_exceptions` aside, TestClient would launch
 the worker and Telegram pollers) by driving the ASGI app with a client that
-doesn't run lifespan events - the DB is already initialised by the fixture.
+doesn't run lifespan events - the DB is already initialized by the fixture.
 """
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def client(temp_data_dir):
 
     # Deliberately not used as a context manager: that would run the lifespan
     # startup hook, which spawns the worker and Telegram poll loops. The DB is
-    # already initialised against the temp dir by the autouse fixture.
+    # already initialized against the temp dir by the autouse fixture.
     return TestClient(main.app)
 
 
@@ -42,7 +42,7 @@ def test_dashboard_shows_project_cell(client, project):
 
 def test_dashboard_shows_question_badge_only_when_questions_are_open(client, project):
     assert "cell-alert" not in client.get("/").text
-    db.create_question(project["id"], "Which colour?")
+    db.create_question(project["id"], "Which color?")
     body = client.get("/").text
     # The card folds to the Paused shelf while it waits on Wes, but the count
     # rides along on the card and the nav badge stays loud.
@@ -52,7 +52,7 @@ def test_dashboard_shows_question_badge_only_when_questions_are_open(client, pro
 
 def test_nav_shows_open_question_count(client, project):
     assert "nav-count" not in client.get("/").text
-    db.create_question(project["id"], "Which colour?")
+    db.create_question(project["id"], "Which color?")
     assert "nav-count" in client.get("/").text
 
 

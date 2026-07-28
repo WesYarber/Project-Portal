@@ -10,7 +10,7 @@ can actually see them without leaving the page.
 
 This module is the backstop for that discipline. It cannot force a screenshot
 into a report that has already been produced, so it does the honest thing:
-when a run *committed* a change to a recognised front-end file but embedded no
+when a run *committed* a change to a recognized front-end file but embedded no
 image or video in its journal entry, it leaves a visible system note. That note
 tells Wes the run shipped UI blind, and - because the recent journal is pasted
 into every subsequent run's prompt - it nudges the next agent on this project to
@@ -60,7 +60,7 @@ UI_EXTENSIONS = frozenset(
     }
 )
 
-# How many changed front-end files to name in the note before summarising the
+# How many changed front-end files to name in the note before summarizing the
 # rest as a count - same reasoning as orphans.MAX_NAMED_FILES.
 MAX_NAMED_FILES = 8
 

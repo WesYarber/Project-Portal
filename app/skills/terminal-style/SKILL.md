@@ -1,13 +1,13 @@
 ---
 name: terminal-style
-description: Apply $OWNERS dark terminal theme (dark CRT look - Fira Code, terminal window chrome, bracketed badges, ANSI accent colours) to a web page you are building. $OWNER likes this look and packaged it to reuse (the Project Portal follows it too); reach for it whenever a project needs a UI theme and none other has been asked for.
+description: Apply $OWNERS dark terminal theme (dark CRT look - Fira Code, terminal window chrome, bracketed badges, ANSI accent colors) to a web page you are building. $OWNER likes this look and packaged it to reuse (the Project Portal follows it too); reach for it whenever a project needs a UI theme and none other has been asked for.
 ---
 
 # terminal-style
 
 $OWNERS dark terminal theme, packaged as a single reusable stylesheet so the
 things $THEIR agents build can share one visual language: a dark CRT terminal
-window, Fira Code, `[bracketed]` badges, ANSI accent colours. It is a theme
+window, Fira Code, `[bracketed]` badges, ANSI accent colors. It is a theme
 in its own right - the Project Portal just happens to follow it too.
 
 ## Getting the stylesheet

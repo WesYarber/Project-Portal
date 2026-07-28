@@ -59,7 +59,7 @@ MODE_API_KEY = "api_key"
 MODES = (MODE_SUBSCRIPTION, MODE_API_KEY)
 
 # Spellings people actually write, mapped onto the two real modes. An
-# unrecognised value falls back to `subscription` for the same reason a bad
+# unrecognized value falls back to `subscription` for the same reason a bad
 # `port` falls back to 8500 in site.py - a typo must not stop the portal
 # booting - and because subscription is the mode that cannot spend money.
 _MODE_ALIASES = {

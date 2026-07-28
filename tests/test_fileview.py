@@ -198,7 +198,7 @@ def test_the_raw_route_serves_a_png_inline_and_sandboxed(client, workspace):
 
 def test_the_raw_route_refuses_a_text_file(client, workspace):
     """Not because text is dangerous - because a route that will serve any
-    type inline is one mislabelled file away from serving HTML inline."""
+    type inline is one mislabeled file away from serving HTML inline."""
     assert client.get("/raw/dice-tower/notes.txt").status_code == 415
     assert client.get("/raw/dice-tower/README.md").status_code == 415
 

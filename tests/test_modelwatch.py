@@ -84,7 +84,7 @@ def test_parse_survives_a_payload_of_the_wrong_shape():
 
 
 # --------------------------------------------------------------------------
-# The catalogue and what counts as new
+# The catalog and what counts as new
 # --------------------------------------------------------------------------
 
 def test_the_first_check_seeds_silently():
@@ -127,14 +127,14 @@ def test_a_model_disappearing_from_the_list_is_not_forgotten():
     assert modelwatch.check(_models())["new"] == []
 
 
-def test_the_catalogue_records_the_last_successful_fetch():
+def test_the_catalog_records_the_last_successful_fetch():
     modelwatch.check(_models())
     cat = modelwatch.catalog()
     assert [m["id"] for m in cat["models"]] == ["claude-opus-5", "claude-sonnet-5"]
     assert cat["fetched_at"]
 
 
-def test_a_corrupt_stored_catalogue_reads_as_empty_not_as_a_crash():
+def test_a_corrupt_stored_catalog_reads_as_empty_not_as_a_crash():
     db.set_setting(modelwatch.CATALOG_KEY, "{not json")
     db.set_setting(modelwatch.SEEN_KEY, "[]")
     assert modelwatch.catalog() == {"models": [], "fetched_at": ""}
@@ -209,7 +209,7 @@ def test_a_request_carries_the_oauth_beta_header_and_the_real_user_agent(monkeyp
     assert captured["url"].startswith("https://api.anthropic.com/v1/models")
 
 
-def test_an_empty_payload_is_a_failure_not_an_empty_catalogue(monkeypatch):
+def test_an_empty_payload_is_a_failure_not_an_empty_catalog(monkeypatch):
     # Storing an empty list would wipe the seen-set's meaning on the next
     # check and re-announce every model that came back.
     monkeypatch.setattr(modelwatch, "parse_models", lambda payload: [])
@@ -373,7 +373,7 @@ def test_the_setting_round_trips_through_the_settings_form():
     assert settings_form.REGISTRY["model_watch"].checkbox is True
 
 
-def test_the_settings_page_shows_the_watch_toggle_and_the_catalogue(client):
+def test_the_settings_page_shows_the_watch_toggle_and_the_catalog(client):
     modelwatch.check(_models())
     html = client.get("/settings").text
     assert 'name="model_watch"' in html

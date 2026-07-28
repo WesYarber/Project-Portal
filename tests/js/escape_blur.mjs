@@ -5,7 +5,7 @@
 // selected."
 //
 // String-matching for ".blur()" would only prove the file contains the word.
-// This proves the behaviour: that the field is actually let go of, that a key
+// This proves the behavior: that the field is actually let go of, that a key
 // which is not Escape leaves it alone, that Escape on something which is not a
 // field does nothing at all, and - the point of the whole feature - that after
 // the blur the jump keys answer again, which is checked by feeding the real

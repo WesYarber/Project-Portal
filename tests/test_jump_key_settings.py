@@ -10,12 +10,12 @@ can be wrong with a feature like that:
   obvious `settings.get(key) or default` reads it as "never set" and silently
   puts the letter back, which is a switch that turns itself on again.
 - Two sections claiming the same letter. app.js gets one map, so a duplicate
-  resolves to whichever entry the serialiser wrote last: a coin toss nobody can
+  resolves to whichever entry the serializer wrote last: a coin toss nobody can
   see. The loser is unbound instead, and the settings row says so.
 - The page telling the truth. The settings row, the `<body>` attribute and the
   footer hint all have to agree with what the browser will actually do.
 
-The behaviour of the keys themselves - that a rebound letter jumps and the old
+The behavior of the keys themselves - that a rebound letter jumps and the old
 one goes back to being a letter - runs for real under bun in
 tests/test_jump_keys.py, against the same app.js the portal serves.
 """
@@ -60,7 +60,7 @@ def _appearance_form(**overrides: str) -> dict[str, str]:
 
     The panel declares its own fields, so a save that omits a checkbox means
     "off" - which is exactly why the jump fields have to be listed in `_fields`
-    for their blanks to be honoured at all.
+    for their blanks to be honored at all.
     """
     form = {
         "_section": "appearance",
