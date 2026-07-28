@@ -932,7 +932,34 @@ document.addEventListener("DOMContentLoaded", initAppearancePreview);
 // all and Wes reads this page on one. Only one is open at a time - two bubbles
 // overlapping is how a tooltip becomes unreadable.
 
+// The bubble hangs from the dot's left edge, which is right for a label near
+// the left of a column and runs off the screen for one in the last column - or
+// for any of them on a phone. Measured and nudged back rather than flipped to
+// right-anchored: flipping needs to know which side it is on, and this needs to
+// know only how far off it went.
+function keepOnScreen(bubble) {
+  bubble.style.marginLeft = "";
+  var limit = (window.innerWidth || document.documentElement.clientWidth) - 8;
+  // The viewport is not the only edge, and on a desktop it is not even the
+  // one that bites: `.terminal-window` is `overflow: hidden`, so a bubble that
+  // fits the screen perfectly is still cut off at the window frame. Measured
+  // in a browser - the fix looked correct and the text was still clipped.
+  for (var el = bubble.parentElement; el; el = el.parentElement) {
+    if (!window.getComputedStyle) break;
+    if (window.getComputedStyle(el).overflow === "visible") continue;
+    limit = Math.min(limit, el.getBoundingClientRect().right - 8);
+    break;
+  }
+  var over = bubble.getBoundingClientRect().right - limit;
+  if (over > 0) bubble.style.marginLeft = -Math.round(over) + "px";
+}
+
 function initInfoDots() {
+  // Hover opens it with CSS alone, so the nudge has to run then too.
+  document.addEventListener("mouseover", function (ev) {
+    var wrap = ev.target.closest ? ev.target.closest(".info-wrap") : null;
+    if (wrap) keepOnScreen(wrap.querySelector(".info-bubble"));
+  });
   document.addEventListener("click", function (ev) {
     var dot = ev.target.closest ? ev.target.closest(".info-dot") : null;
     var open = document.querySelectorAll(".info-wrap.open");
@@ -954,6 +981,7 @@ function initInfoDots() {
     wrap.classList.toggle("open", nowOpen);
     bubble.hidden = !nowOpen;
     dot.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+    if (nowOpen) keepOnScreen(bubble);
   });
   document.addEventListener("keydown", function (ev) {
     if (ev.key !== "Escape") return;

@@ -244,26 +244,32 @@
           <input type="number" id="run_max_turns" name="run_max_turns" value="{{ settings.run_max_turns or '400' }}" min="10" max="2000">
         </div>
         <div class="field">
-          <label for="run_max_budget_usd">Per-run $ ceiling</label>
-          <input type="number" id="run_max_budget_usd" name="run_max_budget_usd" value="{{ settings.run_max_budget_usd or '' }}" min="0" max="1000" step="0.5" placeholder="{{ '%g'|format(auth.default_budget_usd) if auth and auth.api_key else 'none' }}">
           {# What "blank" means differs by auth mode, and getting it wrong in
              either direction is expensive: a subscription user told there is a
              default would go hunting for a cap that does not exist, and an
              API-key user told blank means "no ceiling" would believe an
-             unattended scheduler has none. #}
-          {% if auth and auth.api_key %}
-          <p class="hint">A hard --max-budget-usd cap. Runs are billed to an API key here, so blank is not unlimited &mdash; it means the ${{ '%g'|format(auth.default_budget_usd) }} default.</p>
-          {% else %}
-          <p class="hint">A hard --max-budget-usd cap. Subscription runs bill $0, so this is a backstop against a leaked API key. Blank = no ceiling.</p>
-          {% endif %}
+             unattended scheduler has none. So the branch is inside the bubble
+             rather than beside it - one dot, and it says the true thing. #}
+          <label for="run_max_budget_usd">Per-run $ ceiling{% call info() %}A hard
+            <code>--max-budget-usd</code> cap.{% if auth and auth.api_key %} Runs are billed to an
+            API key here, so blank is not unlimited &mdash; it means the
+            ${{ '%g'|format(auth.default_budget_usd) }} default.{% else %} Subscription runs bill
+            $0, so this is a backstop against a leaked API key. Blank = no ceiling.{% endif %}{% endcall %}</label>
+          <input type="number" id="run_max_budget_usd" name="run_max_budget_usd" value="{{ settings.run_max_budget_usd or '' }}" min="0" max="1000" step="0.5" placeholder="{{ '%g'|format(auth.default_budget_usd) if auth and auth.api_key else 'none' }}">
         </div>
         <div class="field">
-          <label for="run_memory_max">Per-run memory cap</label>
+          <label for="run_memory_max">Per-run memory cap{% call info() %}{% if runmem.available %}Each
+            run gets its own cgroup this big ("6G", "512M"). A tool that asks for more is killed on
+            its own &mdash; the run keeps going. Blank = {{ runmem.default_human }} (derived from
+            this machine's {{ runmem.total_human }}); <code>off</code> = no cap.{% else %}Not
+            available on this machine (no user systemd manager), so runs are uncapped: a tool that
+            exhausts memory can take the portal down with it.{% endif %}{% endcall %}</label>
           <input type="text" id="run_memory_max" name="run_memory_max" value="{{ settings.run_memory_max or '' }}" placeholder="{{ runmem.default_human }}">
-          {% if runmem.available %}
-          <p class="hint">Each run gets its own cgroup this big ("6G", "512M"). A tool that asks for more is killed on its own &mdash; the run keeps going. Blank = {{ runmem.default_human }} (derived from this machine's {{ runmem.total_human }}); <code>off</code> = no cap.</p>
-          {% else %}
-          <p class="hint">Not available on this machine (no user systemd manager), so runs are uncapped: a tool that exhausts memory can take the portal down with it.</p>
+          {# The machine having no cgroup support at all is a WARNING, not a
+             definition, so it stays on the page: a portal that can be taken
+             down by one greedy tool should say so without being asked. #}
+          {% if not runmem.available %}
+          <p class="hint warn">uncapped on this machine</p>
           {% endif %}
         </div>
         <div class="field">
