@@ -508,6 +508,15 @@ def _backfill_gender() -> None:
     Guarded by a settings key rather than by "is gender empty", because ''
     is a legitimate answer (nobody has asked) and re-running this would
     overwrite a deliberate clearing with the stale pronoun every boot.
+
+    The OWNER is skipped, and that is not an oversight. Their answer belongs to
+    `portal.toml` (see people.ensure_owner) - `site.load` already reads a
+    legacy `pronouns = "he"` line there, so an upgrading install keeps its
+    answer by the config route. Touching the owner's row here would put the
+    table and the config into a fight that neither wins cleanly: this function
+    would write `male` on the first boot and `ensure_owner` would put it back
+    to the config's value on the second, so the settings page would appear to
+    change its mind overnight for no visible reason.
     """
     conn = get_conn()
     if get_setting(GENDER_BACKFILL_KEY) == "1":
@@ -517,7 +526,8 @@ def _backfill_gender() -> None:
         from app import site  # local: site is imported for its normalizer only
 
         rows = conn.execute(
-            "SELECT id, pronouns FROM people WHERE COALESCE(gender, '') = ''"
+            "SELECT id, pronouns FROM people "
+            "WHERE COALESCE(gender, '') = '' AND is_owner = 0"
         ).fetchall()
         moved = 0
         with _LOCK:

@@ -479,8 +479,29 @@ def test_an_answered_pronoun_becomes_an_answered_gender(tmp_path, monkeypatch):
     by_name = {r["name"]: r for r in db.get_conn().execute("SELECT * FROM people")}
     assert by_name["Erin"]["gender"] == "female"
     assert by_name["Sam"]["gender"] == "", "they/them is an unanswered row, not a third sex"
-    # The owner's is the config's, which the fixture's real portal.toml sets.
-    assert by_name["Wes"]["gender"] == site.gender_key(config.SITE.gender)
+
+
+def test_the_backfill_leaves_the_owner_to_the_config(tmp_path, monkeypatch):
+    """The owner's answer is portal.toml's, and a migration may not overrule it.
+
+    Caught by running the published tree standalone, where portal.toml does not
+    exist: the backfill wrote `male` from the old pronoun on the first boot and
+    `ensure_owner` wrote the config's value back on the second, so the settings
+    page changed its mind overnight. The config route already carries an
+    upgrading install (site.load reads a legacy `pronouns` line), so this row
+    has no second source to need.
+    """
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+
+    for boot in (1, 2):
+        db.init_db()
+        owner = people.owner()
+        assert owner["gender"] == site.gender_key(config.SITE.gender), (
+            f"boot {boot}: the owner's gender is not the config's"
+        )
 
 
 def test_clearing_somebodys_answer_is_not_undone_at_the_next_boot(tmp_path, monkeypatch):
