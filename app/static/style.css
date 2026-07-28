@@ -2369,6 +2369,18 @@ a.btn:hover { text-decoration: none; }
 .sel-trigger {
   width: 100%;
   height: var(--control-h);
+  /* `display: block`, and it has to be stated here. The trigger is a
+     <button>, so the shared `button` rule gives it `display: inline-flex;
+     justify-content: center` - and a flex container centres its anonymous
+     text run and ignores both `text-align: left` and `text-overflow`
+     entirely. That is why a long option label rendered centred and sheared
+     off at BOTH ends ("onsole only (not on text -yo"): it was not too wide
+     for the box, it was centred in a box it was too wide for, with no
+     ellipsis available to say so.
+     Vertical centring then comes from the line height rather than from the
+     flexbox, minus the 2px of border. */
+  display: block;
+  line-height: calc(var(--control-h) - 2px);
   text-align: left;
   padding: 0 1.9rem 0 0.6rem;
   font-size: 0.9rem;
@@ -2725,3 +2737,69 @@ a.btn:hover { text-decoration: none; }
 .members-label { color: var(--terminal-dim); font-size: 0.8rem; }
 .member-box { display: inline-flex; align-items: center; gap: 0.3rem; font-size: 0.85rem; }
 .member-box input { width: auto; min-height: 0; height: auto; margin: 0; }
+
+/* Questions -------------------------------------------------------------- */
+/* The card is shared by the questions page and every project page
+   (templates/_question.html), so these rules are the only place its look is
+   decided. */
+.question-card .question-text { margin-top: 0.6rem; }
+.question-form { margin-top: 0.7rem; }
+
+/* One-tap answers the agent offered with the question. Real submit buttons,
+   so they work with scripting off - see _question.html. They read as
+   choices rather than as actions: bordered and quiet, next to a solid
+   "answer" button that is the thing you press after typing. */
+.quick-options {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.7rem;
+}
+button.quick-option {
+  /* `height: auto` and a min-height rather than the global --control-h: an
+     option's label is the agent's own words and can wrap to two lines on a
+     phone, and a fixed height would clip the second one. */
+  height: auto;
+  min-height: var(--control-h);
+  padding: 0.35rem 0.8rem;
+  border: 1px solid var(--portal-blue);
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--ansi-blue);
+  text-align: left;
+  white-space: normal;
+}
+button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
+
+/* Saved for later: the same card, marked. The left edge does the marking
+   rather than a background, so the card still reads as the same object it
+   was on the questions page a moment ago. */
+.question-saved { border-left: 2px solid var(--ansi-yellow); }
+
+/* Looking at the portal as somebody else -------------------------------- */
+/* The banner while a preview is running. Deliberately loud and at the top of
+   the content: every setting you save while previewing is still saved against
+   you, so a page that had quietly become her theme with nothing saying so
+   would read as the portal having lost your preferences. */
+.look-preview {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  border: 1px dashed var(--ansi-magenta);
+  border-radius: 6px;
+  padding: 0.6rem 0.9rem;
+  margin-bottom: 1rem;
+  font-size: 0.82rem;
+  color: var(--terminal-dim);
+}
+.look-preview strong { color: var(--ansi-magenta); }
+.look-preview button { margin-left: auto; }
+
+.look-picker { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+.look-picker button.active { border-color: var(--ansi-magenta); color: var(--ansi-magenta); }
+
+/* The CRT layer dropdowns while a theme they do not apply to is selected.
+   Faded rather than hidden or disabled: they still hold your settings, and
+   they take effect again the moment you switch back. */
+.layers-inert { opacity: 0.55; }
+.theme-field { max-width: 22rem; }

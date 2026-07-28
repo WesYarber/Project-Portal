@@ -25,16 +25,21 @@ async def notify(
     question_slot: Optional[int] = None,
 ) -> None:
     settings = db.get_all_settings()
+    telegram_on = db.telegram_enabled()
     text = message
     if question_id is not None:
         # "Q7: [Project]: <question>" - the number Wes types back, then which
-        # project is asking, then the question itself.
-        prefix = persona.question_prefix(question_slot, project_title)
+        # project is asking, then the question itself. With no bot to type it
+        # back at, the number addresses nothing and is spending characters
+        # from a notification preview that is only a line wide, so it goes.
+        prefix = persona.question_prefix(
+            question_slot if telegram_on else None, project_title
+        )
         text = f"{prefix}: {message}" if prefix else message
 
-    token = settings.get("telegram_token", "")
     chat_id = settings.get("telegram_chat_id", "")
-    if token and chat_id:
+    if telegram_on and chat_id:
+        token = settings.get("telegram_token", "")
         await _send_telegram(token, chat_id, persona.decorate_notification(title, text), question_id)
 
     await _send_ntfy(settings.get("ntfy_url", ""), settings.get("ntfy_topic", ""), title, text)
@@ -72,9 +77,9 @@ async def telegram_call(method: str, payload: dict) -> None:
     """Fire a Telegram Bot API method best-effort (answerCallbackQuery,
     editMessageText, ...). Failures are logged and swallowed - a missed
     message edit must never break the answer it decorates."""
-    token = db.get_setting("telegram_token") or ""
-    if not token:
+    if not db.telegram_enabled():
         return
+    token = db.get_setting("telegram_token") or ""
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(TELEGRAM_API.format(token=token, method=method), json=payload)
@@ -100,6 +105,8 @@ async def _send_ntfy(ntfy_url: str, topic: str, title: str, message: str) -> Non
 
 async def send_telegram_text(chat_id: str, text: str) -> None:
     """Send a plain reply from the bot poller (confirmations etc.)."""
+    if not db.telegram_enabled():
+        return
     settings = db.get_all_settings()
     token = settings.get("telegram_token", "")
     if not token:

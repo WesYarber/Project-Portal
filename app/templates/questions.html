@@ -1,43 +1,24 @@
 {% extends "base.html" %}
+{% from "_question.html" import question_card %}
 {% block title %}Questions - Project Portal{% endblock %}
 {% block header_stat %}{{ questions|length }} open{% endblock %}
 
-{# One card, two sections. The shelved list below is the same form in every
-   respect - answering a question on a paused project has to work exactly as
-   well as answering a live one; it is only the *ordering* that says which is
-   pressing. #}
-{% macro question_card(q) %}
-<div class="card">
-  <div class="row">
-    <span class="badge">Q{{ q.slot if q.slot is not none else q.id }}</span>
-    <a href="/project/{{ q.project_slug }}">{{ q.project_title }}</a>
-  </div>
-  <p style="margin-top:0.6rem;">{{ q.question }}</p>
-  {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
-  <form method="post" action="/questions/{{ q.id }}/answer" style="margin-top:0.7rem;">
-    <input type="hidden" name="next" value="/questions">
-    <div class="field">
-      <textarea name="answer" rows="3" required placeholder="Your answer..."></textarea>
-    </div>
-    <div class="button-row">
-      <button type="submit">answer</button>
-      {# formnovalidate matters: the textarea above is `required`, so without it
-         the browser refuses to submit and the dismiss button does nothing at
-         all - which is exactly the bug this had. #}
-      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/dismiss"
-              class="secondary">dismiss</button>
-    </div>
-  </form>
-</div>
-{% endmacro %}
+{# The card comes from _question.html, shared with the project page: answering
+   a question has to work identically wherever you meet it. Two sections here,
+   and only the *ordering* says which is pressing - answering a question on a
+   paused project works exactly as well as answering a live one. #}
 
 {% block content %}
 
 <h1>Open questions</h1>
-<p class="small muted">Answer here, or reply to the notification in Telegram.</p>
+<p class="small muted">
+  Tap an offered answer, or type one. <strong>Save for later</strong> takes a question off this
+  page and leaves it open on its project; <strong>delete</strong> tells the agent it will not be
+  answered{% if question_numbers() %}. You can also reply in Telegram{% endif %}.
+</p>
 
 {% if questions %}
-{% for q in questions %}{{ question_card(q) }}{% endfor %}
+{% for q in questions %}{{ question_card(q, next='/questions', show_project=true) }}{% endfor %}
 {% elif not shelved_questions %}
 <p class="empty-state">Nothing waiting on you. Enjoy it while it lasts.</p>
 {% else %}
@@ -50,7 +31,7 @@
     <span class="fold-section-label">Paused &amp; backlog</span>
     <span class="muted small">{{ shelved_questions|length }} question{{ 's' if shelved_questions|length != 1 else '' }} on projects you have put down &mdash; not counted in the badge</span>
   </summary>
-  {% for q in shelved_questions %}{{ question_card(q) }}{% endfor %}
+  {% for q in shelved_questions %}{{ question_card(q, next='/questions', show_project=true) }}{% endfor %}
 </details>
 {% endif %}
 

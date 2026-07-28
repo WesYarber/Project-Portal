@@ -1,0 +1,296 @@
+/* Themes - the whole visual language, switched by one class on <body>.
+   ==========================================================================
+
+   Wes, 2026-07-28, about his wife: "she doesn't like this kind of terminal,
+   tech-y theme that I have, and she might want something a little more paper
+   like, flowery, neutral, or just drastically different than what I have
+   here... her own theme to where all of the functional pieces are still
+   there, but she can change how they appear."
+
+   Two rules this file lives by:
+
+   1. NOTHING FUNCTIONAL IS IN HERE. Only color, texture, weight and type. No
+      display, no position, no visibility. A theme that can hide a control is
+      a theme that can break the portal for the person using it, and the one
+      thing worse than a look you dislike is a look you cannot get out of.
+      There is a test (test_themes.py) that fails on a banned property.
+
+   2. It is loaded AFTER style.css and every rule is scoped to a body class,
+      so "terminal" - the shipped look - is the total absence of anything
+      here. A one-person install pays nothing for this file existing beyond
+      one request that is cached forever.
+
+   Most of the work is done by re-pointing style.css's custom properties.
+   Where a rule in style.css hard-codes a color (the CRT accents, mostly), it
+   is restated here rather than variabilised in place: a theme should not be
+   able to make the shipped look change under Wes, and keeping the override
+   local means the terminal look is still exactly the bytes it always was. */
+
+
+/* Paper -------------------------------------------------------------------
+   Warm off-white stock, ink-dark text, a serif for anything you actually
+   read, and one restrained ink-blue accent. Everything the CRT theme does
+   with glow, this does with weight and space instead. */
+
+body.theme-paper {
+  /* Ink, not light. The dim tone is a genuine gray rather than a faded blue,
+     because a warm page makes a cool gray look like a mistake. */
+  --terminal-fg: hsl(30, 12%, 16%);
+  --terminal-dim: hsl(30, 8%, 42%);
+  --terminal-glow: rgba(120, 100, 80, 0.10);
+
+  /* Two stocks: the page is the darker one and the panels sit on it as
+     lighter sheets, which is the opposite of the CRT theme (where panels are
+     darker holes cut in the window). Paper stacks; screens recede. */
+  --bg-color: hsl(38, 30%, 93%);
+  --window-bg: hsl(40, 40%, 98%);
+  --window-border: hsl(32, 18%, 78%);
+  --header-bg: hsl(38, 32%, 95%);
+  --panel-bg: hsl(40, 45%, 99%);
+
+  /* A serif, because that is the "paper like" half of the ask, and the whole
+     stack is fonts a browser already has - a theme must never wait on a
+     webfont to become readable. */
+  --font-prose: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia,
+                'Times New Roman', serif;
+  --font-body: var(--font-prose);
+
+  /* --font-mono is deliberately NOT touched, and this is the one decision in
+     this file that a screenshot had to teach me. Pointing it at the serif is
+     the obvious way to get a non-monospaced title bar, and it works - right
+     up until it reaches something whose alignment IS its content. The
+     dashboard wordmark is box-drawing characters, and in a proportional face
+     it came out as a mangled gray hatch: the variable does not mean "the
+     chrome font", it means "the font for things that have to line up".
+     The chrome is re-faced below, by naming the chrome. */
+
+  /* Accents pulled towards printer's inks: a deep ink blue, an oxide red, a
+     muted moss. Same roles, same variable names, so every badge, status chip
+     and button in the app follows without knowing a theme exists. */
+  --ansi-blue: hsl(215, 62%, 38%);
+  --ansi-cyan: hsl(190, 55%, 32%);
+  --ansi-green: hsl(140, 42%, 30%);
+  --ansi-yellow: hsl(35, 78%, 34%);
+  --ansi-red: hsl(2, 62%, 44%);
+  --ansi-magenta: hsl(300, 35%, 40%);
+  --portal-blue: hsl(215, 62%, 42%);
+  --portal-orange: hsl(22, 72%, 45%);
+}
+
+/* The page itself, and the one place style.css cannot reach: <html> carries
+   an inline background for the overscroll area. An inline style beats a
+   stylesheet, so this needs the !important - the one in the file, and it is
+   here rather than removing the inline attribute because that attribute is
+   what stops a white flash before the CSS lands on the dark theme. */
+html:has(> body.theme-paper) {
+  background-color: hsl(38, 30%, 93%) !important;
+  /* Not cosmetic. style.css pins `color-scheme: dark` on <html>, and that is
+     what the browser paints the things no stylesheet reaches: the scrollbars,
+     the checkbox and radio glyphs, the native <select> popup, the date
+     picker. Left dark, a paper page grows black scrollbars and invisible
+     tick marks - the one class of bug a screenshot of the page body will not
+     show you, because none of it is in the page body. */
+  color-scheme: light !important;
+}
+
+body.theme-paper {
+  /* Paper has a tooth. Two very faint gradients at an angle read as stock
+     rather than as a screen, and cost nothing - no image, no request. */
+  background-image:
+    linear-gradient(107deg, rgba(150, 120, 80, 0.035) 0 1px, transparent 1px 7px),
+    linear-gradient(17deg, rgba(150, 120, 80, 0.025) 0 1px, transparent 1px 11px);
+  line-height: 1.65;
+}
+
+/* The chrome, named explicitly rather than through --font-mono (see above).
+   This is the whole list of places the terminal look uses a monospaced face
+   for style rather than for alignment. */
+body.theme-paper,
+body.theme-paper .terminal-header,
+body.theme-paper .terminal-footer,
+body.theme-paper .window-title,
+body.theme-paper .window-stats,
+body.theme-paper .tab-btn,
+body.theme-paper .badge,
+body.theme-paper .todo-tag,
+body.theme-paper h1,
+body.theme-paper h2,
+body.theme-paper h3,
+body.theme-paper button,
+body.theme-paper .btn,
+body.theme-paper label,
+body.theme-paper input[type="text"],
+body.theme-paper input[type="number"],
+body.theme-paper input[type="password"],
+body.theme-paper textarea,
+body.theme-paper select { font-family: var(--font-prose); }
+
+/* Kill the CRT entirely. The scanline and glow layers are dials on the
+   terminal look, not on "the portal", so under paper they are inert whatever
+   they are set to - a sheet of paper with scanlines on it is neither thing.
+   The settings panel says so when paper is selected.
+
+   The banner's own overlay is in this list and was the easiest to miss: it is
+   applied by `scan-off` as well as `scan-chrome`, so it is the one scanline
+   layer that survives with the setting turned off - which is exactly why a
+   theme cannot rely on the layer settings and has to state this itself. */
+body.theme-paper.scan-all::before,
+body.theme-paper.scan-chrome .terminal-header::after,
+body.theme-paper.scan-chrome .terminal-footer::after,
+body.theme-paper.scan-chrome .console-out::after,
+body.theme-paper .banner::after { background: none; }
+body.theme-paper,
+body.theme-paper * { text-shadow: none; }
+
+/* The window frame becomes a sheet: no blur, no glow, one soft drop shadow
+   the way a page sits on a desk. */
+body.theme-paper .terminal-window {
+  box-shadow: 0 1px 2px rgba(80, 60, 40, 0.10), 0 8px 24px rgba(80, 60, 40, 0.10);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-radius: 4px;
+}
+body.theme-paper .terminal-header { letter-spacing: 0; }
+/* The traffic lights are a macOS window joke and belong to the terminal
+   theme. They stay - hiding a thing is a layout change and this file does not
+   make those - but they become three quiet dots of the accent palette. */
+body.theme-paper .window-dot { border-color: var(--window-border); }
+body.theme-paper .window-dot.close { background-color: hsla(2, 62%, 44%, 0.35); }
+body.theme-paper .window-dot.minimize { background-color: hsla(35, 78%, 44%, 0.35); }
+body.theme-paper .window-dot.maximize { background-color: hsla(140, 42%, 36%, 0.35); }
+
+/* Headings get the serif's own weight rather than the terminal's tracking. */
+body.theme-paper h1,
+body.theme-paper h2,
+body.theme-paper h3 { letter-spacing: -0.01em; }
+
+/* Cards are sheets on the desk, so they take an edge and the faintest lift
+   instead of the dark inset the CRT theme uses. */
+body.theme-paper .card,
+body.theme-paper .panel {
+  box-shadow: 0 1px 2px rgba(80, 60, 40, 0.06);
+  border-radius: 3px;
+}
+
+/* The typographic conventions of a terminal, all of which are the same idea:
+   a TTY has no color, no rules and no weight, so it borrows punctuation to
+   stand in for them. `[ dashboard ]` for a tab, `//` for a heading, `$ ` for
+   an empty prompt, `[brackets]` round a chip. On paper every one of those is
+   available for real - a border, a weight, a rule - so the punctuation is
+   left over from a constraint that no longer applies, and reads as debris.
+
+   They are emptied, never hidden: `content: ""` keeps the pseudo-element and
+   its box, so nothing reflows and no affordance disappears. The [ show ] /
+   [ hide ] pair keeps its words and loses only its brackets, because those
+   words are the control itself. */
+body.theme-paper .badge::before,
+body.theme-paper .badge::after,
+body.theme-paper .todo-tag::before,
+body.theme-paper .todo-tag::after,
+body.theme-paper .tab-btn::before,
+body.theme-paper .tab-btn::after,
+body.theme-paper h2::before,
+body.theme-paper .fold-section > summary::before,
+body.theme-paper .danger-zone > summary::before,
+body.theme-paper .empty-state::before { content: ""; }
+body.theme-paper .fold-section > summary::after { content: "show"; }
+body.theme-paper .fold-section[open] > summary::after { content: "hide"; }
+/* The tabs lose their brackets, so they need their own spacing back or they
+   run together. Padding, not a margin: the whole tab stays the click target
+   it was. */
+body.theme-paper .tab-btn { padding-left: 0.55rem; padding-right: 0.55rem; }
+body.theme-paper h2 { border-bottom: 1px solid var(--window-border); padding-bottom: 0.2rem; }
+body.theme-paper .badge {
+  border-radius: 2px;
+  letter-spacing: 0.02em;
+  padding: 0.12rem 0.5rem;
+}
+
+/* Buttons: printed, not lit. style.css hard-codes the CRT's cyan wash and a
+   glow on hover, so both are restated. */
+body.theme-paper button,
+body.theme-paper .btn {
+  background: hsl(40, 30%, 96%);
+  border-color: var(--window-border);
+  border-radius: 3px;
+  font-weight: 600;
+}
+body.theme-paper button:hover,
+body.theme-paper .btn:hover {
+  background: var(--ansi-blue);
+  color: hsl(40, 40%, 98%);
+  box-shadow: none;
+}
+body.theme-paper button.secondary { background: hsl(38, 20%, 94%); }
+body.theme-paper button.secondary:hover { color: hsl(40, 40%, 98%); }
+body.theme-paper button.danger,
+body.theme-paper .btn.danger { background: hsla(2, 62%, 50%, 0.07); }
+body.theme-paper button.danger:hover,
+body.theme-paper .btn.danger:hover { box-shadow: none; color: hsl(40, 40%, 98%); }
+body.theme-paper button.go,
+body.theme-paper .btn.go { background: hsla(140, 42%, 36%, 0.09); }
+body.theme-paper button.go:hover,
+body.theme-paper .btn.go:hover { box-shadow: none; color: hsl(40, 40%, 98%); }
+body.theme-paper button.quick-option { background: hsla(215, 62%, 45%, 0.07); }
+body.theme-paper button.quick-option:hover { background: hsla(215, 62%, 45%, 0.16); }
+
+/* Fields are ruled lines on a form, not lit wells. */
+body.theme-paper input[type="text"],
+body.theme-paper input[type="number"],
+body.theme-paper input[type="password"],
+body.theme-paper textarea,
+body.theme-paper select {
+  background: hsl(40, 45%, 99%);
+  border-radius: 3px;
+}
+body.theme-paper input:focus,
+body.theme-paper textarea:focus,
+body.theme-paper select:focus {
+  box-shadow: 0 0 0 2px hsla(215, 62%, 45%, 0.18);
+}
+
+/* Tables read as a printed index: rules only under the header and between
+   rows, which style.css already does - it just needs a lighter rule. */
+body.theme-paper th { letter-spacing: 0.02em; }
+
+/* Anything that is genuinely machine output keeps the monospace face even
+   here, because in those the alignment IS the content: an agent transcript,
+   a diff, a file tree, a code block. This is a readability floor, not a
+   decoration - a theme may not make a diff stop lining up. */
+body.theme-paper pre,
+body.theme-paper code,
+body.theme-paper .console-out,
+body.theme-paper .file-tree,
+body.theme-paper .mono {
+  font-family: 'Fira Code', ui-monospace, 'SF Mono', 'Courier New', monospace;
+}
+body.theme-paper pre,
+body.theme-paper .console-out {
+  background: hsl(38, 26%, 95%);
+  border-radius: 3px;
+}
+
+/* The journal's left rule becomes a margin rule, the way a printed page marks
+   a quoted passage. */
+body.theme-paper .journal-entry { border-left-color: hsl(32, 22%, 82%); }
+
+/* The activity heatmap's four steps are a hard-coded neon green - the one
+   thing on the page whose whole job is to be legible at 7px, so it cannot be
+   left to a variable that a light background would wash out. Restated as four
+   steps of the paper theme's ink blue, on paper's own idle gray. */
+body.theme-paper .heat-day { background: hsl(36, 16%, 84%); }
+body.theme-paper .heat-none { background: transparent; }
+body.theme-paper .heat-1 { background: hsla(215, 62%, 42%, 0.28); }
+body.theme-paper .heat-2 { background: hsla(215, 62%, 42%, 0.50); }
+body.theme-paper .heat-3 { background: hsla(215, 62%, 42%, 0.74); }
+body.theme-paper .heat-4 { background: hsl(215, 62%, 38%); }
+
+/* The nav tab's hover/active glow is a CRT effect written as a literal. */
+body.theme-paper .tab-btn:hover,
+body.theme-paper .tab-btn.active { text-shadow: none; font-weight: 700; }
+
+/* The "since you last looked" banner and the other tinted panels are washes
+   of the accents, which land differently on a light stock. Kept as washes,
+   just weaker - on white, 7% of a color is already a visible tint where on
+   near-black it is nothing. */
+body.theme-paper .banner-alert { background: hsla(35, 78%, 50%, 0.10); }

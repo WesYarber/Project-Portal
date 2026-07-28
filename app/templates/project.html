@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_question.html" import question_card %}
 {% block title %}{{ project.title }} - Project Portal{% endblock %}
 {% block header_stat %}{{ project.slug }}{% endblock %}
 {% block content %}
@@ -473,38 +474,30 @@
 
 {% if questions %}
 <h2>Open questions</h2>
-{% for q in questions %}
-<div class="card">
-  <p><strong>Q{{ q.slot if q.slot is not none else q.id }}</strong> {{ q.question }}</p>
-  {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
-  <form method="post" action="/questions/{{ q.id }}/answer" style="margin-top:0.7rem;">
-    <div class="field">
-      <textarea name="answer" rows="3" required placeholder="Your answer..."></textarea>
-    </div>
-    <div class="button-row">
-      <button type="submit">answer</button>
-      {# formnovalidate: the textarea is `required`, and without this the
-         browser blocks the submit and dismiss silently does nothing. #}
-      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/dismiss"
-              class="secondary">dismiss</button>
-    </div>
-  </form>
-</div>
-{% endfor %}
+{% for q in questions %}{{ question_card(q, next='') }}{% endfor %}
 {% endif %}
 
+{# Saved for later: off the questions page, still here, still answerable in
+   place. Wes, 2026-07-28: "it should still show the question in the relevant
+   project page, but it should be removed from the questions page." Open by
+   default rather than folded, because a saved question is a thing you meant
+   to come back to and this is where you come back to it. #}
 {% if dismissed_questions %}
+<h2>Saved for later</h2>
+{% for q in dismissed_questions %}{{ question_card(q, next='', saved=true) }}{% endfor %}
+{% endif %}
+
+{# Deleted ones are read-only history. They are kept so it is visible that the
+   agent asked and got a no - and because the same question can never be
+   filed again, which is a thing you want to be able to see. #}
+{% if deleted_questions %}
 <details class="dismissed-questions">
-  <summary>dismissed questions ({{ dismissed_questions|length }})</summary>
-  {% for q in dismissed_questions %}
+  <summary>deleted questions ({{ deleted_questions|length }})</summary>
+  {% for q in deleted_questions %}
   <div class="card">
     <p>{{ q.question }}</p>
     {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
-    <div class="button-row">
-      <form method="post" action="/questions/{{ q.id }}/reopen">
-        <button type="submit" class="secondary small">reopen</button>
-      </form>
-    </div>
+    <p class="small muted">Answered: {{ q.answer }}</p>
   </div>
   {% endfor %}
 </details>

@@ -1,8 +1,12 @@
 <!doctype html>
-<html lang="en" style="background-color:#0d1016">
+{# The inline background and the two metas below are read before any CSS is
+   applied, so they are what stops a flash of the wrong color while the page
+   loads. They therefore have to come from the acting person's theme rather
+   than be pinned to the shipped one - see config.THEME_CHROME. #}
+<html lang="en" style="background-color:{{ theme_chrome() }}">
 <head>
 <meta charset="utf-8">
-<meta name="color-scheme" content="dark">
+<meta name="color-scheme" content="{{ 'dark' if theme() != 'paper' else 'light' }}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Project Portal{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -34,8 +38,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Portal">
-<meta name="theme-color" content="#0d1016">
+<meta name="theme-color" content="{{ theme_chrome() }}">
 <link rel="stylesheet" href="{{ static_url('style.css') }}">
+{# After style.css, always: a theme is a set of overrides on it, and
+   "terminal" is the absence of any rule in here at all. #}
+<link rel="stylesheet" href="{{ static_url('themes.css') }}">
 </head>
 {# data-jump-keys is the configured key -> section map (Settings > appearance >
    keyboard jumps). It rides on every page because app.js must know the
@@ -121,6 +128,21 @@
          fix Wes asked for looks ignored for as long as a slow run keeps the
          old code alive. The live-refresh morph brings it in the moment the
          deferral is journalled, and the restart's reload takes it away. #}
+      {# Trying somebody else's look on. Above the content and unmissable,
+         because the whole hazard of this feature is forgetting: every setting
+         you change while previewing is still saved against YOU, and a page
+         that had quietly become her theme with nothing saying so would read
+         as the portal having lost your preferences. #}
+      {% set previewing = looking_as() %}
+      {% if previewing %}
+      <form method="post" action="/look" class="look-preview">
+        <input type="hidden" name="next" value="{{ path }}">
+        <span>Viewing the portal as <strong>{{ previewing.name }}</strong> sees it &mdash;
+          settings you change are still your own.</span>
+        <button type="submit" name="person" value="" class="small">back to my own look</button>
+      </form>
+      {% endif %}
+
       {% set update_runs = restart_pending_runs() %}
       {% if update_runs is not none %}
       <div class="update-wait small">

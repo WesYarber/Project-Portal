@@ -151,6 +151,7 @@ def _build_registry() -> dict[str, Field]:
         Field("require_build_approval", _text, checkbox=True),
         Field("day_reset_hour", _hour),
         Field("cost_units", _choice(usage.COST_UNIT_CHOICES, usage.DEFAULT_COST_UNITS)),
+        Field("telegram_enabled", _text, checkbox=True),
         Field("telegram_token", _text),
         Field("telegram_chat_id", _text),
         Field("telegram_natural_language", _text, checkbox=True),

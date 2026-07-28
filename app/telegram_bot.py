@@ -41,11 +41,15 @@ async def telegram_poll_loop() -> None:
     log.info("Telegram poller started")
     async with httpx.AsyncClient(timeout=POLL_TIMEOUT + 10) as client:
         while True:
-            token = db.get_setting("telegram_token") or ""
-            if not token:
-                # No token configured yet; back off and re-check periodically.
+            if not db.telegram_enabled():
+                # Switched off, or no token configured yet. Re-checked rather
+                # than exited so ticking the box in Settings starts the bot
+                # without a restart - and, more importantly, so turning it
+                # *off* stops it within 15s rather than leaving a poller
+                # answering questions that no longer carry a number.
                 await asyncio.sleep(15)
                 continue
+            token = db.get_setting("telegram_token") or ""
             try:
                 resp = await client.get(
                     f"https://api.telegram.org/bot{token}/getUpdates",

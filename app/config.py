@@ -132,6 +132,17 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # `building` - i.e. writing code - waits for Wes. Turn this off to let a
     # finished plan roll straight into a build.
     "require_build_approval": "1",
+    # Off by default, as of 2026-07-28. Wes: "Get rid of the QX numbering
+    # system as I'm no longer using telegram to control this. Turn off our
+    # telegram integration along with this... If a user on GitHub, for example,
+    # is using this project and wants to use the telegram integration, turn
+    # back on the question numbers to work with that telegram integration."
+    #
+    # So this one switch owns two things that only make sense together: whether
+    # the bot runs at all, and whether questions wear a number. The number is
+    # not decoration - it is the handle you type back at a bot ("Q7: yes"), and
+    # with no bot to type at there is nothing it addresses.
+    "telegram_enabled": "0",
     "telegram_token": "",
     "telegram_chat_id": "",
     "telegram_natural_language": "1",
@@ -191,6 +202,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "learnings_cap_lines": "200",
     "last_auto_compact_date": "",
     # Appearance: how much of the CRT treatment to apply (see APPEARANCE below).
+    "ui_theme": "terminal",
     "crt_scanlines": "all",
     "crt_glow": "prose",
     "crt_animations": "on",
@@ -203,6 +215,24 @@ DEFAULT_SETTINGS: dict[str, str] = {
 # read or type into, so each layer is independently adjustable rather than one
 # all-or-nothing switch. Values become classes on <body>.
 APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
+    # The whole visual language, and deliberately the first key: everything
+    # below it is a dial on a look, where this is which look you are dialling.
+    #
+    # Wes, 2026-07-28: "she doesn't like this kind of terminal, tech-y theme
+    # that I have, and she might want something a little more paper like,
+    # flowery, neutral, or just drastically different than what I have here...
+    # her own theme to where all of the functional pieces are still there, but
+    # she can change how they appear."
+    #
+    # A theme is a class on <body> and a block in static/themes.css, not a
+    # separate stylesheet: that way it rides the person -> install -> default
+    # chain that already exists for the CRT layers, and a person choosing a
+    # theme is the same act as a person turning the scanlines off. "terminal"
+    # is the absence of any override, so the shipped look costs no CSS at all.
+    "ui_theme": [
+        ("terminal", "terminal - the dark CRT look"),
+        ("paper", "paper - warm, light, printed"),
+    ],
     "crt_scanlines": [
         ("all", "everywhere"),
         ("chrome", "frame + console only (not on text you read)"),
@@ -235,12 +265,23 @@ APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
 # becomes `scan-off`. Keeping this beside the choices means adding an option
 # never needs an edit in main.py.
 APPEARANCE_CLASS_PREFIX: dict[str, str] = {
+    "ui_theme": "theme",
     "crt_scanlines": "scan",
     "crt_glow": "glow",
     "crt_animations": "anim",
     "ui_font": "font",
     "ui_density": "density",
 }
+# What the browser chrome outside the page should be for each theme: the iOS
+# status bar tint and the overscroll color. These cannot come from the
+# stylesheet - a <meta> is read before any CSS is applied, and it is what stops
+# a white flash on a dark theme (and a black one on a light theme) while the
+# page loads. Keys must match ui_theme's values.
+THEME_CHROME: dict[str, str] = {
+    "terminal": "#0d1016",
+    "paper": "#f0e8da",
+}
+
 APPEARANCE_DEFAULTS = {key: choices[0][0] for key, choices in APPEARANCE_CHOICES.items()}
 # The shipped default for glow is the middle option, not the first one.
 APPEARANCE_DEFAULTS["crt_glow"] = "prose"

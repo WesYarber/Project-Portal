@@ -1634,6 +1634,10 @@ def file_question(
         existing = conn.execute(
             "SELECT * FROM questions WHERE project_id = ? AND ("
             "  status = 'open'"
+            # No cutoff on a deleted one, deliberately. Answering settles a
+            # question for a while; deleting it settles it for good, and a
+            # rewording arriving the next day is exactly what deleting is for.
+            "  OR status = 'deleted'"
             "  OR (status IN ('answered', 'dismissed') "
             "      AND COALESCE(answered_at, ts) >= ?)"
             ") ORDER BY ts ASC",
@@ -1725,9 +1729,16 @@ def answered_qa(project_id: int) -> list[sqlite3.Row]:
 
 
 def dismissed_questions(project_id: int) -> list[sqlite3.Row]:
-    """Questions Wes dismissed. Dismissing clears the notification and takes it
-    off the questions tab, but the question stays on its own project - it is
-    still a record of something the agent wanted to know."""
+    """Questions saved for later. Saving one clears the notification and takes
+    it off the questions page, but the question stays on its own project -
+    still open in every sense that matters, just not in the stack of things
+    being pressed on the owner today.
+
+    The stored status is still 'dismissed': it is the same act it always was,
+    and renaming a value that sits in a live table buys nothing but a
+    migration. What changed in 2026-07-28 is the promise the UI makes about
+    it - the project page now answers one in place rather than only offering
+    to put it back."""
     conn = get_conn()
     with _LOCK:
         return conn.execute(
@@ -1819,6 +1830,56 @@ def dismiss_question_and_resume(question_id: int) -> Optional[sqlite3.Row]:
         return None
     dismiss_question(question_id)
     return question
+
+
+# What a deleted question is answered with. It is phrased as an answer, in the
+# first person, because that is what the agent reads: the prompt's "Answered
+# questions" section is the only place a past question survives, and a blank
+# there reads as "never got round to it" - which invites the ask again.
+DELETED_ANSWER = "Deleted without an answer - this will not be answered, so proceed without it."
+
+
+def delete_question(question_id: int) -> Optional[sqlite3.Row]:
+    """Throw a question away, on the record.
+
+    Wes's rule (2026-07-28): deleting "should respond to the question with
+    deleted will not answer and not prompt it to run due to the answer being
+    submitted". So it does write an answer - the canned one above - but it is
+    stored under its own status rather than as 'answered', for two reasons:
+
+    - The project page's answered list is a record of things Wes actually
+      decided. A row that only says "not answering" would sit in it wearing
+      the same clothes as a real decision.
+    - `file_question` treats a deleted question as a permanent bar on that
+      question being asked again (see the dedupe query), where an answered one
+      only bars it for QUESTION_SETTLED_HOURS. Deleting says "stop asking me
+      this", and a rewording arriving a day later is the exact failure that
+      would make deleting worthless.
+
+    No run is queued, and none ever was for an answer either - answering has
+    never woken a project by itself. What deleting *does* release is the hold
+    an open question puts on scheduling, which is the point: the project stops
+    waiting on a person who has said they are not coming.
+    """
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE questions SET status = 'deleted', answer = ?, answered_at = ?, "
+            "slot = NULL WHERE id = ?",
+            (DELETED_ANSWER, now(), question_id),
+        )
+        conn.commit()
+        return conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
+
+
+def deleted_questions(project_id: int) -> list[sqlite3.Row]:
+    """Deleted questions, kept so the agent can see it asked and got a no."""
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM questions WHERE project_id = ? AND status = 'deleted' ORDER BY ts ASC",
+            (project_id,),
+        ).fetchall()
 
 
 # --------------------------------------------------------------------------
@@ -2967,6 +3028,22 @@ def get_setting(key: str) -> Optional[str]:
     with _LOCK:
         row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
     return row["value"] if row else None
+
+
+def telegram_enabled() -> bool:
+    """Is the Telegram integration on?
+
+    One function rather than a check at each of the five call sites (the
+    poller, the notifier, the question badge, the notification prefix, the
+    settings panel), because the two halves have to agree: a bot that is
+    polling while questions carry no number would take `/answer 7` and answer
+    somebody else's question.
+
+    Both conditions are required. The switch is the intent; the token is
+    whether it can actually work. An install that ticks the box and never
+    pastes a token gets numbers nobody can use.
+    """
+    return (get_setting("telegram_enabled") or "") == "1" and bool(get_setting("telegram_token"))
 
 
 def set_setting(key: str, value: str) -> None:

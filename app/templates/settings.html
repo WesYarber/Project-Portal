@@ -364,7 +364,7 @@
 <section class="settings-panel" id="panel-appearance" data-panel="appearance">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="appearance">
-    <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority,{{ jump_keys|map(attribute='field')|join(',') }}">
+    <input type="hidden" name="_fields" value="ui_theme,crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority,{{ jump_keys|map(attribute='field')|join(',') }}">
     <div class="card">
       {# Whose look this is. Said out loud rather than assumed: this panel used
          to be one global setting per layer, and a page that quietly switched
@@ -378,7 +378,23 @@
         {% else %}Your look.{% endif %}
         Every layer is independent, so you can keep the parts of the terminal look you like and drop
         the parts that make text tiring. Applies on save.</p>
-      <div class="grid grid-2 field-grid">
+
+      {# The theme first and on its own row: it is which look you are dialling,
+         where everything under it is a dial on that look. #}
+      <div class="field theme-field">
+        {{ select_field('ui_theme', 'Theme') }}
+        <p class="hint">The whole visual language. <strong>Terminal</strong> is the dark CRT look
+          this portal shipped with; <strong>paper</strong> is warm, light and printed, with a serif
+          for anything you read. Every button, list and panel is in the same place in both &mdash; a
+          theme changes only how things look, never what is there or where it is.</p>
+      </div>
+
+      <h3 class="settings-subhead">The terminal look</h3>
+      <p class="hint">{% if my_theme == 'paper' %}These have no effect while you are on the paper
+        theme &mdash; a sheet of paper with scanlines on it is neither thing. They are kept as you
+        set them and come back if you switch back to terminal.{% else %}Each layer is independent,
+        so you can keep the parts you like and drop the parts that make text tiring.{% endif %}</p>
+      <div class="grid grid-2 field-grid{{ ' layers-inert' if my_theme == 'paper' else '' }}">
         {{ select_field('crt_scanlines', 'Scanlines') }}
         {{ select_field('crt_glow', 'Phosphor glow') }}
         {{ select_field('crt_animations', 'Animations') }}
@@ -444,6 +460,32 @@
     <button type="submit" class="btn secondary small">follow the install&rsquo;s look again</button>
   </form>
   {% endif %}
+
+  {# Try somebody else's look on. Only offered when there is somebody else to
+     be - on a one-person install this is a control with one option, which is
+     no control at all. #}
+  {% if people_count > 1 %}
+  <div class="card">
+    <h3 class="settings-subhead" style="margin-top:0;">See it as someone else does</h3>
+    <p class="hint">Renders every page the way that person has set it up, so you can see what you
+      are asking them to look at. It changes nothing but the look: notes you write are still
+      yours, and any setting you save is still saved against you. There is a line across the top
+      of every page while it is on, and it ends when you close the browser.</p>
+    <form method="post" action="/look" class="look-picker">
+      <input type="hidden" name="next" value="/settings">
+      {% set viewing = looking_as() %}
+      {% for person in everyone() %}
+      {% if not me() or person.id != me().id %}
+      <button type="submit" name="person" value="{{ person.slug }}"
+              class="secondary{{ ' active' if viewing and viewing.id == person.id else '' }}">as {{ person.name }}</button>
+      {% endif %}
+      {% endfor %}
+      {% if viewing %}
+      <button type="submit" name="person" value="">back to my own look</button>
+      {% endif %}
+    </form>
+  </div>
+  {% endif %}
   <p class="hint">The portal follows a reusable dark terminal theme:
     <a href="/style">the theme page</a> has every component with markup to
     copy, and a one-click download of <code>terminal-theme.css</code> to drop
@@ -454,9 +496,17 @@
 <section class="settings-panel" id="panel-notifications" data-panel="notifications">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="notifications">
-    <input type="hidden" name="_fields" value="telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic">
+    <input type="hidden" name="_fields" value="telegram_enabled,telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic">
     <div class="card">
       <div class="field checkbox-row">
+        <input type="checkbox" id="telegram_enabled" name="telegram_enabled" {{ 'checked' if settings.telegram_enabled == '1' else '' }}>
+        <label for="telegram_enabled">Telegram integration</label>
+      </div>
+      <p class="hint">Off by default. Turning it on starts the bot <em>and</em> puts a short number
+        back on every question (&ldquo;Q7&rdquo;) &mdash; that number is the handle you type back at the
+        bot, so the two travel together. Web push and ntfy work either way; answering in the browser
+        never needed a number.</p>
+      <div class="field checkbox-row" style="margin-top:1rem;">
         <input type="checkbox" id="telegram_natural_language" name="telegram_natural_language" {{ 'checked' if settings.telegram_natural_language == '1' else '' }}>
         <label for="telegram_natural_language">Understand plain English</label>
       </div>

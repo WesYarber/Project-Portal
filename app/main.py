@@ -48,6 +48,7 @@ from app import (
     pacing,
     people,
     preview,
+    quickreplies,
     quoting,
     runlimit,
     runlog,
@@ -89,6 +90,27 @@ _CURRENT_PERSON: contextvars.ContextVar = contextvars.ContextVar(
     "portal_current_person", default=None
 )
 
+# Whose LOOK this request is being rendered in, which is a different question
+# from whose request it is.
+#
+# Wes, 2026-07-28: "Also allow users to switch themes and view whatever it
+# would look like for another user. that would be a useful and neat feature."
+#
+# It is deliberately a second variable rather than a temporary swap of the
+# first. Previewing her theme must not make a note you post get her name on
+# it, must not change which projects count as yours, and must not change what
+# the agent is told about who is asking. The only thing it may reach is
+# `appearance()`. Keeping the two apart in the type system is what makes that
+# true by construction instead of by remembering.
+_CURRENT_LOOK: contextvars.ContextVar = contextvars.ContextVar(
+    "portal_current_look", default=None
+)
+
+# The cookie holding a preview. Separate from people.COOKIE for the same
+# reason: one says who you are and lasts ten years, the other says what you
+# are looking at and should not outlive the browser.
+LOOK_COOKIE = "portal_look"
+
 
 def _client_ip(request: Request) -> str:
     """The address this request actually arrived from.
@@ -129,16 +151,44 @@ async def _identify(request: Request, call_next):
     replaced. The token is reset in `finally` so a worker thread cannot inherit
     a stale person from whichever request happened to run on it last.
     """
-    token = None
+    token = look_token = None
     try:
         token = _CURRENT_PERSON.set(resolve_person(request))
     except Exception:  # pragma: no cover - defensive
         log.exception("Could not resolve who is making this request")
     try:
+        look_token = _CURRENT_LOOK.set(_resolve_look(request))
+    except Exception:  # pragma: no cover - defensive
+        log.debug("Could not resolve a look preview; using your own", exc_info=True)
+    try:
         return await call_next(request)
     finally:
         if token is not None:
             _CURRENT_PERSON.reset(token)
+        if look_token is not None:
+            _CURRENT_LOOK.reset(look_token)
+
+
+def _resolve_look(request: Request):
+    """The person whose look this page should be rendered in, or None for your
+    own. Never raises and never falls back to anyone: an unreadable preview
+    cookie means you see yourself, which is the safe answer."""
+    slug = (request.cookies.get(LOOK_COOKIE) or "").strip()
+    if not slug:
+        return None
+    return people.by_slug(slug)
+
+
+def looking_as():
+    """Whose look is on screen, when it is not your own. None the rest of the
+    time, which is what the banner and the picker both key off."""
+    person = _CURRENT_LOOK.get()
+    if person is None:
+        return None
+    mine = me()
+    if mine is not None and int(person["id"]) == int(mine["id"]):
+        return None  # previewing yourself is not previewing
+    return person
 
 
 def _person_id(request: Request) -> Optional[int]:
@@ -472,7 +522,11 @@ def appearance(person=None) -> dict[str, str]:
     """
     look = install_appearance()
     try:
-        look.update(people.appearance_of(person if person is not None else me()))
+        if person is None:
+            # A preview, if one is running, and only here. `looking_as` is the
+            # single place this override may be read - see _CURRENT_LOOK.
+            person = looking_as() or me()
+        look.update(people.appearance_of(person))
     except Exception:  # pragma: no cover - defensive
         log.debug("Could not read a personal appearance; using the install's", exc_info=True)
     return look
@@ -485,6 +539,18 @@ def body_classes() -> str:
         for key, prefix in config.APPEARANCE_CLASS_PREFIX.items()
         if key in look
     )
+
+
+def theme() -> str:
+    """The theme name on screen right now, for the two things that have to be
+    decided before any CSS is read (see base.html)."""
+    return appearance().get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"])
+
+
+def theme_chrome() -> str:
+    """The browser-chrome color for the theme on screen: the iOS status bar
+    tint and the overscroll fill."""
+    return config.THEME_CHROME.get(theme(), config.THEME_CHROME["terminal"])
 
 
 def jump_keys_json() -> str:
@@ -559,6 +625,9 @@ templates.env.globals["open_question_total"] = open_question_total
 templates.env.globals["open_oneoff_total"] = open_oneoff_total
 templates.env.globals["restart_pending_runs"] = worker.restart_pending_runs
 templates.env.globals["body_classes"] = body_classes
+templates.env.globals["theme"] = theme
+templates.env.globals["theme_chrome"] = theme_chrome
+templates.env.globals["looking_as"] = looking_as
 templates.env.globals["static_url"] = static_url
 templates.env.globals["icon_url"] = icon_url
 templates.env.globals["APPEARANCE_CHOICES"] = config.APPEARANCE_CHOICES
@@ -585,6 +654,14 @@ templates.env.globals["META_PROJECT_SLUG"] = config.META_PROJECT_SLUG
 templates.env.globals["MODEL_CHOICES"] = config.MODEL_CHOICES
 templates.env.globals["media_kind"] = attachments.media_kind
 templates.env.globals["note_pending"] = notes.is_pending
+# Question numbering rides with the Telegram bot and nothing else - see
+# db.telegram_enabled. Registered as the function, not its value, so ticking
+# the box in Settings takes effect on the next render rather than at a restart.
+templates.env.globals["question_numbers"] = db.telegram_enabled
+# The one-tap answers an agent offered with a question ("merge it" / "keep
+# both"). Stored at creation time on the question row, so what is shown is
+# what was offered - see quickreplies.
+templates.env.globals["question_options"] = lambda q: quickreplies.decode(q["quick_options"])
 templates.env.globals["max_upload"] = attachments.human_size(attachments.MAX_UPLOAD_BYTES)
 templates.env.globals["max_upload_bytes"] = attachments.MAX_UPLOAD_BYTES
 templates.env.filters["filesize"] = attachments.human_size
@@ -802,6 +879,7 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "journal": journal,
             "questions": questions,
             "dismissed_questions": db.dismissed_questions(project["id"]),
+            "deleted_questions": db.deleted_questions(project["id"]),
             "runs": runs,
             "tree_entries": tree_entries,
             "file_count": file_count,
@@ -1599,24 +1677,76 @@ def _after_question(question: sqlite3.Row, next: str) -> str:
 
 @app.post("/questions/{question_id}/answer")
 async def answer_question(
-    question_id: int, answer: str = Form(...), next: str = Form("")
+    question_id: int,
+    answer: str = Form(""),
+    choice: str = Form(""),
+    next: str = Form(""),
 ) -> RedirectResponse:
+    """Answer a question, by tapping an offered option, by typing, or both.
+
+    Wes, 2026-07-28: "allow the prompt that asked the question to pre-fill some
+    multiple-choice questions that can be clicked for ease of answering, but
+    always allow the user to still be able to type in additional context if
+    desired or just to skip clicking one of those answers altogether and answer
+    by typing outright."
+
+    So the option buttons are real submits carrying `choice`, which makes the
+    common case one tap with no JavaScript at all, and anything already typed
+    in the box rides along with the tap rather than being thrown away.
+
+    `choice` is checked against the options actually stored on the question
+    rather than trusted: the answer is journalled and read by the next agent,
+    and an answer it never offered is a worse thing to record than a dropped
+    tap. An unrecognized choice falls back to the typed text alone.
+    """
     question = db.get_question(question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
-    db.answer_question_and_resume(question_id, answer.strip())
+    typed = answer.strip()
+    picked = choice.strip()
+    if picked and picked not in quickreplies.decode(question["quick_options"]):
+        log.warning("Ignoring unoffered choice %r on question %s", picked[:80], question_id)
+        picked = ""
+    text = f"{picked} - {typed}" if picked and typed else (picked or typed)
+    if not text:
+        # Nothing was chosen and nothing was typed. Sending an empty answer
+        # would settle the question against a blank, which reads to the next
+        # agent as a decision that was never made.
+        return RedirectResponse(url=_after_question(question, next), status_code=303)
+    db.answer_question_and_resume(question_id, text)
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
 @app.post("/questions/{question_id}/dismiss")
 async def dismiss_question(question_id: int, next: str = Form("")) -> RedirectResponse:
-    """Dismissing clears the notification and takes the question off the
-    questions tab. The question itself stays on its project - it is still a
-    record of something the agent wanted to know."""
+    """Save a question for later.
+
+    It comes off the questions page and stops ringing the notification, but it
+    stays on its own project, answerable in place, under "saved for later".
+    Wes, 2026-07-28: "when dismissing a question, it should be saved for later
+    ... it should still show the question in the relevant project page, but it
+    should be removed from the questions page." The saying-no version of this
+    is `delete` below."""
     question = db.get_question(question_id)
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     db.dismiss_question_and_resume(question_id)
+    return RedirectResponse(url=_after_question(question, next), status_code=303)
+
+
+@app.post("/questions/{question_id}/delete")
+async def delete_question(question_id: int, next: str = Form("")) -> RedirectResponse:
+    """Throw a question away for good.
+
+    The question is answered with `db.DELETED_ANSWER` so the agent reads a
+    decision rather than a silence, no run is queued by it, and the same
+    question can never be filed again - not even in a different wording (the
+    dedupe pass in `db.file_question` treats a deleted question as permanent).
+    """
+    question = db.get_question(question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+    db.delete_question(question_id)
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
@@ -1938,6 +2068,16 @@ async def settings_page(request: Request) -> HTMLResponse:
             # Whose theme the appearance panel is editing, and which of its
             # layers they have pinned away from the install's look.
             "my_look": my_look,
+            # The theme the panel is EDITING, which is your own even while you
+            # are previewing somebody else's - the panel saves against you and
+            # says so. Taken from `appearance(me())` rather than the bare
+            # `appearance()` for exactly that reason: the plain call follows a
+            # running preview, and a panel whose dropdown said "terminal"
+            # while the line under it said "you are on the paper theme" is a
+            # page arguing with itself.
+            "my_theme": appearance(me()).get(
+                "ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]
+            ),
             "install_look": install_appearance(),
             "people_count": len(people.everyone()),
             # Archived people included on purpose: this is the one page where
@@ -2083,6 +2223,33 @@ async def set_whoami(
         httponly=False,
         samesite="lax",
     )
+    return response
+
+
+@app.post("/look")
+async def set_look(person: str = Form(""), next: str = Form("/")) -> RedirectResponse:
+    """Look at the portal the way somebody else does.
+
+    Wes, 2026-07-28: "Also allow users to switch themes and view whatever it
+    would look like for another user."
+
+    A preview and nothing more. It reaches `appearance()` and stops there:
+    you are still you for every note you post, every project that counts as
+    yours, and everything the agent is told about who is asking. An empty
+    `person` ends the preview.
+
+    A session cookie, unlike the identity one, and that asymmetry is
+    deliberate. Forgetting who you are silently misattributes your notes, so
+    that cookie lasts ten years; forgetting that you were trying her theme on
+    costs you one click. A preview you cannot remember starting is a portal
+    that looks broken.
+    """
+    response = RedirectResponse(url=_safe_next(next), status_code=303)
+    row = people.by_slug(person) if person else None
+    if row is None:
+        response.delete_cookie(LOOK_COOKIE)
+        return response
+    response.set_cookie(LOOK_COOKIE, row["slug"], httponly=False, samesite="lax")
     return response
 
 

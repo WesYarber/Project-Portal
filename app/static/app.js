@@ -1683,16 +1683,35 @@ function lbBuild() {
     natW: 0, natH: 0,
     pointers: {}, // active pointers by id, for pinch
     pinchDist: 0,
+    // Pixels travelled since the pointer went down, so the click handler can
+    // tell a click on the backdrop from the end of a pan across it.
+    moved: 0,
     dragId: null, dragX: 0, dragY: 0,
   };
 
   root.addEventListener("click", function (ev) {
     var b = ev.target.closest("[data-lb]");
     if (!b) {
-      // Nothing. Wes, 2026-07-25: the viewer must NOT close on a click - only
-      // Escape or the ✕ in the bar closes it. Clicking the backdrop used to
-      // close, which made every misjudged pan, double-click-to-fit and stray
-      // click on the dark surround throw away the image you were reading.
+      // Wes asked for both of these, three days apart, and they are not in
+      // conflict once you say what "off the image" means:
+      //
+      //   2026-07-25: the viewer must NOT close on a click - clicking the
+      //   backdrop used to close, and every misjudged pan and stray click
+      //   threw away the image you were reading.
+      //   2026-07-28: "clicking off the side of the image should close it."
+      //
+      // So it closes on a click that is genuinely off to the side and is
+      // genuinely a click:
+      //
+      // - `ev.target === lb.stage` - the click landed on the letterbox area
+      //   around the image, not on the image itself. That is the whole of the
+      //   2026-07-25 complaint: a misjudged pan lands ON the image (it is
+      //   what you were dragging), and a zoomed image fills the stage
+      //   entirely, so there is no backdrop left to hit by accident.
+      // - `lb.moved` under a few pixels - a drag that starts on the backdrop
+      //   and ends there still fires a click, and letting go of a pan must
+      //   never be read as "shut it".
+      if ((ev.target === lb.stage || ev.target === lb.root) && lb.moved < 5) lbClose();
       return;
     }
     var act = b.getAttribute("data-lb");
@@ -1732,6 +1751,7 @@ function lbBuild() {
     lb.pointers[ev.pointerId] = { x: ev.clientX, y: ev.clientY };
     lb.stage.setPointerCapture(ev.pointerId);
     var ids = Object.keys(lb.pointers);
+    if (ids.length === 1) lb.moved = 0;
     if (ids.length === 1) {
       lb.dragId = ev.pointerId;
       lb.dragX = ev.clientX; lb.dragY = ev.clientY;
@@ -1745,6 +1765,10 @@ function lbBuild() {
   lb.stage.addEventListener("pointermove", function (ev) {
     var p = lb.pointers[ev.pointerId];
     if (!p) return;
+    // Accumulated, not straight-line: a pan that wanders out and comes back
+    // to where it started is still a pan, and a straight-line measure would
+    // read it as a click and close the image the person was reading.
+    lb.moved += Math.abs(ev.clientX - p.x) + Math.abs(ev.clientY - p.y);
     p.x = ev.clientX; p.y = ev.clientY;
     var ids = Object.keys(lb.pointers);
     if (ids.length >= 2) {

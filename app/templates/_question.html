@@ -1,0 +1,62 @@
+{# One question, one form. Used by the questions page and by a project page,
+   because the three things you can do with a question - answer it, save it for
+   later, throw it away - have to mean the same thing wherever you meet it.
+
+   `show_project` adds the project link (the questions page lists many
+   projects; a project page is already on one).
+   `saved` renders the saved-for-later variant: the same form, plus a way to
+   put it back on the questions page. #}
+{% macro question_card(q, next, show_project=false, saved=false) %}
+{% set options = question_options(q) %}
+<div class="card question-card{{ ' question-saved' if saved else '' }}">
+  <div class="row">
+    {# The number is the handle you type back at the Telegram bot, so it is
+       shown only when there is a bot to type it at (db.telegram_enabled).
+       Wes, 2026-07-28: "Get rid of the QX numbering system as I'm no longer
+       using telegram... If a user on GitHub is using this project and wants
+       the telegram integration, turn back on the question numbers." #}
+    {% if question_numbers() and q.slot is not none %}<span class="badge">Q{{ q.slot }}</span>{% endif %}
+    {% if saved %}<span class="badge muted">saved for later</span>{% endif %}
+    {% if show_project %}<a href="/project/{{ q.project_slug }}">{{ q.project_title }}</a>{% endif %}
+  </div>
+  <p class="question-text">{{ q.question }}</p>
+  {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
+  <form method="post" action="/questions/{{ q.id }}/answer" class="question-form">
+    <input type="hidden" name="next" value="{{ next }}">
+    {% if options %}
+    {# Real submit buttons, not JavaScript. One tap answers, which is the
+       whole point of an agent offering options - and anything already typed
+       in the box below rides along with the tap as extra context, so
+       choosing an option never throws away what you were writing. #}
+    <div class="quick-options">
+      {% for opt in options %}
+      <button type="submit" name="choice" value="{{ opt }}" class="quick-option">{{ opt }}</button>
+      {% endfor %}
+    </div>
+    {% endif %}
+    <div class="field">
+      {# Deliberately NOT `required`: the answer may be a tapped option above,
+         and the browser would refuse to submit the form over an empty box
+         that was never the thing being filled in. The route rejects a submit
+         with neither. #}
+      <textarea name="answer" rows="3"
+        placeholder="{{ 'Add anything else, or answer by typing...' if options else 'Your answer...' }}"></textarea>
+    </div>
+    <div class="button-row">
+      <button type="submit">answer</button>
+      {% if saved %}
+      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/reopen"
+              class="secondary">put back on the questions page</button>
+      {% else %}
+      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/dismiss"
+              class="secondary">save for later</button>
+      {% endif %}
+      {# Destructive and irreversible - the question is answered "will not be
+         answered" and can never be filed again, in any wording - so it is
+         last, styled as a danger, and asks first. #}
+      <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/delete"
+              class="danger" data-confirm="Delete this question? The agent is told it will not be answered, and it can never ask it again.">delete</button>
+    </div>
+  </form>
+</div>
+{% endmacro %}

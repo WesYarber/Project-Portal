@@ -97,25 +97,52 @@ def test_wheel_zoom_is_proportional_to_delta_not_a_fixed_step():
     assert "Math.max(-50, Math.min(50, dy))" in js
 
 
-def test_no_click_anywhere_closes_the_viewer():
-    # Wes, 2026-07-25: "the image preview thing from the journal doesn't close
-    # with a click but rather the user has to hit escape or click the close
-    # button that is already on the nav bar area."
+def test_a_click_beside_the_image_closes_the_viewer():
+    # Wes, 2026-07-28: "In the image, pop-up view, clicking off the side of the
+    # image should close it."
     #
-    # This supersedes the 2026-07-24 fix, which kept the backdrop click and
-    # merely guarded it against a pan release (`lb.moved`). The backdrop close
-    # is gone outright, so the guard - and the pan-distance bookkeeping that
-    # existed only to feed it - should be gone with it.
+    # This is the third instruction about this one click, so the history is
+    # worth stating rather than re-litigating:
+    #
+    #   07-24: backdrop click closes, guarded against a pan release.
+    #   07-25: "doesn't close with a click ... the user has to hit escape or
+    #          click the close button" - read as "take the backdrop close
+    #          away", and it was taken away outright.
+    #   07-28: put it back, for clicks off the SIDE of the image.
+    #
+    # "Off the side" is the load-bearing phrase and it is what makes this
+    # different from the version that was removed: the close fires only when
+    # the click landed on the stage itself, i.e. in the letterbox margin
+    # beside the image, never on the image. A misjudged pan lands on the
+    # image (that is the thing being dragged) and a zoomed image fills the
+    # stage entirely, so there is no backdrop left to hit by accident.
     js = _js()
-    assert "ev.target === lb.stage" not in js
-    assert "lb.moved" not in js
-    # lbClose() is now called from exactly two places: the ✕ button's action
-    # and the Escape handler. Anything else is a third way to lose the image.
+    assert "ev.target === lb.stage || ev.target === lb.root" in js
+    # ...and a pan that starts and ends on the backdrop still fires a click,
+    # so the distance guard has to survive with it.
+    assert "lb.moved < 5" in js
+    # Accumulated distance, not straight-line: a pan that wanders and returns
+    # to where it started is still a pan.
+    assert "lb.moved += Math.abs(" in js
+    # lbClose() is called from exactly three places: the ✕ button's action,
+    # the Escape handler, and this. Anything else is a fourth way to lose the
+    # image you were reading.
     calls = [ln.strip() for ln in js.splitlines()
              if "lbClose()" in ln and not ln.startswith("function lbClose")]
-    assert len(calls) == 2, calls
+    assert len(calls) == 3, calls
     assert any('act === "close"' in c for c in calls)
     assert any("ev.stopPropagation()" in c for c in calls)
+
+
+def test_a_click_on_the_image_itself_never_closes_the_viewer():
+    # The 2026-07-25 complaint, kept as a live guarantee: whatever the
+    # backdrop does, a click that lands on the image must not throw it away.
+    # The handler's only close path is gated on the target being the stage or
+    # the root, and the image is neither.
+    js = _js()
+    handler = js.split('root.addEventListener("click"')[1].split("var act =")[0]
+    assert "lbClose()" in handler
+    assert "lb.img" not in handler
 
 
 def test_escape_and_the_close_button_are_the_two_ways_out():
