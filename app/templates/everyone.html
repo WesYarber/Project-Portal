@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Everyone's projects - Project Portal{% endblock %}
+{% block header_stat %}{{ groups|length }} {{ 'person' if groups|length == 1 else 'people' }}{% endblock %}
+
+{# The admin door. Wes, 2026-07-28: "I want a way where I can go view other
+   users' projects, but dont want them in my main feed."
+
+   Deliberately NOT the dashboard's project_cell: that macro reads five things
+   out of the dashboard's context (drag targets, approval badges, run counts,
+   the live strip) and this page is a directory, not a second feed. Keeping it
+   plain is what stops it becoming the main feed by accretion. #}
+
+{% block content %}
+
+<h1>Everyone's projects</h1>
+<p class="small muted">
+  Every project on this install, grouped by who is on it &mdash; other people first, yours
+  last. Your own <a href="/">dashboard</a> shows only projects you are a member of, and
+  nothing here changes that.
+</p>
+
+{% for group in groups %}
+<section class="everyone-group">
+  <h2 class="everyone-who">
+    {% if group.person %}
+      {{ group.person.name }}{% if group.is_viewer %} <span class="muted small">(you)</span>{% endif %}
+      {% if group.person.archived_at %}<span class="badge status-paused">archived</span>{% endif %}
+    {% else %}
+      <span class="muted">Nobody is on these</span>
+    {% endif %}
+    <span class="muted small">{{ group.projects|length }} project{{ 's' if group.projects|length != 1 else '' }}</span>
+  </h2>
+  {% if group.person and group.person.background %}
+  <p class="small muted everyone-background">{{ group.person.background }}</p>
+  {% endif %}
+  <ul class="everyone-list">
+    {% for p in group.projects %}
+    {% set state = display_state(p) %}
+    <li>
+      <a href="/project/{{ p.slug }}">{{ p.title }}</a>
+      <span class="badge status-{{ state }}">{{ state|status_badge }}</span>
+      {% if p.id in running_ids %}<span class="badge status-active">agent working</span>{% endif %}
+      {% if question_counts.get(p.id) %}
+      <span class="badge needs-ok">{{ question_counts[p.id] }} question{{ 's' if question_counts[p.id] != 1 else '' }}</span>
+      {% endif %}
+      <span class="muted small">{{ p.updated_at|timeago }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</section>
+{% else %}
+<p class="empty-state">Nobody is on any project yet.</p>
+{% endfor %}
+
+{% endblock %}

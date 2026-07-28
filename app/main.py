@@ -52,6 +52,7 @@ from app import (
     quoting,
     runlimit,
     runlog,
+    scope,
     settings_form,
     site,
     spawnauth,
@@ -486,9 +487,16 @@ def open_question_total() -> int:
     backlog, are left out: he asked for the number to mean "things waiting on
     me right now". They are still answerable - they sit in their own section
     below the fold on /questions - and the badge counts exactly what that page
-    shows above it."""
+    shows above it.
+
+    Scoped to the reader's own projects, like the page it counts: a badge
+    saying 3 that opens onto a list of 1 is worse than no badge at all."""
     shelved = db.shelved_project_ids()
-    return len([q for q in db.open_questions() if q["project_id"] not in shelved])
+    mine = scope.visible_ids(me())
+    return len([
+        q for q in db.open_questions()
+        if q["project_id"] not in shelved and q["project_id"] in mine
+    ])
 
 
 def install_appearance() -> dict[str, str]:
@@ -826,7 +834,12 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     )
     if active_sort not in sorts:
         active_sort = db.default_project_sort()
-    projects = db.list_projects_sorted(active_sort)
+    # Your board, not the install's. Wes, 2026-07-28: "I only want users to see
+    # projects they are included on." He is filtered like everybody else - the
+    # admin view is /everyone, deliberately a page he goes to rather than
+    # anything that reaches back into this feed. See app/scope.py.
+    mine = scope.visible_ids(me())
+    projects = [p for p in db.list_projects_sorted(active_sort) if p["id"] in mine]
     done = [p for p in projects if p["stage"] in config.DONE_STAGES]
     question_counts = db.open_question_counts()
 
@@ -834,7 +847,7 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     # active work on top, review under it, then the put-down shelves. A project
     # with an agent actually working on it is always on the top shelf whatever
     # its stored stage says - work in flight outranks everything else.
-    active_run = active_run_snapshot()
+    active_run = scope.only_runs(active_run_snapshot(), mine, scope.is_admin(me()))
     running_ids = set(active_run["project_ids"])
     shelves: dict[str, list] = {"active": [], "review": [], "paused": [], "backlog": []}
     for p in projects:
@@ -853,10 +866,13 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
         shelves[name] = subprojects.group_for_shelf(rows)
 
     shelved = db.shelved_project_ids() - running_ids
-    open_qs = [q for q in db.open_questions() if q["project_id"] not in shelved]
+    open_qs = [
+        q for q in db.open_questions()
+        if q["project_id"] not in shelved and q["project_id"] in mine
+    ]
     # 25 rather than 10 now the feed scrolls inside its own window instead of
-    # stretching the page.
-    recent_journal = db.list_journal(limit=25)
+    # stretching the page. Scoped in SQL rather than here - see list_journal.
+    recent_journal = db.list_journal(limit=25, only_projects=mine)
 
     settings = db.get_all_settings()
     # Named apart from the `usage` module, which this function also calls.
@@ -1569,7 +1585,15 @@ async def activity_page(
     days = days if days in HISTORY_WINDOWS else 14
     status = status if status in config.RUN_STATUSES else ""
 
+    mine = scope.visible_ids(me())
     project_row = db.get_project_by_slug(project) if project else None
+    # A slug you are not on is treated as no filter rather than as a filter
+    # that matches nothing: the menu below only offers your own projects, so
+    # the only way to get here is a stale link or a hand-typed URL, and an
+    # empty table with a project name in the box reads as "this project has
+    # never run" rather than "that is not yours".
+    if project_row is not None and project_row["id"] not in mine:
+        project_row = None
     project_id = project_row["id"] if project_row else None
 
     total = db.count_recent_runs(project_id=project_id, status=status or None)
@@ -1585,10 +1609,10 @@ async def activity_page(
         request,
         "activity.html",
         {
-            "runs": _decorate_runs(rows),
-            "history": usage.history(days, project_id=project_id),
+            "runs": _decorate_runs([r for r in rows if r["project_id"] in mine]),
+            "history": usage.history(days, project_id=project_id, only_projects=mine),
             "usage": usage_snapshot(),
-            "active_run": active_run_snapshot(),
+            "active_run": scope.only_runs(active_run_snapshot(), mine, scope.is_admin(me())),
             "page": page,
             "pages": pages,
             "total": total,
@@ -1596,7 +1620,7 @@ async def activity_page(
             "windows": HISTORY_WINDOWS,
             "status_filter": status,
             "project_filter": project_row["slug"] if project_row else "",
-            "projects": db.list_projects(),
+            "projects": [p for p in db.list_projects() if p["id"] in mine],
         },
     )
 
@@ -1728,13 +1752,41 @@ async def oneoff_unarchive(task_id: int) -> RedirectResponse:
     return RedirectResponse(url=f"/tasks/{task_id}", status_code=303)
 
 
+@app.get("/everyone", response_class=HTMLResponse)
+async def everyone_page(request: Request) -> HTMLResponse:
+    """The whole board, grouped by whose it is. The owner's door into other
+    people's projects, kept off his own feed - Wes, 2026-07-28: "I want a way
+    where I can go view other users' projects, but dont want them in my main
+    feed."
+
+    404 rather than 403 for everybody else. Not because it is a secret - the
+    portal has no passwords and app/scope.py is explicit that none of this is
+    an authorization boundary - but because "you may not" invites a second
+    attempt at a door that is not going to open, while a page that simply is
+    not there for you is the honest description of a link you were never shown.
+    """
+    viewer = resolve_person(request)
+    if not scope.is_admin(viewer):
+        raise HTTPException(status_code=404, detail="Not found")
+    return templates.TemplateResponse(
+        request,
+        "everyone.html",
+        {
+            "groups": scope.by_person(viewer),
+            "question_counts": db.open_question_counts(),
+            "running_ids": set(active_run_snapshot()["project_ids"]),
+        },
+    )
+
+
 @app.get("/questions", response_class=HTMLResponse)
 async def questions_page(request: Request) -> HTMLResponse:
     # Questions on projects Wes has paused, or that are still in the backlog,
     # are answerable but not pressing - they go in their own section below the
     # live ones rather than competing with them.
     shelved = db.shelved_project_ids()
-    open_qs = db.open_questions()
+    mine = scope.visible_ids(me())
+    open_qs = [q for q in db.open_questions() if q["project_id"] in mine]
     return templates.TemplateResponse(
         request,
         "questions.html",
@@ -2862,10 +2914,19 @@ async def api_tailnet(refresh: int = 0) -> JSONResponse:
 
 
 @app.get("/api/usage/history")
-async def api_usage_history(days: int = 14, project: str = "") -> JSONResponse:
+async def api_usage_history(request: Request, days: int = 14, project: str = "") -> JSONResponse:
+    # by_project names every project it counts, so this is scoped like the
+    # page it backs rather than left open behind it.
+    mine = scope.visible_ids(resolve_person(request))
     project_row = db.get_project_by_slug(project) if project else None
+    if project_row is not None and project_row["id"] not in mine:
+        project_row = None
     return JSONResponse(
-        usage.history(days, project_id=project_row["id"] if project_row else None)
+        usage.history(
+            days,
+            project_id=project_row["id"] if project_row else None,
+            only_projects=mine,
+        )
     )
 
 
@@ -2919,9 +2980,21 @@ async def hooks_stop(request: Request, run: int = 0, token: str = "") -> JSONRes
 
 
 @app.get("/api/active-run")
-async def api_active_run() -> JSONResponse:
-    """Polled by every page so the header can show live agent activity."""
-    return JSONResponse({**active_run_snapshot(), "usage": usage_snapshot()})
+async def api_active_run(request: Request) -> JSONResponse:
+    """Polled by every page so the header can show live agent activity.
+
+    Scoped like the strip it feeds. This one is easy to forget precisely
+    because it does not look like a project listing - but it carries titles and
+    slugs, and every page polls it every few seconds, so leaving it open would
+    have announced other people's work in the header of the very pages the
+    filtering above had just cleaned up.
+    """
+    viewer = resolve_person(request)
+    mine = scope.visible_ids(viewer)
+    return JSONResponse({
+        **scope.only_runs(active_run_snapshot(), mine, scope.is_admin(viewer)),
+        "usage": usage_snapshot(),
+    })
 
 
 @app.get("/api/run/{run_id}/log")

@@ -250,7 +250,20 @@ def by_project(rows: Iterable[Any], names: dict[int, dict]) -> list[dict]:
     return out
 
 
-def history(days: int = 14, project_id: Optional[int] = None, today: Optional[str] = None) -> dict:
+def history(
+    days: int = 14,
+    project_id: Optional[int] = None,
+    today: Optional[str] = None,
+    only_projects: Optional[set[int]] = None,
+) -> dict:
+    """Spend and run history. `only_projects` scopes the per-project breakdown.
+
+    That breakdown names every project it counts, which makes this an easy leak
+    to miss: /activity looks like a page about runs, and the by_project table
+    under the chart is the part that spells out titles. The day buckets and
+    totals are narrowed with it, so the numbers on the page describe the same
+    set of projects the table below them lists.
+    """
     """The full time-series payload shared by `/activity` and `/api/usage/history`."""
     days = max(1, min(days, 365))
     end = (
@@ -258,8 +271,14 @@ def history(days: int = 14, project_id: Optional[int] = None, today: Optional[st
     )
     since = (end - timedelta(days=days - 1)).isoformat()
     rows = db.runs_since(since, project_id=project_id)
+    if only_projects is not None:
+        rows = [r for r in rows if r["project_id"] in only_projects]
     buckets = bucket_by_day(rows, days, today=today)
-    names = {p["id"]: {"title": p["title"], "slug": p["slug"]} for p in db.list_projects()}
+    names = {
+        p["id"]: {"title": p["title"], "slug": p["slug"]}
+        for p in db.list_projects()
+        if only_projects is None or p["id"] in only_projects
+    }
     return {
         "days": days,
         "buckets": buckets,

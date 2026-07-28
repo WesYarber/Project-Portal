@@ -2915,3 +2915,34 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
   color: var(--ansi-yellow);
   font-size: 0.76rem;
 }
+
+/* --- /everyone: the owner's directory of other people's boards -------------
+   A directory, not a second dashboard. Deliberately plain rows rather than the
+   dashboard's cards, so it stays a place you go to look something up instead
+   of drifting into being the main feed. Colors come from theme variables only,
+   so the five themes each dress it themselves. */
+.everyone-group { margin-top: 1.5rem; margin-bottom: 1.6rem; }
+.everyone-who {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  margin: 0 0 0.3rem;
+  padding-bottom: 0.3rem;
+  border-bottom: 1px solid var(--terminal-border);
+}
+.everyone-background { margin: 0 0 0.5rem; }
+.everyone-list { list-style: none; margin: 0; padding: 0; }
+.everyone-list li {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.35rem 0;
+  /* Phone width: a long title plus four badges has to wrap inside the row
+     rather than push the page sideways. */
+  min-width: 0;
+}
+.everyone-list li + li { border-top: 1px dotted var(--terminal-border); }
+.everyone-list a { font-weight: 700; }

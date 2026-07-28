@@ -271,18 +271,17 @@ def test_a_paused_project_with_no_questions_is_still_muted(client):
     assert "project-cell resting" in grid
 
 
-def test_a_running_paused_project_is_not_muted(client, monkeypatch):
+def test_a_running_paused_project_is_not_muted(client):
     """An agent working on it is the one thing that outranks 'you put it
-    down' - the running border should not be dimmed out from under it."""
-    from app import main
+    down' - the running border should not be dimmed out from under it.
 
+    A real running run rather than a stub snapshot: the stub declared
+    `project_ids` with an empty `runs`, a pairing the real snapshot cannot
+    produce, and the dashboard now reads the runs to decide the strip.
+    """
     p = db.create_project("Resting", slug="resting", stage="active")
     db.pause_project(p["id"])
-    monkeypatch.setattr(
-        main,
-        "active_run_snapshot",
-        lambda: {"active": True, "project_ids": [p["id"]], "runs": [], "run_ids": ""},
-    )
+    db.create_run(p["id"], "build", "opus")
     grid = _cells(client)
     assert "project-cell resting" not in grid
     assert "running" in grid

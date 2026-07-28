@@ -1324,6 +1324,23 @@ def shelved_project_ids() -> set[int]:
     return {int(row["id"]) for row in rows}
 
 
+def memberless_project_ids() -> set[int]:
+    """Projects nobody is on.
+
+    Not reachable through the app - create_project always adds a member and
+    people.set_members refuses to empty a project - so this is normally empty
+    and exists so app/scope.py has something to fall back on rather than
+    dropping such a project out of every feed there is.
+    """
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT id FROM projects WHERE NOT EXISTS ("
+            "  SELECT 1 FROM project_people WHERE project_id = projects.id)"
+        ).fetchall()
+    return {int(row["id"]) for row in rows}
+
+
 def suggested_slug(project: sqlite3.Row) -> Optional[str]:
     """The folder name this project's current title implies, or None.
 
@@ -1612,15 +1629,40 @@ def delete_journal_note(entry_id: int) -> bool:
 _JOURNAL_ORDER = "ORDER BY journal.ts DESC, journal.id DESC"
 
 
-def list_journal(project_id: Optional[int] = None, limit: int = 100) -> list[sqlite3.Row]:
+def list_journal(
+    project_id: Optional[int] = None,
+    limit: int = 100,
+    only_projects: Optional[set[int]] = None,
+) -> list[sqlite3.Row]:
+    """The journal feed. `only_projects` scopes it to a set of project ids.
+
+    That narrowing happens in SQL, before the LIMIT, for the same reason
+    list_journal_asc filters before its own: dropping rows afterwards lets
+    other people's entries eat the slots, and a second person whose one project
+    is quiet would open the portal to a feed of 25 entries with two left in it.
+
+    Entries with no project at all are kept. Those are install-wide notices
+    (the service restarting, a model appearing) rather than anybody's private
+    work, and silently dropping them would take the portal's own status
+    messages off every feed but the raw one.
+    """
     conn = get_conn()
     with _LOCK:
         if project_id is None:
+            where = ""
+            params: list = []
+            if only_projects is not None:
+                marks = ",".join("?" * len(only_projects))
+                # An empty set still has to produce valid SQL, and IN () is not:
+                # `IN (NULL)` matches nothing, which is the right answer for
+                # somebody on no projects at all.
+                where = f"WHERE journal.project_id IS NULL OR journal.project_id IN ({marks or 'NULL'}) "
+                params = [int(i) for i in sorted(only_projects)]
             return conn.execute(
                 "SELECT journal.*, projects.title AS project_title, projects.slug AS project_slug "
                 "FROM journal LEFT JOIN projects ON projects.id = journal.project_id "
-                f"{_JOURNAL_ORDER} LIMIT ?",
-                (limit,),
+                f"{where}{_JOURNAL_ORDER} LIMIT ?",
+                (*params, limit),
             ).fetchall()
         return conn.execute(
             f"SELECT * FROM journal WHERE project_id = ? {_JOURNAL_ORDER} LIMIT ?",

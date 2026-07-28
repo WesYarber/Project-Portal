@@ -44,9 +44,18 @@ def _personal_skill_names() -> set[str]:
 
 
 def _render_skill() -> Path | None:
-    """This install's personal screenshot-capable machine skill, if it has one."""
+    """This install's personal screenshot-capable machine skill, if it has one.
+
+    Matched on the screenshot WRAPPER rather than on the word "screenshot":
+    this install has grown two more skills that mention taking one in passing
+    (driving a browser, checking a phone layout), and sorted() was handing back
+    the first of those instead of the machine skill - so the facts below were
+    being looked for in a file that was never meant to carry them. The wrapper
+    path is the artifact all of those facts hang off, which is why it is the
+    selector here and no longer an assertion in the test below.
+    """
     for path in sorted(PERSONAL_SKILLS_DIR.glob("*/SKILL.md")):
-        if "screenshot" in path.read_text(encoding="utf-8").lower():
+        if "deploy/screenshot.sh" in path.read_text(encoding="utf-8"):
             return path
     return None
 
@@ -103,7 +112,8 @@ def test_the_machine_skill_carries_the_facts_that_took_four_attempts_to_learn():
     assert "confined to `$HOME`" in text      # snap chromium, silent no-op to /tmp
     assert "--headless=new" in text           # never fires with a stream open
     assert "--virtual-time-budget" in text    # the flag that makes it work
-    assert "deploy/screenshot.sh" in text     # the wrapper, so nobody re-derives it
+    # deploy/screenshot.sh is what _render_skill matches on, so asserting it
+    # here would only be asserting the selector back at itself.
 
 
 # --- syncing into a workspace ----------------------------------------------

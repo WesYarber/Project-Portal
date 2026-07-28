@@ -360,7 +360,10 @@ def test_the_preview_survives_a_live_patch():
     snap an unsaved preview back and read as the dropdown not working."""
     src = APP_JS.read_text()
     reinit = src.split("function reinit()")[1].split("\n}")[0]
-    assert "appearanceApply" in reinit
+    # The whole initializer, not just a re-apply: a select the patch replaced
+    # comes back without its change listener, and a re-apply would leave that
+    # dropdown dead - it would move the class list on load and never again.
+    assert "initAppearancePreview()" in reinit
 
 
 def test_the_preview_says_it_is_not_saved(client):

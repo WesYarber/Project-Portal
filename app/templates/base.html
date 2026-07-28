@@ -123,6 +123,13 @@
         <a class="tab-btn {{ 'active' if path.startswith('/questions') }}" href="/questions">questions{% if nav_questions %}<span class="nav-count">{{ nav_questions }}</span>{% endif %}</a>
         <a class="tab-btn {{ 'active' if path.startswith('/activity') or path.startswith('/run/') }}" href="/activity">activity</a>
         <a class="tab-btn {{ 'active' if path.startswith('/memory') }}" href="/memory">memory</a>
+        {# The admin door into other people's boards. Only the owner has one,
+           and only once there is somebody else to look at - on a one-person
+           install it would be a tab onto a page listing the same projects the
+           dashboard already shows. #}
+        {% if me() and me().is_owner and everyone() | length > 1 %}
+        <a class="tab-btn {{ 'active' if path.startswith('/everyone') }}" href="/everyone">everyone</a>
+        {% endif %}
         <a class="tab-btn {{ 'active' if path.startswith('/settings') }}" href="/settings">settings</a>
       </nav>
 

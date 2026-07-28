@@ -861,34 +861,46 @@ document.addEventListener("DOMContentLoaded", initSubtabs);
 // The prefixes are read off the selects rather than listed here, so a new
 // appearance setting previews on the day it is added.
 
-var appearanceApply = null;
+// What the server rendered when this page loaded, so "changed back to what it
+// was" stops saying there is something unsaved. Module-scoped and seeded once:
+// a live patch re-renders the panel from the SAVED value, so re-reading this
+// after one would call an unsaved preview clean and drop the marker.
+var appearanceSaved = null;
+
+function appearanceSelects() {
+  return document.querySelectorAll("select[data-appearance-prefix]");
+}
 
 function initAppearancePreview() {
-  var selects = document.querySelectorAll("select[data-appearance-prefix]");
+  var selects = appearanceSelects();
   if (!selects.length) return;
-  var field = document.querySelector(".theme-field");
-  var chrome = {};
-  var stock = {};
-  try {
-    chrome = JSON.parse((field && field.dataset.themeChrome) || "{}");
-    stock = JSON.parse((field && field.dataset.themeStock) || "{}");
-  } catch (e) {
-    /* a malformed table costs the browser chrome its tint, not the preview */
+
+  if (appearanceSaved === null) {
+    appearanceSaved = {};
+    selects.forEach(function (sel) {
+      appearanceSaved[sel.name] = sel.value;
+    });
   }
 
-  // What the server rendered, so "changed back to what it was" stops saying
-  // there is something unsaved.
-  var saved = {};
-  selects.forEach(function (sel) {
-    saved[sel.name] = sel.value;
-  });
-
   function paint() {
+    // Re-queried on every paint rather than closed over: a patch can replace
+    // these nodes (a renamed theme changes the option list, which rebuilds the
+    // widget), and a closure over the old NodeList would then be painting the
+    // page from elements no longer in the document.
+    var field = document.querySelector(".theme-field");
+    var chrome = {};
+    var stock = {};
+    try {
+      chrome = JSON.parse((field && field.dataset.themeChrome) || "{}");
+      stock = JSON.parse((field && field.dataset.themeStock) || "{}");
+    } catch (e) {
+      /* a malformed table costs the browser chrome its tint, not the preview */
+    }
     var dirty = false;
-    selects.forEach(function (sel) {
+    appearanceSelects().forEach(function (sel) {
       var prefix = sel.dataset.appearancePrefix;
       if (!prefix) return;
-      if (sel.value !== saved[sel.name]) dirty = true;
+      if (sel.value !== appearanceSaved[sel.name]) dirty = true;
       // Remove whatever class this layer currently contributes, whatever it
       // is: matching on the prefix means the class list cannot accumulate two
       // themes if a value is renamed server-side.
@@ -926,6 +938,9 @@ function initAppearancePreview() {
     document.body.classList.toggle("appearance-previewing", dirty);
   }
 
+  // Re-runnable: reinit() calls this after every patch, so a select the morph
+  // did replace gets its listener back. The flag makes re-binding a no-op for
+  // the ones that survived.
   selects.forEach(function (sel) {
     if (sel._previewBound) return;
     sel._previewBound = true;
@@ -933,9 +948,8 @@ function initAppearancePreview() {
   });
 
   // The morph resets <body>'s class attribute to the server's render, which
-  // would snap an unsaved preview back mid-look. reinit() calls this, the same
-  // way it re-applies the settings sub-tab.
-  appearanceApply = paint;
+  // would snap an unsaved preview back mid-look. reinit() calls this whole
+  // function, the same way it re-applies the settings sub-tab.
   paint();
 }
 
@@ -1585,7 +1599,20 @@ function findMatch(fromNode, nextChild) {
     // An id is identity: find it among the remaining siblings even if things
     // moved, so a reordered card keeps its node (and its listeners).
     for (var n = fromNode; n; n = n.nextSibling) {
-      if (n.nodeType === 1 && n.id === id && n.tagName === nextChild.tagName) return n;
+      if (n.nodeType !== 1) continue;
+      if (n.id === id && n.tagName === nextChild.tagName) return n;
+      // ...except that enhanceSelect moved the real <select> INSIDE a wrapper
+      // it built, so for a themed dropdown the id the server is rendering is
+      // now a child's, not this node's. Without this, an id-bearing select
+      // never pairs with its own widget: it falls through to the plain-tag
+      // branch below, which the `if (id)` return makes unreachable, and the
+      // morph deletes the widget and the user's unsaved pick with it. Every
+      // appearance select has an id, which is why picking a theme did not
+      // stick - the next patch, 2.5s later, put the saved one back.
+      if (nextChild.tagName === "SELECT" && n.classList.contains("sel")) {
+        var inner = n.querySelector("select");
+        if (inner && inner.id === id) return n;
+      }
     }
     return null;
   }
@@ -1800,8 +1827,10 @@ function reinit() {
   // The morph resets <body>'s class attribute to the server's render, so an
   // unsaved theme preview has to be re-applied or it snaps back on the next
   // patch - which on a page that patches every couple of seconds reads as the
-  // dropdown not working.
-  if (appearanceApply) appearanceApply();
+  // dropdown not working. init rather than apply: a select the patch DID
+  // replace needs its change listener again, and re-binding the survivors is
+  // a no-op.
+  initAppearancePreview();
 }
 
 var refreshQueued = false;

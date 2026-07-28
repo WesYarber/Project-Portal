@@ -253,16 +253,19 @@ def test_the_put_down_shelves_render_even_empty(client):
     assert 'id="backlog"' in html
 
 
-def test_a_running_project_is_never_shelved(client, monkeypatch):
+def test_a_running_project_is_never_shelved(client):
     """Work in flight outranks "you put it down" - a paused project an agent is
-    actually running on belongs at the top, not folded away."""
-    from app import main
+    actually running on belongs at the top, not folded away.
 
+    Driven by a real running run rather than a hand-built snapshot. The old
+    version set `project_ids` and left `runs` empty, which the real
+    active_run_snapshot never produces (it derives one from the other), and
+    that shortcut became load-bearing the moment the strip started being
+    filtered by run.
+    """
     paused = _project("Put Down", "putdown")
     db.pause_project(paused["id"])
-    snap = dict(main.active_run_snapshot())
-    snap["project_ids"] = [paused["id"]]
-    monkeypatch.setattr(main, "active_run_snapshot", lambda: snap)
+    db.create_run(paused["id"], "build", "opus")
 
     html = client.get("/").text
     # The card is up in the Active section, not folded inside the shelf.
