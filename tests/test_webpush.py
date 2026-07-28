@@ -325,15 +325,22 @@ async def test_one_dead_device_does_not_mute_the_rest(temp_data_dir, monkeypatch
 # --- notify wiring ----------------------------------------------------------
 
 
+# `notify` sends through `push_to` rather than `push_all` since notifications
+# grew a routing layer on 2026-07-28: `push_all` means every device on the
+# install and is now only the settings page's test button, while a real
+# notification pushes to the devices of the people it is addressed to. See
+# app/routing.py and tests/test_routing.py.
+
+
 @pytest.mark.anyio
 async def test_notify_pushes_to_enrolled_devices(temp_data_dir, monkeypatch):
     pushed = []
 
-    async def fake_push_all(title, message, urgency="normal"):
+    async def fake_push_to(subs, title, message, urgency="normal"):
         pushed.append((title, message, urgency))
         return 1
 
-    monkeypatch.setattr(webpush, "push_all", fake_push_all)
+    monkeypatch.setattr(webpush, "push_to", fake_push_to)
     await notify.notify("Project Portal", "A run finished.")
     assert pushed == [("Project Portal", "A run finished.", "normal")]
 
@@ -342,15 +349,34 @@ async def test_notify_pushes_to_enrolled_devices(temp_data_dir, monkeypatch):
 async def test_notify_marks_questions_urgent(temp_data_dir, monkeypatch):
     pushed = []
 
-    async def fake_push_all(title, message, urgency="normal"):
+    async def fake_push_to(subs, title, message, urgency="normal"):
         pushed.append(urgency)
         return 1
 
-    monkeypatch.setattr(webpush, "push_all", fake_push_all)
+    monkeypatch.setattr(webpush, "push_to", fake_push_to)
     project = db.create_project("P", stage="active")
     question = db.create_question(project["id"], "Which one?")
     await notify.notify("Question", "Which one?", question_id=question["id"], question_slot=1)
     assert pushed == ["high"]
+
+
+@pytest.mark.anyio
+async def test_the_test_button_still_reaches_every_device(temp_data_dir, monkeypatch):
+    """`push_all` is deliberately unrouted. The settings page's test push has
+    to reach the phone somebody is holding whether or not they are on any
+    project, or "send test push" answers a different question than the one the
+    person pressing it is asking."""
+    reached = []
+
+    async def fake_push_to(subs, title, message, urgency="normal"):
+        reached.extend(s["endpoint"] for s in subs)
+        return len(subs)
+
+    db.add_push_subscription("https://push/a", "p", "a", person_id=None)
+    db.add_push_subscription("https://push/b", "p", "a", person_id=99)
+    monkeypatch.setattr(webpush, "push_to", fake_push_to)
+    await webpush.push_all("Project Portal", "Test push.")
+    assert reached == ["https://push/a", "https://push/b"]
 
 
 # --- the HTTP surface -------------------------------------------------------

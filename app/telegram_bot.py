@@ -23,7 +23,7 @@ from typing import Optional
 
 import httpx
 
-from app import ask, config, db, nl, notify, persona, quickreplies, worker
+from app import ask, config, db, nl, notify, people, persona, quickreplies, routing, worker
 
 log = logging.getLogger("portal.telegram")
 
@@ -84,12 +84,15 @@ async def _handle_update(update: dict) -> None:
     if not chat_id or not text:
         return
 
-    known_chat_id = db.get_setting("telegram_chat_id") or ""
-    if not known_chat_id:
+    if not (db.get_setting("telegram_chat_id") or ""):
         db.set_setting("telegram_chat_id", chat_id)
         log.info("Adopted Telegram chat_id %s", chat_id)
-    elif chat_id != known_chat_id:
-        # Only the configured chat may talk to the portal.
+    elif chat_id not in routing.telegram_allowlist():
+        # Only the install's chat, or a chat somebody has claimed on their own
+        # row in settings, may talk to the portal. It was the former alone
+        # until 2026-07-28, which meant a second person's phone was silently
+        # refused however carefully the rest of the portal had learned to tell
+        # the two of them apart.
         log.warning("Ignoring Telegram message from unknown chat %s", chat_id)
         return
 
@@ -176,9 +179,8 @@ async def _handle_callback(callback: dict) -> None:
 
     message = callback.get("message") or {}
     chat_id = str(message.get("chat", {}).get("id", ""))
-    known_chat_id = db.get_setting("telegram_chat_id") or ""
-    if not chat_id or chat_id != known_chat_id:
-        # Buttons only exist on messages we sent to the configured chat, so a
+    if not chat_id or chat_id not in routing.telegram_allowlist():
+        # Buttons only exist on messages we sent to a chat we know, so a
         # mismatch is either a forward or a stranger - ignore, but still ack.
         log.warning("Ignoring Telegram callback from unknown chat %s", chat_id or "?")
         await ack()
@@ -211,7 +213,7 @@ async def _handle_callback(callback: dict) -> None:
         await ack("That button no longer maps to an answer - type a reply instead.")
         return
     answer_text = options[idx]
-    db.answer_question_and_resume(question_id, answer_text)
+    db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await ack(f"Recorded: {answer_text}")
     await _mark_answered(message, f"answered: {answer_text}")
 
@@ -282,7 +284,10 @@ async def _dispatch_intent(intent: dict, original_text: str, chat_id: str) -> No
         return
 
     if name == "note":
-        db.add_journal(project["id"], "user", "note", intent.get("text") or original_text)
+        db.add_journal(
+            project["id"], "user", "note", intent.get("text") or original_text,
+            person_id=_person_id(chat_id),
+        )
         # Same rule as the web note box: a note on a put-down project wakes it
         # up and puts an agent on it.
         await worker.reactivate_on_note(project)
@@ -382,6 +387,21 @@ def _question_id_for_message(message_id: Optional[int]) -> Optional[int]:
     return int(row["id"]) if row else None
 
 
+def _person_id(chat_id: str) -> Optional[int]:
+    """Who is typing, if the portal can say - the person who has claimed this
+    Telegram chat on their own row in settings, else None.
+
+    None is a real answer and is left alone. The install's own
+    `telegram_chat_id` is not treated as the owner's even though on a
+    single-person portal it plainly is: whoever pasted it in has a person row
+    they can paste it into as well, and the alternative is a rule that quietly
+    stops being true the day a second person arrives. See
+    `people.by_telegram_chat_id`.
+    """
+    person = people.by_telegram_chat_id(chat_id)
+    return int(person["id"]) if person is not None else None
+
+
 async def _answer_question(ref: int, answer_text: str, chat_id: str, by_id: bool = False) -> None:
     """Answer the question Wes referred to.
 
@@ -401,7 +421,7 @@ async def _answer_question(ref: int, answer_text: str, chat_id: str, by_id: bool
         db.dismiss_question_and_resume(question_id)
         await notify.send_telegram_text(chat_id, persona.say("question_dismissed", qid=shown))
         return
-    db.answer_question_and_resume(question_id, answer_text)
+    db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await notify.send_telegram_text(chat_id, persona.say("answer_recorded", qid=shown))
 
 
@@ -484,7 +504,7 @@ async def _create_idea(idea_text: str, chat_id: str) -> None:
         return
     title = idea_text.split("\n", 1)[0][:80]
     project = db.create_project(title=title, description=idea_text, kind="unknown", stage="backlog")
-    db.add_journal(project["id"], "user", "note", idea_text)
+    db.add_journal(project["id"], "user", "note", idea_text, person_id=_person_id(chat_id))
     url = f"http://{config.HOST_LABEL}:{config.PORT}/project/{project['slug']}"
     await notify.send_telegram_text(
         chat_id, persona.say("idea_created", title=project["title"], url=url)

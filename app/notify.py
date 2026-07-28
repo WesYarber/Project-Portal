@@ -10,7 +10,7 @@ from typing import Optional
 
 import httpx
 
-from app import db, persona, quickreplies, webpush
+from app import db, persona, quickreplies, routing, webpush
 
 log = logging.getLogger("portal.notify")
 
@@ -23,9 +23,18 @@ async def notify(
     question_id: Optional[int] = None,
     project_title: Optional[str] = None,
     question_slot: Optional[int] = None,
+    project_id: Optional[int] = None,
 ) -> None:
+    """Send one notification to everybody it is addressed to.
+
+    `project_id` is what makes it addressed to anybody in particular: with it,
+    this reaches that project's members; without it, everybody. Which concrete
+    topics, chats and devices that means - and why a person with no channels of
+    their own still hears about it - is app/routing.py.
+    """
     settings = db.get_all_settings()
     telegram_on = db.telegram_enabled()
+    people_rows = routing.recipients(project_id)
     text = message
     if question_id is not None:
         # "Q7: [Project]: <question>" - the number Wes types back, then which
@@ -37,19 +46,41 @@ async def notify(
         )
         text = f"{prefix}: {message}" if prefix else message
 
-    chat_id = settings.get("telegram_chat_id", "")
-    if telegram_on and chat_id:
+    if telegram_on:
         token = settings.get("telegram_token", "")
-        await _send_telegram(token, chat_id, persona.decorate_notification(title, text), question_id)
+        decorated = persona.decorate_notification(title, text)
+        chats = routing.telegram_chats(people_rows, settings.get("telegram_chat_id", ""))
+        for index, chat_id in enumerate(chats):
+            # Only the first chat's message id is remembered, because there is
+            # one column for it and a question has one. It is what gets its
+            # buttons stripped and "[answered]" appended once somebody replies;
+            # a second person's copy keeps its buttons until they tap one, which
+            # still answers correctly - it is a stale-looking message, not a
+            # wrong one. Recording the *first* rather than the last is only
+            # about being deterministic. See todo #412.
+            await _send_telegram(
+                token, chat_id, decorated, question_id, record_msg_id=(index == 0)
+            )
 
-    await _send_ntfy(settings.get("ntfy_url", ""), settings.get("ntfy_topic", ""), title, text)
+    ntfy_url = settings.get("ntfy_url", "")
+    for topic in routing.ntfy_topics(people_rows, settings.get("ntfy_topic", "")):
+        await _send_ntfy(ntfy_url, topic, title, text)
 
     # Enrolled phones. A question deserves the lock screen now; everything
     # else can wait for the OS's normal batching.
-    await webpush.push_all(title, text, urgency="high" if question_id is not None else "normal")
+    subs = routing.push_subscriptions(people_rows, db.list_push_subscriptions())
+    await webpush.push_to(
+        subs, title, text, urgency="high" if question_id is not None else "normal"
+    )
 
 
-async def _send_telegram(token: str, chat_id: str, text: str, question_id: Optional[int]) -> None:
+async def _send_telegram(
+    token: str,
+    chat_id: str,
+    text: str,
+    question_id: Optional[int],
+    record_msg_id: bool = True,
+) -> None:
     try:
         payload: dict = {"chat_id": chat_id, "text": text}
         if question_id is not None:
@@ -65,7 +96,7 @@ async def _send_telegram(token: str, chat_id: str, text: str, question_id: Optio
             )
             resp.raise_for_status()
             data = resp.json()
-            if question_id is not None and data.get("ok"):
+            if question_id is not None and record_msg_id and data.get("ok"):
                 msg_id = data.get("result", {}).get("message_id")
                 if msg_id is not None:
                     db.set_question_telegram_msg_id(question_id, int(msg_id))

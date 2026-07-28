@@ -168,6 +168,27 @@ def by_tailnet_login(login: str) -> Optional[sqlite3.Row]:
     )
 
 
+def by_telegram_chat_id(chat_id: str) -> Optional[sqlite3.Row]:
+    """The person this Telegram chat belongs to, if anybody has claimed it.
+
+    Archived people are included on purpose, and this is the opposite of the
+    rule in `routing.telegram_allowlist`. The two answer different questions:
+    the allowlist decides whether a *new* message is accepted, so retiring
+    somebody has to close the door; this decides who *wrote* a message that was
+    accepted, and a retired person is still the author of what they said.
+
+    Returns None rather than guessing. The install's own `telegram_chat_id` is
+    deliberately not consulted here even though on a one-person portal it is
+    obviously the owner's - `people.known_name` exists for exactly this reason,
+    and last week's lesson holds: an invented attribution reads identically to a
+    real one and sends the next agent to talk to the wrong person.
+    """
+    chat_id = (chat_id or "").strip()
+    if not chat_id:
+        return None
+    return _row("SELECT * FROM people WHERE telegram_chat_id = ?", (chat_id,))
+
+
 def everyone(include_archived: bool = False) -> list[sqlite3.Row]:
     """Everybody, owner first, then by name.
 
@@ -348,7 +369,10 @@ def add(
     return int(cur.lastrowid)
 
 
-_EDITABLE = ("name", "gender", "background", "tailnet_login")
+# `ntfy_topic` and `telegram_chat_id` are editable for everybody including the
+# owner - unlike name and gender, which belong to portal.toml. They are per
+# *person*, not per install, and the owner is a person like the others here.
+_EDITABLE = ("name", "gender", "background", "tailnet_login", "ntfy_topic", "telegram_chat_id")
 
 
 def update(person_id: int, **fields) -> None:

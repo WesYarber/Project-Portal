@@ -405,9 +405,26 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # dropped: _backfill_gender copies its meaning across once, and an
     # abandoned column costs nothing while an ALTER ... DROP on a live table
     # is the kind of migration that has no undo.
+    #
+    # `ntfy_topic` and `telegram_chat_id` are this person's own notification
+    # channels, '' while they have none. Empty is not "send nowhere": it falls
+    # back to the install's channel, so a person nobody has set up still hears
+    # about their own projects (see app/routing.py). The Telegram id is doubly
+    # load-bearing - it is also what admits somebody to the bot at all, which
+    # until now was a single-chat allowlist that no second person could pass.
     "people": [
         ("appearance", "TEXT NOT NULL DEFAULT ''"),
         ("gender", "TEXT NOT NULL DEFAULT ''"),
+        ("ntfy_topic", "TEXT NOT NULL DEFAULT ''"),
+        ("telegram_chat_id", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    # Whose phone this is, or NULL for a device enrolled before anyone asked.
+    # NULL means "unattributed", and an unattributed device deliberately keeps
+    # receiving everything: every subscription on this install predates the
+    # column, they are all Wes's, and a routing change whose failure mode is a
+    # phone going quiet is worse than one that occasionally over-delivers.
+    "push_subscriptions": [
+        ("person_id", "INTEGER"),
     ],
     # When `status` was last changed, which is what the week-long dismissal
     # timeout runs from. `ts` cannot serve: it is when the suggestion was
@@ -2405,19 +2422,28 @@ def hook_denials_for_run(run_id: int) -> list[sqlite3.Row]:
 # Web-push subscriptions (see app/webpush.py)
 # --------------------------------------------------------------------------
 
-def add_push_subscription(endpoint: str, p256dh: str, auth: str, ua: str = "") -> None:
+def add_push_subscription(
+    endpoint: str, p256dh: str, auth: str, ua: str = "", person_id: Optional[int] = None
+) -> None:
     """Enroll a device, or refresh one that re-subscribed: the endpoint is the
     identity, and fresh keys replace stale ones in place (a browser is allowed
-    to rotate a subscription's keys whenever it likes)."""
+    to rotate a subscription's keys whenever it likes).
+
+    A re-enrollment updates `person_id` only when the caller knows one, so a
+    browser that has lost its identity cookie refreshes its keys without
+    orphaning a device that was correctly attributed yesterday. Losing an
+    attribution is how a phone starts receiving somebody else's projects.
+    """
     conn = get_conn()
     with _LOCK:
         conn.execute(
-            """INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua, created_at)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO push_subscriptions (endpoint, p256dh, auth, ua, created_at, person_id)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(endpoint) DO UPDATE SET
                    p256dh = excluded.p256dh, auth = excluded.auth,
-                   ua = excluded.ua, failures = 0""",
-            (endpoint, p256dh, auth, ua, now()),
+                   ua = excluded.ua, failures = 0,
+                   person_id = COALESCE(excluded.person_id, push_subscriptions.person_id)""",
+            (endpoint, p256dh, auth, ua, now(), int(person_id) if person_id else None),
         )
         conn.commit()
 

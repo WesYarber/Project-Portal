@@ -555,6 +555,7 @@ async def _announce_crash_loop(project: db.sqlite3.Row) -> None:
         f"backing off to every {crashloop.delay_min(streak)} minutes instead of "
         f"retrying every tick.",
         project_title=project["title"],
+        project_id=project["id"],
     )
 
 
@@ -1170,6 +1171,7 @@ def _apply_report(
                     "Ready to build",
                     f"{project['title']} has a plan and is waiting for your OK to start building.",
                     project_title=project["title"],
+                    project_id=project_id,
                 )
             )
 
@@ -1233,6 +1235,7 @@ def _apply_report(
                 question_id=row["id"],
                 project_title=project["title"],
                 question_slot=row["slot"],
+                project_id=project["id"],
             )
         )
 
@@ -1252,6 +1255,7 @@ def _apply_report(
                         "Sub-project created",
                         f"{child['title']} was split out of {project['title']}.",
                         project_title=project["title"],
+                        project_id=project["id"],
                     )
                 )
         except Exception:

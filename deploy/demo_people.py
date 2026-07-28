@@ -41,12 +41,20 @@ db.set_setting("worker_enabled", "0")
 
 erin = people.add(
     name="Erin",
-    pronouns="she",
+    # `pronouns` until 2026-07-28, when the column was replaced by `gender`
+    # (Wes: "get rid of the pronoun stuff and just ask someone if they are male
+    # or female"). This script kept passing the old keyword and had been dead
+    # with a TypeError ever since - nothing imports it, so nothing noticed.
+    gender="female",
     background=(
         "Newer to self-hosting and to agent tooling - explain the concepts "
         "rather than naming them, and teach the thing behind the answer."
     ),
 )
+# Her own notification channels, so the routing fields have something in them
+# to photograph. Empty would be the truthful default for somebody just added -
+# and it is what the placeholder text in the panel is there to explain.
+people.update(erin, ntfy_topic="erin-portal", telegram_chat_id="88214417")
 hers = db.create_project(
     title="Recipe box",
     description="Somewhere to keep the recipes that are currently on paper.",

@@ -245,9 +245,18 @@ async def send_one(sub: dict, body: bytes, urgency: str = "normal") -> bool:
 
 
 async def push_all(title: str, message: str, urgency: str = "normal") -> int:
-    """Send to every enrolled device. Never raises; returns accepted sends."""
+    """Send to every enrolled device. Never raises; returns accepted sends.
+
+    Deliberately unrouted: this is the settings page's test button and anything
+    else that means *every* device, not "the devices of the people this
+    concerns". Routed sends go through `push_to`; see app/routing.py.
+    """
+    return await push_to(db.list_push_subscriptions(), title, message, urgency)
+
+
+async def push_to(subs, title: str, message: str, urgency: str = "normal") -> int:
+    """Send to the given subscriptions. Never raises; returns accepted sends."""
     try:
-        subs = db.list_push_subscriptions()
         if not subs:
             return 0
         body = payload(title, message, portal_url())

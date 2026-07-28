@@ -223,7 +223,7 @@ async def answer(project_id: int, question: str, reply_chat_id: Optional[str] = 
         if reply_chat_id:
             await notify.send_telegram_text(reply_chat_id, f"{project['title']}: {body}")
         else:
-            await notify.notify(f"Re: {project['title']}", body[:1500])
+            await notify.notify(f"Re: {project['title']}", body[:1500], project_id=project_id)
     except Exception:  # noqa: BLE001 - notification is best effort
         log.exception("ask notification failed")
     return body

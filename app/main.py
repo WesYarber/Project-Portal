@@ -2369,6 +2369,8 @@ async def edit_person(
     gender: str = Form(""),
     background: str = Form(""),
     tailnet_login: str = Form(""),
+    ntfy_topic: str = Form(""),
+    telegram_chat_id: str = Form(""),
 ) -> RedirectResponse:
     # `people.update` ignores name and gender for the owner - those belong to
     # portal.toml, because SITE.owner already names that person in the agent
@@ -2380,6 +2382,8 @@ async def edit_person(
         gender=gender,
         background=background,
         tailnet_login=tailnet_login,
+        ntfy_topic=ntfy_topic,
+        telegram_chat_id=telegram_chat_id,
     )
     return RedirectResponse(url="/settings?saved=people#people", status_code=303)
 
@@ -2447,8 +2451,16 @@ async def push_subscribe(request: Request) -> JSONResponse:
         or not auth
     ):
         raise HTTPException(status_code=400, detail="not a push subscription")
+    # Whose phone this is. It is the same identity every other write on this
+    # portal resolves (cookie first, `tailscale whois` second), and it is what
+    # keeps a question about her project off his lock screen - see
+    # app/routing.py.
     db.add_push_subscription(
-        endpoint, p256dh, auth, ua=(request.headers.get("user-agent") or "")[:200]
+        endpoint,
+        p256dh,
+        auth,
+        ua=(request.headers.get("user-agent") or "")[:200],
+        person_id=_person_id(request),
     )
     return JSONResponse({"ok": True})
 

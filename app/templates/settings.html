@@ -115,6 +115,28 @@
         <input type="text" name="tailnet_login" value="{{ person.tailnet_login }}"
                placeholder="name@example.com">
       </label>
+      {# Where this person hears about their own projects. Empty is not
+         "send nowhere" - it falls back to the install's channels below, so
+         nobody goes quiet by default. See app/routing.py. #}
+      <label class="field">
+        <span>their ntfy topic{% call info() %}The ntfy topic this person's own
+          notifications go to. Leave it empty and they share the install's topic
+          in the notifications panel - which is what you want until there are two
+          of you. Fill it in for someone and questions about the projects they are
+          on stop landing on everybody else's phone.{% endcall %}</span>
+        <input type="text" name="ntfy_topic" value="{{ person.ntfy_topic }}"
+               placeholder="shares the install's topic">
+      </label>
+      <label class="field">
+        <span>their telegram chat id{% call info() %}Two jobs. It routes this
+          person's notifications to their own Telegram chat, and it is what lets
+          them talk to the bot at all - the bot only accepts messages from the
+          install's chat plus the chats claimed here. It is also how a note or an
+          answer they send over Telegram gets recorded as theirs rather than as
+          nobody's.{% endcall %}</span>
+        <input type="text" name="telegram_chat_id" value="{{ person.telegram_chat_id }}"
+               placeholder="shares the install's chat">
+      </label>
       <div class="person-actions">
         <button type="submit">save</button>
       </div>

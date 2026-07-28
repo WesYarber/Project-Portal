@@ -121,7 +121,7 @@ def test_question_prefix_without_a_slot_is_project_only():
 async def test_notification_text_is_q_number_project_question(project, monkeypatch):
     sent: list[str] = []
 
-    async def fake_telegram(token, chat_id, text, question_id):
+    async def fake_telegram(token, chat_id, text, question_id, record_msg_id=True):
         sent.append(text)
 
     monkeypatch.setattr(notify, "_send_telegram", fake_telegram)
@@ -159,7 +159,7 @@ async def test_telegram_is_not_sent_to_while_it_is_switched_off(project, monkeyp
     # integration alive: the box is the intent, the token is only the means.
     sent: list[str] = []
 
-    async def fake_telegram(token, chat_id, text, question_id):
+    async def fake_telegram(token, chat_id, text, question_id, record_msg_id=True):
         sent.append(text)
 
     monkeypatch.setattr(notify, "_send_telegram", fake_telegram)
