@@ -222,7 +222,7 @@ A manual run on a gated project still runs — it just runs `plan` rather than
 code around the gate. The migration back-fills approval only where the journal
 shows Wes himself moved a project into `building`, plus the portal's own
 project; grandfathering everything in would have preserved exactly the
-behaviour the gate exists to stop.
+behavior the gate exists to stop.
 
 Once a day (after 4am local, tracked via `settings.last_reflect_date`), the
 worker also runs a "reflect" pass with `cwd = data/memory`, which rewrites
@@ -309,7 +309,7 @@ all start together.
 `spawn_run` writes the `runs` row *before* returning, so by the time the loop
 considers the next slot both the daily budget count and the set of busy
 projects already include the run it just started. Set `max_parallel_runs` to 1
-for the old strictly-serial behaviour.
+for the old strictly-serial behavior.
 
 ### Why nothing is running
 
@@ -368,8 +368,16 @@ run something. One ask at a time per project. The model is Settings > agent >
 
 ### Telegram bot
 
-When a bot token is set, `app/telegram_bot.py` long-polls `getUpdates`. It
-handles messages in two layers:
+**Off by default.** Tick *Telegram integration* in Settings → notifications to
+turn it on; the bot polls only while both that switch and a token are set.
+
+The switch also controls **question numbers**. A question wears a short number
+("Q7") so you can address it in a chat — `Q7: yes` — and with no bot to type it
+at, the number addresses nothing, so it is not shown. Turning the integration
+on brings the numbers back, including on questions that are already open.
+
+When it is on, `app/telegram_bot.py` long-polls `getUpdates`. It handles
+messages in two layers:
 
 1. **Explicit forms**, matched first and never sent to a model: a reply to a
    question message, `#<id> <answer>`, `/answer <id> <text>`, `/idea <text>`,
@@ -416,15 +424,39 @@ incoming message and ignores every other chat.
 
 ## Look and feel
 
-The UI is a retro terminal: Fira
-Code, a dark CRT-scanlined window frame with traffic-light dots, `[ bracketed ]`
-nav tabs, and ANSI-coloured status badges. Projects are cells in a grid, like
+### Themes
+
+Two ship: **terminal** (the default, described below) and **paper** — warm,
+light, printed, with a serif for anything you read. Settings → appearance.
+
+A theme is a class on `<body>` and a block in `app/static/themes.css`, loaded
+after `style.css`, so terminal is the *absence* of any rule in that file.
+Adding a third is an entry in `config.APPEARANCE_CHOICES["ui_theme"]`, a
+color in `config.THEME_CHROME` (the pre-CSS `<meta>` that stops a flash of
+the wrong shade on load), and a `body.theme-<name>` block.
+
+Two rules that file lives by, both enforced by `tests/test_themes.py`:
+**nothing functional** — no `display`, `position` or `visibility`, because a
+theme that can hide a control is a look you cannot get out of — and every
+selector names a theme, so a stray rule cannot change the shipped look.
+
+Themes and the CRT layers below are **per person**, stored as a subset: choose
+nothing and you follow the install as it changes; pin one layer and you still
+follow the rest. Settings → appearance also offers **see it as someone else
+does**, which renders every page in another person's look. That is a preview
+and reaches nothing but the CSS — notes you write are still attributed to you,
+and anything you save is still saved against you.
+
+### The terminal theme
+
+Fira Code, a dark CRT-scanlined window frame with traffic-light dots,
+`[ bracketed ]` nav tabs, and ANSI-colored status badges. Projects are cells in a grid, like
 the tool cells on the site; a cell with open questions gets a pulsing yellow
 count pip and a yellow border.
 
 The wordmark is ASCII art where the two `O` glyphs are the Portal gun's blue and
 orange portals (`app/templates/_banner.html`). Each line is split into three
-`<pre>` segments so the `O` can be coloured and animated on its own; each
+`<pre>` segments so the `O` can be colored and animated on its own; each
 segment's widest row is exactly its glyph width, which is what keeps the
 segments butted together correctly.
 
@@ -476,9 +508,15 @@ sudo systemctl enable --now project-portal
 
 ## Telegram setup
 
+The integration ships **off**; the portal notifies over web push and ntfy
+without it. To turn it on:
+
 1. Message [@BotFather](https://t.me/BotFather) on Telegram, run `/newbot`,
    and copy the bot token it gives you.
-2. Paste that token into Settings (`/settings`) and save.
+2. Paste that token into Settings (`/settings`), tick **Telegram
+   integration**, and save. Ticking the box is what starts the bot and what
+   puts the `Q7`-style question numbers back on questions and notifications —
+   those numbers exist to be typed back at the bot, so they travel with it.
 3. Send any message to your new bot from your Telegram account — the bot
    will adopt that chat as its `telegram_chat_id` automatically (or you can
    paste a known chat id into Settings yourself).
