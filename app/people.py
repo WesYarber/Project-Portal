@@ -199,15 +199,23 @@ def owner() -> sqlite3.Row:
     return row
 
 
-def pronouns_of(person: Optional[sqlite3.Row]) -> tuple[str, str, str, str]:
-    """(they, them, their, theirs) for a person, defaulting to they/them."""
-    raw = ""
+def gender_of(person: Optional[sqlite3.Row]) -> str:
+    """The stored answer for a person: `male`, `female`, or '' for not asked."""
     if person is not None:
         try:
-            raw = person["pronouns"] or ""
+            return site.gender_key(person["gender"] or "")
         except (IndexError, KeyError):
-            raw = ""
-    return site.pronoun_forms(raw)
+            pass
+    return site.DEFAULT_GENDER
+
+
+def pronouns_of(person: Optional[sqlite3.Row]) -> tuple[str, str, str, str]:
+    """(they, them, their, theirs) for a person, defaulting to they/them.
+
+    Derived from the one question the portal asks - male or female - rather
+    than from a field anybody types pronouns into. See `site.GENDERS`.
+    """
+    return site.gender_forms(gender_of(person))
 
 
 def name_of(person: Optional[sqlite3.Row]) -> str:
@@ -239,7 +247,7 @@ DEFAULT_OWNER_BACKGROUND = (
 def ensure_owner() -> int:
     """Create the owner row from the site config, and keep it in step with it.
 
-    The name and the pronouns are the site config's, not this table's, and that
+    The name and the gender are the site config's, not this table's, and that
     is a deliberate exception to everything else here.
 
     `config.SITE.owner` already names this person in dozens of places an agent
@@ -261,21 +269,21 @@ def ensure_owner() -> int:
     conn = db.get_conn()
     row = conn.execute("SELECT * FROM people WHERE is_owner = 1 LIMIT 1").fetchone()
     name = (config.SITE.owner or "").strip() or "Owner"
-    pronouns = site.pronoun_key(config.SITE.pronouns)
+    gender = site.gender_key(config.SITE.gender)
     if row is None:
         person_id = add(
             name=name,
-            pronouns=pronouns,
+            gender=gender,
             background=DEFAULT_OWNER_BACKGROUND,
             is_owner=True,
         )
         log.info("Created the owner person %r (id=%s)", name, person_id)
         return person_id
-    if row["name"] != name or row["pronouns"] != pronouns:
+    if row["name"] != name or row["gender"] != gender:
         with db._LOCK:
             conn.execute(
-                "UPDATE people SET name = ?, pronouns = ?, slug = ? WHERE id = ?",
-                (name, pronouns, unique_slug(name, exclude_id=int(row["id"])), int(row["id"])),
+                "UPDATE people SET name = ?, gender = ?, slug = ? WHERE id = ?",
+                (name, gender, unique_slug(name, exclude_id=int(row["id"])), int(row["id"])),
             )
             conn.commit()
         log.info("The owner is now %r (was %r), following the site config", name, row["name"])
@@ -284,7 +292,7 @@ def ensure_owner() -> int:
 
 def add(
     name: str,
-    pronouns: str = site.DEFAULT_PRONOUNS,
+    gender: str = site.DEFAULT_GENDER,
     background: str = "",
     tailnet_login: str = "",
     is_owner: bool = False,
@@ -293,12 +301,12 @@ def add(
     clean_name = (name or "").strip() or "Someone"
     with db._LOCK:
         cur = conn.execute(
-            "INSERT INTO people (slug, name, pronouns, background, tailnet_login, "
+            "INSERT INTO people (slug, name, gender, background, tailnet_login, "
             "is_owner, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
                 unique_slug(clean_name),
                 clean_name,
-                site.pronoun_key(pronouns),
+                site.gender_key(gender),
                 (background or "").strip(),
                 (tailnet_login or "").strip().lower(),
                 1 if is_owner else 0,
@@ -309,7 +317,7 @@ def add(
     return int(cur.lastrowid)
 
 
-_EDITABLE = ("name", "pronouns", "background", "tailnet_login")
+_EDITABLE = ("name", "gender", "background", "tailnet_login")
 
 
 def update(person_id: int, **fields) -> None:
@@ -318,7 +326,7 @@ def update(person_id: int, **fields) -> None:
     together with the name or a rename would log that person out of their own
     identity.
 
-    The owner's name and pronouns are silently ignored here rather than
+    The owner's name and gender are silently ignored here rather than
     written: they belong to `portal.toml` (see `ensure_owner`), and the next
     `owner()` call would put them straight back. Accepting the write and then
     reverting it is the worst of the three options - the settings page renders
@@ -333,11 +341,11 @@ def update(person_id: int, **fields) -> None:
     for key in _EDITABLE:
         if key not in fields:
             continue
-        if is_owner and key in ("name", "pronouns"):
+        if is_owner and key in ("name", "gender"):
             continue
         value = fields[key]
-        if key == "pronouns":
-            value = site.pronoun_key(value)
+        if key == "gender":
+            value = site.gender_key(value)
         elif key == "tailnet_login":
             value = (value or "").strip().lower()
         elif key == "name":

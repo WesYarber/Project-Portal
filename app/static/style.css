@@ -453,7 +453,7 @@ a:hover { text-decoration: underline; }
 }
 /* Two grades of "this wants you", not one. A project that is actively blocked
    on an answer gets the full yellow border; a project you have deliberately
-   paused gets a hint of the same colour and nothing else. Wes has a lot of
+   paused gets a hint of the same color and nothing else. Wes has a lot of
    paused projects, and when every one of them shouted, none of them did. */
 .project-cell.needs-attention { border-color: var(--ansi-yellow); }
 .project-cell.needs-attention:hover {
@@ -498,6 +498,32 @@ a:hover { text-decoration: underline; }
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
+/* A clamped description you can open. The <summary> holds the description
+   itself, so opening the <details> lifts the clamp off the same text rather
+   than revealing a second copy of it in the DOM.
+   `display: block` on the summary is what removes the disclosure triangle -
+   the marker belongs to `display: list-item`, and the two ::marker rules
+   below are the belt to that braces for Safari. */
+.cell-expand > summary {
+  display: block;
+  cursor: pointer;
+}
+.cell-expand > summary::-webkit-details-marker { display: none; }
+.cell-expand > summary::marker { content: ""; }
+/* `line-clamp: none`, not `initial`: the shut state sets the clamp on this
+   very element, and the whole rule is dead if the clamp survives the open. */
+.cell-expand[open] > summary > .cell-desc {
+  -webkit-line-clamp: none;
+  line-clamp: none;
+  display: block; /* -webkit-box eats trailing blank lines; block does not */
+}
+/* The affordance, since the triangle is gone. It says what the click does,
+   and it flips - "more" on a box that is already open is a lie. */
+.cell-more { font-size: 0.75rem; color: var(--ansi-cyan); }
+.cell-more::after { content: "more"; }
+.cell-expand[open] .cell-more::after { content: "less"; }
+.cell-expand > summary:hover .cell-more { text-decoration: underline; }
+
 .cell-foot {
   display: flex;
   justify-content: space-between;
@@ -562,7 +588,7 @@ a:hover { text-decoration: underline; }
 
 /* The state-model vocabulary: backlog | active | paused | review | done |
    abandoned. The old status names stay as aliases so anything still holding a
-   pre-deploy page renders coloured rather than plain. */
+   pre-deploy page renders colored rather than plain. */
 .status-backlog, .status-inbox { color: var(--terminal-dim); border-color: var(--terminal-dim); }
 .status-active, .status-building, .status-planning { color: var(--ansi-green); border-color: var(--ansi-green); }
 .status-paused, .status-waiting_user, .status-needs_input { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
@@ -754,7 +780,7 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
 .journal-entry.from-agent { border-left-color: var(--ansi-blue); }
 .journal-entry.from-user { border-left-color: var(--ansi-green); }
 
-/* A note no agent has read yet. Dashed rather than a different colour: it is
+/* A note no agent has read yet. Dashed rather than a different color: it is
    still one of Wes's notes (green), the dash says only that it has not gone
    anywhere. */
 .journal-entry.note-unsent { border-left-style: dashed; }
@@ -1276,9 +1302,39 @@ summary:hover { color: var(--ansi-blue); }
   line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+  /* The machinery color, and the no-JS fallback: without app.js the whole
+     transcript is one text node and this is the right reading of it. */
   color: var(--terminal-dim);
   background: rgba(0, 0, 0, 0.35);
 }
+
+/* One element per transcript line, classed by what kind of line it is (see
+   consoleKind in app.js). Wes, 2026-07-28: "make all the tool calls and '>'
+   lines show as indented gray/dimmed text with the other lines where the agent
+   is just talking or thinking show as non-indented text that is not dimmed."
+
+   So the run's machinery is a quiet indented column and the agent's own words
+   are the foreground. `display: block` rather than inline, because the indent
+   has to apply to a WRAPPED tool call's continuation lines too - an inline
+   element's padding lands only on its first line, which would leave a long
+   Bash command starting indented and finishing at the margin. */
+.cl { display: block; }
+.cl:empty::before { content: "\00a0"; } /* a blank line is still a line */
+
+/* What the agent said, and what it was thinking - the thing being read. */
+.cl-say { color: var(--terminal-fg); }
+.cl-think { color: var(--terminal-fg); font-style: italic; opacity: 0.8; }
+
+/* The machinery: what it called, what came back, where the run began. */
+.cl-tool,
+.cl-result,
+.cl-status { padding-left: 2ch; color: var(--terminal-dim); }
+.cl-status { opacity: 0.8; }
+
+/* Indented with the rest of the machinery, because that is where it happened -
+   but not dimmed. A failure that reads as quietly as an ordinary tool result
+   is a failure nobody sees. */
+.cl-error { padding-left: 2ch; color: var(--ansi-red); }
 
 /* --- Activity: usage over time and the run feed ------------------------- */
 .window-picker { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
@@ -1389,7 +1445,7 @@ summary:hover { color: var(--ansi-blue); }
 }
 .control-hint { margin-top: 0.8rem; }
 
-/* The status control carries its own colour, so the project's state is
+/* The status control carries its own color, so the project's state is
    readable without reading the words. */
 .status-select {
   border-width: 1px;
@@ -1402,7 +1458,7 @@ select.status-paused { color: var(--ansi-yellow); border-color: var(--ansi-yello
 select.status-review { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
 select.status-done { color: var(--ansi-green); border-color: var(--ansi-green); }
 select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red); }
-/* The option list is painted by the OS, which ignores the inherited colour on
+/* The option list is painted by the OS, which ignores the inherited color on
    most platforms - force it back to something readable on the dark menu. */
 .control select option { color: var(--terminal-fg); background: var(--bg-color); }
 
@@ -2372,8 +2428,8 @@ a.btn:hover { text-decoration: none; }
 .sel-opt.selected::after { content: " \2713"; }
 .sel-opt.disabled { opacity: 0.45; cursor: default; }
 
-/* Colour on both halves of the control: the closed box already coloured
-   itself by status, and Wes asked for the options to carry the same colour so
+/* Color on both halves of the control: the closed box already colored
+   itself by status, and Wes asked for the options to carry the same color so
    the list reads the way the chosen value does. Written once here for the
    trigger and the option rows together. */
 .sel-trigger.status-backlog, .sel-opt.status-backlog { color: var(--terminal-fg); }
@@ -2389,7 +2445,7 @@ a.btn:hover { text-decoration: none; }
 .sel-trigger.status-done { border-color: var(--ansi-green); }
 .sel-trigger.status-abandoned { border-color: var(--ansi-red); }
 
-/* Priority is a number with no words on it, so colour is the only thing that
+/* Priority is a number with no words on it, so color is the only thing that
    makes 8 read differently from 2 at a glance. */
 .sel-trigger.prio-high, .sel-opt.prio-high { color: var(--ansi-orange, var(--portal-orange)); }
 .sel-trigger.prio-mid, .sel-opt.prio-mid { color: var(--terminal-fg); }
@@ -2531,7 +2587,7 @@ a.btn:hover { text-decoration: none; }
   white-space: nowrap;
 }
 .ctx-item:hover { background: rgba(56, 189, 248, 0.12); }
-/* The move-to entries wear the same status colours as every badge and picker
+/* The move-to entries wear the same status colors as every badge and picker
    on the site, so the menu reads as part of the page rather than laid on it. */
 .ctx-item.status-building { color: var(--ansi-green); }
 .ctx-item.status-review { color: var(--ansi-magenta); }

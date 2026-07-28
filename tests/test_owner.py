@@ -24,8 +24,8 @@ import pytest
 
 from app import agent_runner, ask, config, db, nl, notes, oneoff, site, todos
 
-# Deliberately nothing like the author's name, and a different pronoun set, so
-# a leak is unmissable rather than a subtle near-match.
+# Deliberately nothing like the author's name, and the other gender, so a leak
+# is unmissable rather than a subtle near-match.
 # Built by overriding the shipped defaults rather than by listing every field,
 # so adding a field to Site cannot break this file - it did exactly that when
 # `render_host` arrived, and a fixture that fails to *construct* takes the whole
@@ -34,7 +34,7 @@ from app import agent_runner, ask, config, db, nl, notes, oneoff, site, todos
 OTHER = site.Site(**{
     **site.defaults(),
     "owner": "Ada Lovelace",
-    "pronouns": "she",
+    "gender": "female",
     "host": "demo-box",
     "ssh_user": "ada",
 })
@@ -52,19 +52,25 @@ def render_as(template: str, resolved: site.Site = OTHER) -> str:
     return Template(template).safe_substitute(**resolved.template_vars())
 
 
-# --- the pronoun table ------------------------------------------------------
+# --- one question, and the words that follow from it ------------------------
 
 
 @pytest.mark.parametrize(
     "written,subject,obj,possessive",
     [
-        ("they", "they", "them", "their"),
+        ("male", "he", "him", "his"),
+        ("female", "she", "her", "her"),
+        # What a person types when asked "male or female?", which is the whole
+        # point of asking that instead of asking for a pronoun set.
+        ("Male", "he", "him", "his"),
+        ("F", "she", "her", "her"),
+        ("man", "he", "him", "his"),
+        ("woman", "she", "her", "her"),
+        # The three values the retired `pronouns` field could hold. An install
+        # that answered this once has answered it.
         ("he", "he", "him", "his"),
-        ("she", "she", "her", "her"),
-        # The shorthand people actually type into a config file.
-        ("he/him", "he", "him", "his"),
-        ("She/Her", "she", "her", "her"),
-        ("they/them/theirs", "they", "them", "their"),
+        ("she/her", "she", "her", "her"),
+        ("they", "they", "them", "their"),
         # Nothing recognisable must fall back, never raise: a typo in a config
         # file misgendering somebody is a worse failure than a boot error, and
         # a boot error is a worse failure than either.
@@ -73,22 +79,49 @@ def render_as(template: str, resolved: site.Site = OTHER) -> str:
         ("   ", "they", "them", "their"),
     ],
 )
-def test_pronouns_resolve(written, subject, obj, possessive):
-    resolved = site.Site(**{**OTHER.__dict__, "pronouns": written})
+def test_the_words_follow_from_the_gender(written, subject, obj, possessive):
+    resolved = site.Site(**{**OTHER.__dict__, "gender": written})
     assert (resolved.they, resolved.them, resolved.their) == (subject, obj, possessive)
 
 
-def test_the_default_is_they():
-    """A name implies nothing about pronouns, and the machine does not know."""
-    assert site.defaults()["pronouns"] == "they"
+def test_the_default_is_unanswered():
+    """A name implies nothing about this, and the machine does not know."""
+    assert site.defaults()["gender"] == ""
     assert site.load(env={}, use_file=False).they == "they"
 
 
-def test_pronouns_come_from_the_config_file_and_the_environment(tmp_path):
+def test_gender_comes_from_the_config_file_and_the_environment(tmp_path):
     path = tmp_path / "portal.toml"
-    path.write_text('pronouns = "she"\n')
+    path.write_text('gender = "female"\n')
     assert site.load(env={}, path=path).they == "she"
-    assert site.load(env={"PORTAL_PRONOUNS": "he"}, path=path).they == "he"
+    assert site.load(env={"PORTAL_GENDER": "male"}, path=path).they == "he"
+
+
+def test_an_old_config_files_pronouns_key_still_answers_the_question(tmp_path):
+    """`pronouns = "he"` is what this was called before 2026-07-28.
+
+    Honouring it is what stops every existing install silently reverting to
+    they/them at the next boot - the failure would be invisible in the config
+    file, which still says what it always said.
+    """
+    path = tmp_path / "portal.toml"
+    path.write_text('pronouns = "he"\n')
+    resolved = site.load(env={}, path=path)
+    assert resolved.gender == "male"
+    assert resolved.they == "he"
+
+
+def test_an_explicit_gender_beats_a_leftover_pronouns_line(tmp_path):
+    path = tmp_path / "portal.toml"
+    path.write_text('pronouns = "he"\ngender = "female"\n')
+    assert site.load(env={}, path=path).they == "she"
+
+
+def test_the_config_value_is_normalized_on_the_way_in(tmp_path):
+    """`Site` is frozen and shared, so it should carry the compared form."""
+    path = tmp_path / "portal.toml"
+    path.write_text('gender = "  MALE  "\n')
+    assert site.load(env={}, path=path).gender == "male"
 
 
 @pytest.mark.parametrize(
@@ -175,15 +208,15 @@ BAD_AGREEMENT = re.compile(
 
 
 @pytest.mark.parametrize("name", sorted(PROMPT_TEMPLATES))
-@pytest.mark.parametrize("pronouns", ["he", "she", "they"])
-def test_no_prompt_breaks_verb_agreement_for_any_owner(name, pronouns):
+@pytest.mark.parametrize("gender", ["male", "female", ""])
+def test_no_prompt_breaks_verb_agreement_for_any_owner(name, gender):
     rendered = render_as(
-        PROMPT_TEMPLATES[name], site.Site(**{**OTHER.__dict__, "pronouns": pronouns})
+        PROMPT_TEMPLATES[name], site.Site(**{**OTHER.__dict__, "gender": gender})
     )
     broken = BAD_AGREEMENT.findall(rendered)
     assert not broken, (
-        f"{name} rendered with {pronouns}/... reads {broken} - a placeholder is "
-        "followed by a conjugated verb; use a modal or a noun phrase"
+        f"{name} rendered for {gender or 'an unanswered owner'} reads {broken} - a "
+        "placeholder is followed by a conjugated verb; use a modal or a noun phrase"
     )
 
 
@@ -198,7 +231,7 @@ def test_the_contract_still_reads_as_the_owners_own(monkeypatch):
     """The point of all this is that nothing changes for the current owner."""
     rendered = render_as(
         agent_runner._AGENT_CONTRACT_TEMPLATE,
-        site.Site(**{**OTHER.__dict__, "owner": "Wes", "pronouns": "he"}),
+        site.Site(**{**OTHER.__dict__, "owner": "Wes", "gender": "male"}),
     )
     assert "working on behalf of Wes" in rendered
     assert "a hostname he can reach" in rendered
@@ -262,7 +295,7 @@ def test_the_contract_itself_uses_them():
 
     text = agent_runner.AGENT_CONTRACT
     # The words the instruction names, checked against the instruction. Each is
-    # bounded so "colour" does not match inside the quoted counter-example the
+    # bounded so "color" does not match inside the quoted counter-example the
     # rule has to spell out to forbid it.
     body = text.replace('"color" not "colour"', "").replace('"gray"\nnot "grey"', "")
     body = body.replace('"gray" not "grey"', "")

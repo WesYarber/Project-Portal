@@ -29,7 +29,7 @@ def project():
 
 @pytest.fixture
 def erin():
-    return people.add(name="Erin", pronouns="she", background="newer to this")
+    return people.add(name="Erin", gender="female", background="newer to this")
 
 
 # --------------------------------------------------------------------------
@@ -153,11 +153,11 @@ def test_the_panel_lists_everybody_including_the_archived(client, erin):
 def test_adding_somebody_through_the_form(client):
     client.post(
         "/people/add",
-        data={"name": "Erin", "pronouns": "she/her", "background": "newer to this"},
+        data={"name": "Erin", "gender": "female", "background": "newer to this"},
     )
     person = people.by_slug("erin")
     assert person is not None
-    assert person["pronouns"] == "she"
+    assert person["gender"] == "female"
     assert person["background"] == "newer to this"
 
 
@@ -172,7 +172,7 @@ def test_editing_somebody_through_the_form(client, erin):
         f"/people/{erin}/edit",
         data={
             "name": "Erin Y",
-            "pronouns": "she",
+            "gender": "female",
             "background": "getting the hang of it",
             "tailnet_login": "Erin@Example.com",
         },
@@ -187,7 +187,7 @@ def test_the_owners_name_cannot_be_changed_through_the_form(client):
     owner_id = int(people.owner()["id"])
     client.post(
         f"/people/{owner_id}/edit",
-        data={"name": "Somebody Else", "pronouns": "she", "background": "still me"},
+        data={"name": "Somebody Else", "gender": "female", "background": "still me"},
     )
     person = people.owner()
     assert person["name"] == config.SITE.owner

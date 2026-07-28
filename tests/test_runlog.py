@@ -23,7 +23,9 @@ def test_assistant_text_and_tool_use_render_separately():
             },
         }
     )
-    assert lines == ["  Looking at the tests.", "  Then fixing.", "> Bash(pytest -q)"]
+    # The agent's own words are the unmarked, unindented case as of 2026-07-28;
+    # it is the machinery that is set back now. See tests/test_console.py.
+    assert lines == ["Looking at the tests.", "Then fixing.", "> Bash(pytest -q)"]
 
 
 def test_tool_use_uses_the_identifying_field_not_just_the_first():

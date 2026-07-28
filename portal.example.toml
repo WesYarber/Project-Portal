@@ -21,12 +21,12 @@
 # contract is written *about* you ("a hostname they can reach", "only Ada can
 # decide this"), so it needs this as much as it needs your name.
 #
-# One of "they", "he" or "she"; "he/him" and "She/Her" are understood too.
-# Nothing on the machine records this and a name does not imply it, so the
-# default is "they", which is never wrong for somebody the portal has not
-# been told about. Anything unrecognised falls back to "they" rather than
-# guessing.
-# pronouns = "they"
+# "male" or "female"; "m", "man", "F" and the older "he"/"she" spellings are
+# understood too. Nothing on the machine records this and a name does not
+# imply it, so with no answer the prompts say they/them - never wrong for
+# somebody the portal has not been told about. Anything unrecognized falls
+# back to that rather than guessing.
+# gender = "female"
 
 # How runs pay for themselves. Two values:
 #

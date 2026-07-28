@@ -63,15 +63,15 @@
         <strong>{{ person.name }}</strong>
         <span class="badge">owner</span>
         <span class="hint">
-          name and pronouns come from <code>portal.toml</code> - they name this
+          name and gender come from <code>portal.toml</code> - they name this
           same person in the agent contract and on the todo list, so there is
           one place to change them
         </span>
         {% else %}
         <input type="text" name="name" value="{{ person.name }}" aria-label="name">
-        <select name="pronouns" aria-label="pronouns">
-          {% for key, forms in PRONOUN_CHOICES %}
-          <option value="{{ key }}" {{ 'selected' if person.pronouns == key }}>{{ forms }}</option>
+        <select name="gender" aria-label="male or female">
+          {% for key, label in GENDER_CHOICES %}
+          <option value="{{ key }}" {{ 'selected' if person.gender == key }}>{{ label }}</option>
           {% endfor %}
         </select>
         {% endif %}
@@ -108,9 +108,9 @@
       <h3>add someone</h3>
       <div class="person-head">
         <input type="text" name="name" placeholder="their name" aria-label="name" required>
-        <select name="pronouns" aria-label="pronouns">
-          {% for key, forms in PRONOUN_CHOICES %}
-          <option value="{{ key }}">{{ forms }}</option>
+        <select name="gender" aria-label="male or female">
+          {% for key, label in GENDER_CHOICES %}
+          <option value="{{ key }}">{{ label }}</option>
           {% endfor %}
         </select>
       </div>

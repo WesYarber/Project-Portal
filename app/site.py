@@ -83,49 +83,70 @@ def _default_owner() -> str:
     return _default_ssh_user()
 
 
-# How to refer to the owner in the second half of a sentence. The agent
+# How to refer to a person in the second half of a sentence. The agent
 # contract is written *about* a person - "a hostname he can reach", "only Wes
-# can do this" - so de-personalising it means the pronouns too, not just the
-# name. Getting this wrong is not a cosmetic bug: an agent that misgenders its
-# own user in every prompt it writes is worse than one that says nothing.
+# can do this" - so de-personalizing it means this too, not just the name.
+# Getting it wrong is not a cosmetic bug: an agent that misgenders its own
+# user in every prompt it writes is worse than one that says nothing.
 #
-# `they` is the default because it is the only choice that is never wrong for
-# somebody we have not met, and a name tells you nothing about it. An install
-# whose owner wants something else sets `pronouns` in portal.toml.
-PRONOUNS: dict[str, tuple[str, str, str, str]] = {
-    #          subject  object  possessive-adj  possessive-noun
-    "they":   ("they",  "them", "their",        "theirs"),
-    "he":     ("he",    "him",  "his",          "his"),
-    "she":    ("she",   "her",  "her",          "hers"),
+# The portal asks one question - male or female - and derives the words from
+# the answer. Wes, 2026-07-28: "get rid of the pronoun stuff and just ask
+# someone if they are male or female to know how to refer to them." That is a
+# smaller question than a pronoun field and it is the one a person can
+# actually answer about themselves without being taught a vocabulary first.
+#
+# The words themselves do not go away, because prose still has to be written:
+# the difference is that nobody is ever *asked* for them.
+GENDERS: dict[str, tuple[str, str, str, str]] = {
+    #           subject  object  possessive-adj  possessive-noun
+    "male":    ("he",    "him",  "his",          "his"),
+    "female":  ("she",   "her",  "her",          "hers"),
 }
-DEFAULT_PRONOUNS = "they"
+
+# What an unanswered row reads as. Not a third choice on the form - it is the
+# state of a person nobody has asked yet, and of a fresh install the portal
+# knows nothing about. `they` is the only wording that is never wrong for
+# somebody we have not met, and a name tells you nothing about it.
+UNSPECIFIED: tuple[str, str, str, str] = ("they", "them", "their", "theirs")
+DEFAULT_GENDER = ""
+
+# What the old `pronouns` field stored, and what it means now. Kept so an
+# existing portal.toml (and an existing `people` row) still says what it
+# always said instead of quietly resetting somebody to they/them.
+_LEGACY_PRONOUNS = {"he": "male", "she": "female", "they": ""}
 
 
-def _pronoun_key(raw: str) -> str:
-    """Normalise whatever someone typed into a key of PRONOUNS.
+def gender_key(raw: str) -> str:
+    """Normalize whatever someone typed into `male`, `female` or ''.
 
-    Accepts the shorthand people actually write - `he/him`, `She/Her`,
-    `they/them/theirs` - by taking the subject form. Anything unrecognised
-    falls back to `they`, on the same never-raise principle as the rest of
-    this file: a typo in a config file must not misgender somebody, and it
-    certainly must not stop the portal booting.
+    Accepts what a person actually types - `M`, `man`, `Female`, `boy` - and
+    the three values the old pronoun field stored, so nothing that was already
+    answered has to be answered again. Anything unrecognized falls back to '',
+    on the same never-raise principle as the rest of this file: a typo in a
+    config file must not misgender somebody, and it certainly must not stop
+    the portal booting.
     """
-    first = (raw or "").strip().lower().split("/")[0].strip()
-    return first if first in PRONOUNS else DEFAULT_PRONOUNS
+    text = (raw or "").strip().lower().split("/")[0].strip()
+    if text in GENDERS:
+        return text
+    if text in _LEGACY_PRONOUNS:
+        return _LEGACY_PRONOUNS[text]
+    if text in ("m", "man", "boy", "guy", "him", "his"):
+        return "male"
+    if text in ("f", "w", "woman", "girl", "gal", "her", "hers"):
+        return "female"
+    return DEFAULT_GENDER
 
 
-# The same normalisation, published. `app/people.py` stores a pronoun per person
-# now that more than one person uses the portal, and it must land on exactly the
-# same three keys and the same never-raise fallback as the site config does - so
-# it calls these rather than keeping a second copy of the rules that could drift.
-def pronoun_key(raw: str) -> str:
-    """The stored form of a pronoun string: one of `they`, `he`, `she`."""
-    return _pronoun_key(raw)
+def gender_forms(raw: str) -> tuple[str, str, str, str]:
+    """(they, them, their, theirs) for a gender, defaulting to they/them.
 
-
-def pronoun_forms(raw: str) -> tuple[str, str, str, str]:
-    """(they, them, their, theirs) for a pronoun string, defaulting to they."""
-    return PRONOUNS[_pronoun_key(raw)]
+    `app/people.py` stores a gender per person now that more than one person
+    uses the portal, and it must land on exactly the same keys and the same
+    never-raise fallback as the site config does - so it calls this rather
+    than keeping a second copy of the rules that could drift.
+    """
+    return GENDERS.get(gender_key(raw), UNSPECIFIED)
 
 
 @dataclass(frozen=True)
@@ -133,7 +154,9 @@ class Site:
     """One installation's identity. Frozen: this is read at import and shared."""
 
     owner: str
-    pronouns: str
+    # "male", "female", or '' for an install that has not said. See GENDERS:
+    # this is asked as one question and the pronouns are derived from it.
+    gender: str
     # How spawned runs pay for themselves: "subscription" (the Claude Code
     # login, which bills nothing and is paced against the usage window) or
     # "api_key". Deliberately explicit rather than sniffed from the
@@ -181,7 +204,7 @@ class Site:
 
     @property
     def _pronouns(self) -> tuple[str, str, str, str]:
-        return PRONOUNS[_pronoun_key(self.pronouns)]
+        return gender_forms(self.gender)
 
     @property
     def they(self) -> str:
@@ -217,7 +240,7 @@ class Site:
     @property
     def is_plural_pronoun(self) -> bool:
         """Whether the owner's pronoun takes a plural verb (`they are`)."""
-        return _pronoun_key(self.pronouns) == "they"
+        return gender_key(self.gender) not in GENDERS
 
     def template_vars(self) -> dict[str, str]:
         """Everything a prompt template may substitute, for `string.Template`.
@@ -250,8 +273,8 @@ def defaults() -> dict[str, Any]:
     return {
         "owner": _default_owner(),
         # Nothing on a Unix box records this, and guessing it from a name is
-        # exactly the mistake this field exists to stop. See PRONOUNS.
-        "pronouns": DEFAULT_PRONOUNS,
+        # exactly the mistake this field exists to stop. See GENDERS.
+        "gender": DEFAULT_GENDER,
         # The mode that cannot spend money is the one to default to. A fresh
         # clone with the CLI logged in works with no configuration; an
         # API-key install opts in with one line. app/spawnauth.py explains
@@ -337,6 +360,11 @@ def _coerce(name: str, value: Any, default: Any) -> Any:
         except (TypeError, ValueError):
             return default
     text = str(value).strip()
+    if name == "gender":
+        # Normalized on the way in, not on every read: `Site` is frozen and
+        # shared, so the value it carries should be the one the rest of the
+        # tree compares against rather than whatever spelling was typed.
+        return gender_key(text)
     return text or default
 
 
@@ -354,6 +382,14 @@ def load(
         for key, value in file_values.items():
             if key in values:
                 values[key] = _coerce(key, value, defaults()[key])
+        # `pronouns = "he"` is what this field was called before 2026-07-28.
+        # An install that answered it once has answered it - `gender_key`
+        # already understands the three values it could hold, so honouring
+        # the old key costs one line and saves every existing install from
+        # silently reverting to they/them at the next boot. An explicit
+        # `gender` always wins.
+        if "gender" not in file_values and file_values.get("pronouns"):
+            values["gender"] = _coerce("gender", file_values["pronouns"], DEFAULT_GENDER)
     for field in fields(Site):
         raw = env.get(ENV_PREFIX + field.name.upper())
         if raw is not None and str(raw).strip():

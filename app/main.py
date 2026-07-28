@@ -1672,7 +1672,7 @@ async def toggle_todo(todo_id: int, done: str = Form("")) -> RedirectResponse:
 
 @app.post("/todo/{todo_id}/tag")
 async def tag_todo(todo_id: int, add: str = Form(""), remove: str = Form("")) -> RedirectResponse:
-    """Put a tag on a row or take one off. Both fields normalise in db, so
+    """Put a tag on a row or take one off. Both fields normalize in db, so
     typing 'Ready to Build' lands as the chip `ready-to-build`."""
     todo = db.get_todo(todo_id)
     if todo is None:
@@ -1753,6 +1753,17 @@ async def memory_page(request: Request) -> HTMLResponse:
             "profile": profile,
             "learnings": learnings,
             "suggestions": suggestions,
+            # Above how many characters a suggestion's description gets an
+            # "open it" toggle instead of being silently cut off at two lines.
+            #
+            # A character count is a proxy for a line count, which CSS knows
+            # and the server does not. It is deliberately set BELOW where the
+            # clamp actually bites (a cell is ~34rem wide, so two lines of
+            # 0.8rem text hold roughly 150 characters): erring low gives a few
+            # short suggestions a toggle that reveals nothing much, while
+            # erring high would leave exactly the description Wes complained
+            # about with no way to read the rest of it.
+            "SUGGESTION_EXPAND_CHARS": 110,
             "learnings_lines": len(learnings.splitlines()),
             "learnings_chars": len(learnings),
             "learnings_cap": worker.learnings_cap(),
@@ -1933,8 +1944,15 @@ async def settings_page(request: Request) -> HTMLResponse:
             # bringing somebody back has to be possible, and a person who has
             # vanished from every screen is a person nobody can un-archive.
             "people_rows": people.everyone(include_archived=True),
-            "PRONOUN_CHOICES": [
-                (key, "/".join(forms[:2])) for key, forms in site.PRONOUNS.items()
+            # One question, and the words follow from it - so each option says
+            # what it will make the agent write ("male - he/him"), which is the
+            # only part of the answer that has any visible effect. The blank
+            # first option is not a third choice, it is the state of a row
+            # nobody has answered yet; see site.UNSPECIFIED.
+            "GENDER_CHOICES": [("", "not saying - they/them")]
+            + [
+                (key, f"{key} - {forms[0]}/{forms[1]}")
+                for key, forms in site.GENDERS.items()
             ],
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
@@ -2071,11 +2089,11 @@ async def set_whoami(
 @app.post("/people/add")
 async def add_person(
     name: str = Form(""),
-    pronouns: str = Form("they"),
+    gender: str = Form(""),
     background: str = Form(""),
 ) -> RedirectResponse:
     if (name or "").strip():
-        people.add(name=name, pronouns=pronouns, background=background)
+        people.add(name=name, gender=gender, background=background)
     return RedirectResponse(url="/settings?saved=people#people", status_code=303)
 
 
@@ -2083,18 +2101,18 @@ async def add_person(
 async def edit_person(
     person_id: int,
     name: str = Form(""),
-    pronouns: str = Form(""),
+    gender: str = Form(""),
     background: str = Form(""),
     tailnet_login: str = Form(""),
 ) -> RedirectResponse:
-    # `people.update` ignores name and pronouns for the owner - those belong to
+    # `people.update` ignores name and gender for the owner - those belong to
     # portal.toml, because SITE.owner already names that person in the agent
     # contract and the todo headings. The panel renders them as read-only text
     # for the owner, so this is the belt to that braces.
     people.update(
         person_id,
         name=name,
-        pronouns=pronouns,
+        gender=gender,
         background=background,
         tailnet_login=tailnet_login,
     )

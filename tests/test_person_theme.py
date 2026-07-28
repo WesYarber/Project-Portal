@@ -176,7 +176,7 @@ def test_the_install_still_backs_an_unrecognised_stored_setting(client):
 @pytest.fixture
 def two(client):
     """The owner plus a second person, and a client that can be either."""
-    other_id = people.add("Erin", pronouns="she", background="Newer to all of this.")
+    other_id = people.add("Erin", gender="female", background="Newer to all of this.")
     return int(people.owner()["id"]), other_id
 
 

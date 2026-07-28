@@ -250,8 +250,10 @@ CREATE TABLE IF NOT EXISTS people (
     -- restore; it is reissued (together with the name) on a rename.
     slug TEXT UNIQUE NOT NULL,
     name TEXT NOT NULL,
-    -- One of `they` / `he` / `she`, normalised by site.pronoun_key.
-    pronouns TEXT NOT NULL DEFAULT 'they',
+    -- `male`, `female`, or '' for somebody nobody has asked, normalized by
+    -- site.gender_key. The portal asks this one question and derives the
+    -- pronouns from it; see site.GENDERS for why it is that way round.
+    gender TEXT NOT NULL DEFAULT '',
     -- What the agent should assume this person already knows, in their own
     -- words. Free text on purpose rather than a level enum: "newer to
     -- self-hosting, teach the concepts" tells a model something a 1-5 scale
@@ -385,7 +387,17 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # '' means "has chosen nothing", which is NOT the same as "has chosen the
     # defaults": an empty override set follows the install's look as it
     # changes, while an explicit choice pins it. See people.appearance_of.
-    "people": [("appearance", "TEXT NOT NULL DEFAULT ''")],
+    #
+    # `gender` replaced a `pronouns` column on 2026-07-28 (Wes: "get rid of
+    # the pronoun stuff and just ask someone if they are male or female").
+    # The old column is left in place on databases that have it rather than
+    # dropped: _backfill_gender copies its meaning across once, and an
+    # abandoned column costs nothing while an ALTER ... DROP on a live table
+    # is the kind of migration that has no undo.
+    "people": [
+        ("appearance", "TEXT NOT NULL DEFAULT ''"),
+        ("gender", "TEXT NOT NULL DEFAULT ''"),
+    ],
 }
 
 
@@ -479,6 +491,48 @@ def init_db() -> None:
         _seed_data()
 
     _backfill_people()
+    _backfill_gender()
+
+
+GENDER_BACKFILL_KEY = "people_gender_backfilled"
+
+
+def _backfill_gender() -> None:
+    """Carry the retired `pronouns` column onto `gender`, once.
+
+    Somebody who has already said which they are has said it, and a rename of
+    the field is not a reason to ask them again - still less a reason to
+    quietly reset them to they/them, which is what a bare `DEFAULT ''` would
+    have done to every existing row.
+
+    Guarded by a settings key rather than by "is gender empty", because ''
+    is a legitimate answer (nobody has asked) and re-running this would
+    overwrite a deliberate clearing with the stale pronoun every boot.
+    """
+    conn = get_conn()
+    if get_setting(GENDER_BACKFILL_KEY) == "1":
+        return
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(people)")}
+    if "pronouns" in columns:
+        from app import site  # local: site is imported for its normalizer only
+
+        rows = conn.execute(
+            "SELECT id, pronouns FROM people WHERE COALESCE(gender, '') = ''"
+        ).fetchall()
+        moved = 0
+        with _LOCK:
+            for row in rows:
+                gender = site.gender_key(row["pronouns"] or "")
+                if not gender:
+                    continue
+                conn.execute(
+                    "UPDATE people SET gender = ? WHERE id = ?", (gender, int(row["id"]))
+                )
+                moved += 1
+            conn.commit()
+        if moved:
+            log.info("Moved %s person row(s) from pronouns to gender", moved)
+    set_setting(GENDER_BACKFILL_KEY, "1")
 
 
 def _backfill_people() -> None:
@@ -770,7 +824,7 @@ def slug_is_untidy(slug: str) -> bool:
 
 
 def clean_title(title: str) -> str:
-    """Normalise a title before it is stored.
+    """Normalize a title before it is stored.
 
     Titles arrive from three places that can all carry junk: a browser form (a
     stray `\\r` from a pasted line), a Telegram message, and an agent's JSON
@@ -1786,7 +1840,7 @@ def normalize_todo_tag(tag: Any) -> str:
 
 
 def _join_tags(tags: Any) -> str:
-    """Normalise, dedupe (order kept) and cap a tag list into its stored form."""
+    """Normalize, dedupe (order kept) and cap a tag list into its stored form."""
     if isinstance(tags, str):
         tags = tags.split(",")
     if not isinstance(tags, (list, tuple)):
@@ -1836,7 +1890,7 @@ def remove_todo_tag(todo_id: int, tag: str) -> Optional[sqlite3.Row]:
 
 
 def _todo_key(text: str) -> str:
-    """Normalised form used to decide whether two todos are the same item.
+    """Normalized form used to decide whether two todos are the same item.
 
     The agent sees its list in every prompt and re-states items in its report,
     so without this the same task accumulates a copy per run with slightly
@@ -1849,7 +1903,7 @@ def add_todo(
 ) -> Optional[sqlite3.Row]:
     """Add a todo, or return the existing one if it is already on the list.
 
-    Matching is on the normalised text within the project regardless of done
+    Matching is on the normalized text within the project regardless of done
     state: re-adding something already ticked off should not resurrect it as a
     second open item. On a dedupe hit any new tags are merged into the existing
     row - restating "X, and it is blocked" should land the tag, not vanish."""
@@ -2280,7 +2334,7 @@ def summary_bullet(text: str) -> dict:
 
 
 def _to_bullets(summary) -> list[str]:
-    """Normalise a report's `summary` field into banner bullets.
+    """Normalize a report's `summary` field into banner bullets.
 
     The field is written by a language model, so it arrives as a list of
     strings, one string, or one string that is secretly a list (newlines, or

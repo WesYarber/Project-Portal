@@ -65,7 +65,7 @@ def test_the_owners_name_follows_the_site_config(monkeypatch):
     # headings. A row that could disagree would put two names for one human in
     # the same prompt.
     people.owner()  # created under the real config first
-    other = site.Site(**{**site.defaults(), "owner": "Ada Lovelace", "pronouns": "she"})
+    other = site.Site(**{**site.defaults(), "owner": "Ada Lovelace", "gender": "female"})
     monkeypatch.setattr(config, "SITE", other)
     person = people.owner()
     assert person["name"] == "Ada Lovelace"
@@ -93,12 +93,12 @@ def test_the_owner_cannot_be_archived():
 # --------------------------------------------------------------------------
 
 def test_a_second_person_is_entirely_this_tables_to_own():
-    pid = people.add(name="Erin", pronouns="she/her", background="newer to this")
+    pid = people.add(name="Erin", gender="female", background="newer to this")
     people.update(pid, name="Erin Y", background="learning fast")
     person = people.get(pid)
     assert person["name"] == "Erin Y"
     assert person["background"] == "learning fast"
-    assert person["pronouns"] == "she"
+    assert person["gender"] == "female"
 
 
 def test_a_rename_reissues_the_slug():
@@ -125,13 +125,29 @@ def test_a_nameless_person_still_gets_a_usable_slug():
     assert people.by_slug(people.get(pid)["slug"]) is not None
 
 
-def test_pronouns_are_normalised_the_same_way_the_site_config_normalises_them():
+def test_gender_is_normalized_the_same_way_the_site_config_normalizes_it():
     for written, expected in [
-        ("she/her", "she"), ("He/Him", "he"), ("they/them/theirs", "they"),
-        ("", "they"), ("nonsense", "they"),
+        ("female", "female"), ("Male", "male"), ("F", "female"), ("man", "male"),
+        # The retired pronoun spellings, so an install that answered once has.
+        ("she/her", "female"), ("He/Him", "male"), ("they", ""),
+        ("", ""), ("nonsense", ""),
     ]:
-        pid = people.add(name=f"P {written}", pronouns=written)
-        assert people.get(pid)["pronouns"] == expected
+        pid = people.add(name=f"P {written}", gender=written)
+        assert people.get(pid)["gender"] == expected, written
+
+
+def test_the_words_a_person_gets_are_derived_from_that_one_answer():
+    """Nobody is ever asked for a pronoun set - the prose follows the answer."""
+    assert people.pronouns_of(people.get(people.add(name="M", gender="male"))) == (
+        "he", "him", "his", "his"
+    )
+    assert people.pronouns_of(people.get(people.add(name="F", gender="female"))) == (
+        "she", "her", "her", "hers"
+    )
+    # Nobody has asked this one, so the prose stays neutral rather than guessing.
+    assert people.pronouns_of(people.get(people.add(name="Unasked"))) == (
+        "they", "them", "their", "theirs"
+    )
 
 
 def test_archiving_keeps_the_person_and_takes_them_out_of_the_pickers():
@@ -339,7 +355,7 @@ def test_a_single_person_install_gets_no_people_section(project):
 
 
 def test_the_section_appears_the_moment_there_are_two_of_them(project):
-    people.add(name="Erin", pronouns="she", background="newer to self-hosting")
+    people.add(name="Erin", gender="female", background="newer to self-hosting")
     text = people.prompt_section(project["id"])
     assert "## People" in text
     assert config.SITE.owner in text and "Erin" in text
@@ -348,7 +364,7 @@ def test_the_section_appears_the_moment_there_are_two_of_them(project):
 
 
 def test_the_section_says_who_is_actually_on_this_project(project):
-    erin = people.add(name="Erin", pronouns="she")
+    erin = people.add(name="Erin", gender="female")
     people.set_members(project["id"], [erin])
     text = people.prompt_section(project["id"])
     assert "**Erin** (she/her) - on this project" in text
@@ -385,8 +401,8 @@ def test_a_note_with_no_person_on_it_is_the_owners(project):
     assert config.SITE.owner in block
 
 
-def test_the_pronoun_over_a_note_is_that_persons(project):
-    erin = people.add(name="Erin", pronouns="she")
+def test_the_wording_over_a_note_follows_that_persons_gender(project):
+    erin = people.add(name="Erin", gender="female")
     db.add_journal(project["id"], "user", "note", "how do I start", person_id=erin)
     block = notes.render(notes.pending(project["id"]))
     assert block.startswith("## A note from Erin since your last run")
@@ -397,7 +413,7 @@ def test_the_pronoun_over_a_note_is_that_persons(project):
 
 
 def test_notes_from_two_people_are_each_signed(project):
-    erin = people.add(name="Erin", pronouns="she")
+    erin = people.add(name="Erin", gender="female")
     db.add_journal(project["id"], "user", "note", "his note")
     db.add_journal(project["id"], "user", "note", "her note", person_id=erin)
     block = notes.render(notes.pending(project["id"]))
@@ -410,3 +426,80 @@ def test_notes_from_two_people_are_each_signed(project):
     his = block.index("his note")
     hers = block.index("her note")
     assert block.rindex("Erin", 0, hers) > his
+
+
+# --------------------------------------------------------------------------
+# The retired `pronouns` column
+# --------------------------------------------------------------------------
+# Wes, 2026-07-28: "Let's get rid of the pronoun stuff and just ask someone if
+# they are male or female to know how to refer to them."
+#
+# The risk in that rename is not the new field, it is the old rows: a bare
+# `gender TEXT NOT NULL DEFAULT ''` on an ALTER silently resets everybody who
+# has already answered to they/them, and nothing on any screen says so.
+
+def _people_table_as_it_was(path):
+    """A database at the pre-2026-07-28 shape, with a `pronouns` column."""
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE people (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            pronouns TEXT NOT NULL DEFAULT 'they',
+            background TEXT NOT NULL DEFAULT '',
+            tailnet_login TEXT NOT NULL DEFAULT '',
+            is_owner INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+        INSERT INTO people (slug, name, pronouns, is_owner, created_at)
+             VALUES ('wes', 'Wes', 'he', 1, '2026-07-01T00:00:00+00:00');
+        INSERT INTO people (slug, name, pronouns, is_owner, created_at)
+             VALUES ('erin', 'Erin', 'she', 0, '2026-07-28T00:00:00+00:00');
+        INSERT INTO people (slug, name, pronouns, is_owner, created_at)
+             VALUES ('sam', 'Sam', 'they', 0, '2026-07-28T00:00:00+00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_an_answered_pronoun_becomes_an_answered_gender(tmp_path, monkeypatch):
+    """Nobody who has already said which they are gets asked again."""
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    by_name = {r["name"]: r for r in db.get_conn().execute("SELECT * FROM people")}
+    assert by_name["Erin"]["gender"] == "female"
+    assert by_name["Sam"]["gender"] == "", "they/them is an unanswered row, not a third sex"
+    # The owner's is the config's, which the fixture's real portal.toml sets.
+    assert by_name["Wes"]["gender"] == site.gender_key(config.SITE.gender)
+
+
+def test_clearing_somebodys_answer_is_not_undone_at_the_next_boot(tmp_path, monkeypatch):
+    """The guard is a settings key, not "is gender empty".
+
+    '' is a legitimate answer - it is what "nobody has asked" looks like - so a
+    backfill that re-ran on every boot would put the stale pronoun back every
+    time somebody deliberately cleared it, and the settings page would appear
+    to simply not save.
+    """
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    erin = people.by_slug("erin")
+    people.update(int(erin["id"]), gender="")
+    assert people.by_slug("erin")["gender"] == ""
+
+    db.init_db()  # a restart
+    assert people.by_slug("erin")["gender"] == "", "the backfill overruled a real edit"

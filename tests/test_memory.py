@@ -596,3 +596,58 @@ def test_pressing_compact_starts_a_run(client, temp_data_dir, monkeypatch):
     monkeypatch.setattr(worker, "start_compaction", lambda: started.append(True) or True)
     client.post("/memory/compact")
     assert started == [True]
+
+
+# --------------------------------------------------------------------------
+# Suggestions you can actually read
+# --------------------------------------------------------------------------
+# Wes, 2026-07-28: "Allow the 'Suggestions' in the memory tab to be opened to
+# view their full description. As of now, it gets cut off in the widget view
+# with no way of seeing the rest of it."
+#
+# The two-line clamp itself is right - a grid whose cells are as tall as their
+# longest description is not a grid - so what was missing was a way out of it,
+# not the removal of it.
+
+LONG_DESCRIPTION = (
+    "A tool that watches the drum click track and the set list together, so a "
+    "cue fired from the phone lands on the right bar of the right song even "
+    "when the band has skipped a repeat, and the whole thing keeps working "
+    "with no network in the building."
+)
+
+
+def test_a_long_suggestion_can_be_opened(client):
+    db.add_suggestion("Click cue watcher", LONG_DESCRIPTION)
+    html = client.get("/memory").text
+
+    assert "cell-expand" in html, "no way to open it - this is the bug Wes reported"
+    # The full text is in the page, not a server-truncated prefix: the clamp is
+    # a CSS effect, so opening it must not need another request.
+    assert LONG_DESCRIPTION in html
+    # One copy, not two. A hidden duplicate is the same words twice in the DOM:
+    # a find-in-page hit that goes nowhere, and read out twice by a screen
+    # reader. The <summary> IS the description.
+    assert html.count(LONG_DESCRIPTION) == 1
+
+
+def test_a_short_suggestion_gets_no_pointless_toggle(client):
+    """A "more" that reveals nothing is worse than no "more" at all."""
+    db.add_suggestion("A tiny idea", "One line.")
+    html = client.get("/memory").text
+    assert "One line." in html
+    assert "cell-expand" not in html
+
+
+def test_the_dashboards_own_cells_are_left_alone(client):
+    """`.cell-desc` is shared with the project grid, which wants the clamp.
+
+    The expansion hangs off `.cell-expand` for this reason - a fix applied to
+    the clamped class itself would have made every dashboard cell as tall as
+    its description, which is not what was asked for and is a regression on
+    the page Wes looks at most.
+    """
+    db.create_project(title="A project", description=LONG_DESCRIPTION)
+    html = client.get("/").text
+    assert "cell-desc" in html
+    assert "cell-expand" not in html

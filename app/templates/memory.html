@@ -212,7 +212,39 @@
   {% for s in suggestions %}
   <div class="project-cell">
     <span class="cell-title">{{ s.title }}</span>
-    {% if s.description %}<span class="cell-desc">{{ s.description }}</span>{% endif %}
+    {#
+      Wes, 2026-07-28: "Allow the Suggestions in the memory tab to be opened to
+      view their full description. As of now, it gets cut off in the widget view
+      with no way of seeing the rest of it."
+
+      The clamp itself is right - a grid of cells whose height follows their
+      longest description is not a grid - so the fix is a way out of it, not
+      the removal of it. `.cell-desc` is shared with the dashboard's project
+      cells, which is why the expansion hangs off `.cell-expand` here rather
+      than off the clamped class everything uses.
+
+      One text node, not two: the <summary> IS the description, and opening
+      the <details> lifts the clamp off it. A copy in a hidden panel would be
+      the same words twice in the DOM, which is a search hit that goes
+      nowhere and a screen reader reading it out twice.
+    #}
+    {% if s.description and s.description|length > SUGGESTION_EXPAND_CHARS %}
+    <details class="cell-expand">
+      {#
+        The label is a SIBLING of the clamped span, not a pseudo-element on it:
+        `-webkit-line-clamp` hides everything past the second line, and an
+        ::after on the clamped box is past the second line by definition - so
+        the affordance would be clipped away by the very thing it exists to
+        undo. Inside the <summary> so that clicking it toggles.
+      #}
+      <summary>
+        <span class="cell-desc">{{ s.description }}</span>
+        <span class="cell-more"></span>
+      </summary>
+    </details>
+    {% elif s.description %}
+    <span class="cell-desc">{{ s.description }}</span>
+    {% endif %}
     <span class="cell-foot">
       <span class="badge">{{ s.status }}</span>
       <span>{{ s.ts|timeago }}</span>

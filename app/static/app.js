@@ -662,6 +662,58 @@ function startLiveRunPoll() {
   setInterval(tick, 5000);
 }
 
+// --- Reading a transcript --------------------------------------------------
+// Wes, 2026-07-28: "make all the tool calls and '>' lines show as indented
+// gray/dimmed text with the other lines where the agent is just talking or
+// thinking show as non-indented text that is not dimmed."
+//
+// The first character of a line says what kind it is. This table is the same
+// one app/runlog.py writes from (runlog.MARKERS) - it has to live here as well
+// because lines arriving mid-run are classified in the browser, and there is
+// no round trip to ask Python about them. tests/test_console.py parses this
+// object out of this file and fails if the two ever disagree.
+var CONSOLE_KINDS = { ">": "tool", "<": "result", "!": "error", "*": "status", "~": "think" };
+
+// What the agent said is the unmarked case, so a marker only counts when it is
+// followed by a space (or is the whole line). Agent prose is markdown and is
+// full of "> quoted" and "* bullet" lines that must NOT be read as tool calls;
+// runlog.py escapes those with one leading space, which lands them here as
+// ordinary prose because their first character is then a space.
+function consoleKind(line) {
+  var kind = CONSOLE_KINDS[line.charAt(0)];
+  if (kind && (line.length === 1 || line.charAt(1) === " ")) return kind;
+  return "say";
+}
+
+function consoleLine(line) {
+  var el = document.createElement("span");
+  el.className = "cl cl-" + consoleKind(line);
+  el.textContent = line;
+  return el;
+}
+
+// Draw a chunk into the box, one element per line so each can be styled by
+// what it is. `replace` starts the transcript over.
+//
+// The poller reads by BYTE offset, not by line, so a chunk can end in the
+// middle of a line. That tail is drawn (it is the newest thing on screen and
+// hiding it would make the console lag its own run) but remembered, and
+// redrawn from the start when the rest of it arrives - otherwise a tool call
+// split across two polls would be classified from half of its first character
+// and then have its own remainder appended as a second line.
+function renderConsole(out, text, replace) {
+  if (replace) {
+    out.textContent = "";
+    out.dataset.tail = "";
+  }
+  if (out.dataset.tail) out.removeChild(out.lastChild);
+  var lines = ((out.dataset.tail || "") + (text || "")).split("\n");
+  var tail = lines.pop();
+  for (var i = 0; i < lines.length; i++) out.appendChild(consoleLine(lines[i]));
+  out.dataset.tail = tail;
+  if (tail) out.appendChild(consoleLine(tail));
+}
+
 function startConsolePoll() {
   var box = document.getElementById("agent-console");
   if (!box) return;
@@ -679,9 +731,10 @@ function startConsolePoll() {
         var first = offset === null;
         var atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
         if (first) {
-          out.textContent = data.text || "(nothing yet)";
+          if (data.text) renderConsole(out, data.text, true);
+          else out.textContent = "(nothing yet)";
         } else if (data.text) {
-          out.textContent += data.text;
+          renderConsole(out, data.text, false);
         }
         offset = data.offset;
         // The first paint replaces the whole transcript, so it lands at the
@@ -879,7 +932,7 @@ document.addEventListener("DOMContentLoaded", initPullToRefresh);
 // A native <select>'s popup list is painted by the operating system: the CSS
 // on this page reaches the closed box and stops there, which is why every
 // dropdown opened into a white platform menu in the middle of a dark terminal
-// UI, and why the coloured statuses lost their colour the moment you went
+// UI, and why the colored statuses lost their color the moment you went
 // looking for one. There is no styling fix for that - the list has to be real
 // elements to be themeable at all.
 //
@@ -914,9 +967,9 @@ function enhanceSelect(sel) {
   Array.prototype.forEach.call(sel.options, function (opt, i) {
     var li = document.createElement("li");
     li.className = "sel-opt";
-    // The option carries its own colour class from the template, so the list
+    // The option carries its own color class from the template, so the list
     // reads the same way the closed control does - Wes's ask was that the
-    // options be coloured "like they appear once selected".
+    // options be colored "like they appear once selected".
     if (opt.dataset.optClass) li.className += " " + opt.dataset.optClass;
     if (opt.disabled) li.className += " disabled";
     li.setAttribute("role", "option");
@@ -935,7 +988,7 @@ function enhanceSelect(sel) {
     var i = sel.selectedIndex;
     trigger.textContent = i >= 0 ? sel.options[i].textContent : "";
     // The trigger wears both the select's own classes (status-select and the
-    // like, which existing CSS colours) and the selected option's class.
+    // like, which existing CSS colors) and the selected option's class.
     trigger.className = "sel-trigger " + sel.className + " " + optClassOf(i);
     trigger.disabled = sel.disabled;
     items.forEach(function (li, n) {
