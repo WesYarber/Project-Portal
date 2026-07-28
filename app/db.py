@@ -418,6 +418,23 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("ntfy_topic", "TEXT NOT NULL DEFAULT ''"),
         ("telegram_chat_id", "TEXT NOT NULL DEFAULT ''"),
     ],
+    # WHICH person has to do a `owner='user'` item, or NULL for "nobody said".
+    #
+    # `owner` stays as it was and keeps its own job: it is the agent-versus-a-
+    # human axis, and the scheduler reads it (count_workable_todos) to decide
+    # whether a run could make progress. This column answers the second
+    # question that only became askable once the portal had two people in it -
+    # which human - and is meaningless on an agent item.
+    #
+    # Nothing is back-filled. Every row that predates this column was written
+    # when the install had one person, and stamping them all with the owner
+    # would look exactly like somebody having decided that. The deduction that
+    # IS safe happens at read time instead: an unassigned item on a project
+    # with exactly one member is that member's, because the set of people who
+    # could do it has one element in it. See todos.responsible_for.
+    "todos": [
+        ("person_id", "INTEGER"),
+    ],
     # Whose phone this is, or NULL for a device enrolled before anyone asked.
     # NULL means "unattributed", and an unattributed device deliberately keeps
     # receiving everything: every subscription on this install predates the
@@ -2073,24 +2090,36 @@ def _todo_key(text: str) -> str:
 
     The agent sees its list in every prompt and re-states items in its report,
     so without this the same task accumulates a copy per run with slightly
-    different capitalisation or trailing punctuation."""
+    different capitalization or trailing punctuation."""
     return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
 
 
 def add_todo(
-    project_id: int, text: str, owner: str = "agent", tags: Any = None
+    project_id: int,
+    text: str,
+    owner: str = "agent",
+    tags: Any = None,
+    person_id: Optional[int] = None,
 ) -> Optional[sqlite3.Row]:
     """Add a todo, or return the existing one if it is already on the list.
 
     Matching is on the normalized text within the project regardless of done
     state: re-adding something already ticked off should not resurrect it as a
     second open item. On a dedupe hit any new tags are merged into the existing
-    row - restating "X, and it is blocked" should land the tag, not vanish."""
+    row - restating "X, and it is blocked" should land the tag, not vanish.
+
+    `person_id` names WHICH human has to do it, and naming one implies the item
+    is a human's: "Karli has to do this" and "the agent has to do this" cannot
+    both be true, and silently keeping owner='agent' would put an item on the
+    agent's backlog wearing somebody's name."""
     # Same control-character scrub as titles, but a longer cap: a todo is a
     # sentence ("collapse the agent console by default"), not a name.
     text = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")).strip()[:500]
     if not text:
         return None
+    person_id = int(person_id) if person_id else None
+    if person_id is not None:
+        owner = "user"
     if owner not in TODO_OWNERS:
         owner = "agent"
     key = _todo_key(text)
@@ -2108,9 +2137,9 @@ def add_todo(
         )
         if existing is None:
             cur = conn.execute(
-                "INSERT INTO todos (project_id, owner, text, done, created_at, tags) "
-                "VALUES (?, ?, ?, 0, ?, ?)",
-                (project_id, owner, text, now(), _join_tags(tags)),
+                "INSERT INTO todos (project_id, owner, text, done, created_at, tags, person_id) "
+                "VALUES (?, ?, ?, 0, ?, ?, ?)",
+                (project_id, owner, text, now(), _join_tags(tags), person_id),
             )
             conn.commit()
             return conn.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -2120,10 +2149,38 @@ def add_todo(
         extra = list(tags)
     else:
         extra = []
+    # A dedupe hit FILLS an absent attribution and never overwrites one. Saying
+    # "and that one is Karli's" about an item nobody had claimed is new
+    # information; saying it about an item already marked Wes's is a
+    # re-statement, and letting a re-statement move work between two people
+    # would make the list unstable in exactly the way nobody could trace.
+    # It also never converts an agent item into a human's: that is a change of
+    # who is doing the work, not the recording of a fact.
+    if person_id is not None and existing["owner"] == "user" and not existing["person_id"]:
+        set_todo_person(existing["id"], person_id)
+        existing = get_todo(existing["id"])
     merged = _join_tags(todo_tags(existing) + extra)
     if merged != (existing["tags"] or ""):
         return set_todo_tags(existing["id"], merged)
     return existing
+
+
+def set_todo_person(todo_id: int, person_id: Optional[int]) -> Optional[sqlite3.Row]:
+    """Record which human has to do an item, or clear it with None.
+
+    Setting one moves the item to the human half for the same reason `add_todo`
+    does: an item with somebody's name on it is not on the agent's backlog."""
+    conn = get_conn()
+    with _LOCK:
+        if person_id:
+            conn.execute(
+                "UPDATE todos SET person_id = ?, owner = 'user' WHERE id = ?",
+                (int(person_id), todo_id),
+            )
+        else:
+            conn.execute("UPDATE todos SET person_id = NULL WHERE id = ?", (todo_id,))
+        conn.commit()
+        return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
 
 
 def get_todo(todo_id: int) -> Optional[sqlite3.Row]:

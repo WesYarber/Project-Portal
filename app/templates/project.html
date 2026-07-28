@@ -575,16 +575,35 @@
   </h3>
   {{ todo_list(agent_todos, "Nothing on the agent's list.") }}
 
-  <h3 class="todo-head">For you
-    {% if user_todos %}<span class="muted small">{{ user_todos|rejectattr('done')|list|length }} open</span>{% endif %}
+  {# The human half, grouped by whose it is - the same grouping the run prompt
+     uses, so the page and the agent can never disagree. With one person on the
+     install every item resolves to them and this is the one "For you" heading
+     it has always been. #}
+  {% if user_todo_groups %}
+  {% for person, items in user_todo_groups %}
+  <h3 class="todo-head">{{ todo_head_for(person) }}
+    <span class="muted small">{{ items|rejectattr('done')|list|length }} open</span>
   </h3>
-  {{ todo_list(user_todos, "Nothing waiting on you.") }}
+  {{ todo_list(items, "Nothing waiting on you.") }}
+  {% endfor %}
+  {% else %}
+  <h3 class="todo-head">For you</h3>
+  {{ todo_list([], "Nothing waiting on you.") }}
+  {% endif %}
 
   <form method="post" action="/project/{{ project.slug }}/todo" class="todo-add">
     <input type="text" name="text" placeholder="Add a todo..." required>
     <select name="owner" aria-label="whose todo">
       <option value="agent">for the agent</option>
       <option value="user">for me</option>
+      {# Everybody else only appears once there IS somebody else. A picker
+         whose every option but one is the person using it is a control that
+         does nothing. #}
+      {%- if everyone()|length > 1 %}
+      {%- for p in everyone() %}{% if not me() or p.id != me().id %}
+      <option value="person:{{ p.id }}">for {{ p.name }}</option>
+      {%- endif %}{% endfor %}
+      {%- endif %}
     </select>
     <button type="submit" class="btn secondary">add</button>
   </form>

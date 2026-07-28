@@ -34,8 +34,17 @@
   <h3 class="todo-head">The agent's <span class="muted small">{{ agent_done|length }}</span></h3>
   {{ done_list(agent_done, "Nothing completed yet.") }}
 
-  <h3 class="todo-head">Yours <span class="muted small">{{ user_done|length }}</span></h3>
-  {{ done_list(user_done, "Nothing completed yet.") }}
+  {# Grouped by whose it was, the same way the live list is. #}
+  {% if user_done_groups %}
+  {% for person, items in user_done_groups %}
+  <h3 class="todo-head">{{ todo_head_for(person, "possessive") }}
+    <span class="muted small">{{ items|length }}</span></h3>
+  {{ done_list(items, "Nothing completed yet.") }}
+  {% endfor %}
+  {% else %}
+  <h3 class="todo-head">Yours <span class="muted small">0</span></h3>
+  {{ done_list([], "Nothing completed yet.") }}
+  {% endif %}
 </div>
 
 {% endblock %}

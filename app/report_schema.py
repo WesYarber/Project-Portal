@@ -59,6 +59,11 @@ REPORT_SCHEMA: dict = {
                         "properties": {
                             "text": {"type": "string"},
                             "owner": {"type": "string"},
+                            # Which human, when `owner` is "user" and the
+                            # install has more than one person in it. A name;
+                            # unresolvable values are dropped rather than
+                            # guessed at. See todos._person_ref.
+                            "person": {"type": "string"},
                             "tags": {"type": "array", "items": {"type": "string"}},
                         },
                         "required": ["text"],

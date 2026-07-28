@@ -57,6 +57,7 @@ from app import (
     spawnauth,
     subprojects,
     telegram_bot,
+    todos,
     usage,
     webpush,
     worker,
@@ -691,7 +692,28 @@ templates.env.globals["jump_keys_json"] = jump_keys_json
 # per-route context for the same reason `show_priority` is: the acting person
 # appears in the masthead of every page and in the member boxes on two more,
 # and a route that forgot to pass it would show somebody the wrong name.
+def todo_head_for(person, style: str = "for") -> str:
+    """The heading over one person's half of a todo list.
+
+    "For you" when it is the person reading the page - which is what it has
+    always said, and what it still says throughout a one-person install - and
+    their name when it is somebody else. Second person for yourself and third
+    for everyone else is how a shared list reads out loud.
+
+    `style="possessive"` is the completed-history page's phrasing, which sits
+    beside "The agent's" and would read oddly as "For you".
+    """
+    if person is None:
+        return "Nobody in particular" if style == "possessive" else "For somebody"
+    mine = me()
+    if mine is not None and int(person["id"]) == int(mine["id"]):
+        return "Yours" if style == "possessive" else "For you"
+    name = people.name_of(person)
+    return people.possessive(name) if style == "possessive" else f"For {name}"
+
+
 templates.env.globals["me"] = me
+templates.env.globals["todo_head_for"] = todo_head_for
 templates.env.globals["everyone"] = people.everyone
 templates.env.globals["project_members"] = people.members
 templates.env.globals["person_pronouns"] = people.pronouns_of
@@ -951,6 +973,13 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "ask_pending": ask.pending(project["id"]),
             "agent_todos": db.visible_todos(project["id"], owner="agent"),
             "user_todos": db.visible_todos(project["id"], owner="user"),
+            # The same grouping the run prompt uses, so the page and the agent
+            # never disagree about whose an item is. One group on a one-person
+            # install, which renders exactly the single "For you" heading it
+            # always did.
+            "user_todo_groups": todos.by_person(
+                db.visible_todos(project["id"], owner="user"), project["id"]
+            ),
             # How many ticked-off items have already dropped off the live list.
             # Only shown as a link to the history, so clearing never feels like
             # deleting.
@@ -1840,10 +1869,32 @@ def _todo_redirect(slug: str) -> RedirectResponse:
 
 @app.post("/project/{slug}/todo")
 async def add_todo(
-    slug: str, text: str = Form(...), owner: str = Form("agent")
+    request: Request, slug: str, text: str = Form(...), owner: str = Form("agent")
 ) -> RedirectResponse:
+    """Add an item. `owner` is "agent", "user", or "person:<id>".
+
+    The third form is what the picker posts once the install has more than one
+    person in it, and it is the main way the human half of a list ever gets
+    attributed: somebody choosing their own name from a dropdown is a decision,
+    where stamping an existing row with it would have been a guess.
+    """
     project = _get_project_or_404(slug)
-    db.add_todo(project["id"], text, owner)
+    person_id = None
+    if owner.startswith("person:"):
+        raw = owner.split(":", 1)[1].strip()
+        person = people.get(int(raw)) if raw.isdigit() else None
+        # An id that names nobody falls back to an unattributed human item
+        # rather than to the agent's list: the one thing the picker is certain
+        # about is that a human was chosen.
+        owner = "user"
+        person_id = int(person["id"]) if person is not None else None
+    elif owner == "user" and people.more_than_one():
+        # "for me" from the picker. Whoever is holding the phone, resolved the
+        # same way a note they post is - not the owner, who is only the right
+        # answer on the install where he is the only answer.
+        me = resolve_person(request)
+        person_id = int(me["id"]) if me is not None else None
+    db.add_todo(project["id"], text, owner, person_id=person_id)
     return _todo_redirect(slug)
 
 
@@ -1906,6 +1957,9 @@ async def todo_history(request: Request, slug: str) -> HTMLResponse:
             "project": project,
             "agent_done": db.completed_todos(project["id"], owner="agent"),
             "user_done": db.completed_todos(project["id"], owner="user"),
+            "user_done_groups": todos.by_person(
+                db.completed_todos(project["id"], owner="user"), project["id"]
+            ),
         },
     )
 
