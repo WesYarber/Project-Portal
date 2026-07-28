@@ -257,10 +257,16 @@ def test_two_peoples_blocks_are_both_in_the_prompt(project, wes, karli):
 
     section = todos.prompt_section(project["id"])
 
-    assert "### Wes's (only he can do these)".replace("Wes", config.SITE.owner) in section
+    # Karli's heading in full: she is created by this test, so her name and her
+    # pronoun are both known here. The owner's are not - his name comes from
+    # the machine the portal is installed on, and this suite also runs against
+    # a fresh clone of the public repo where he is somebody else entirely.
     assert "### Karli's (only she can do these)" in section
+    assert f"### {people.possessive(wes['name'])} (only " in section
     assert "Rotate the sudo password" in section
     assert "Paste an ntfy topic in" in section
+    # And each item is under its own heading rather than both under one.
+    assert section.index("Rotate the sudo password") < section.index("### Karli's")
 
 
 def test_the_prompt_teaches_the_person_field_once_there_are_two(project, wes, karli):
