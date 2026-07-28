@@ -1495,6 +1495,12 @@ def _decorate_runs(rows) -> list[dict]:
                 "duration": usage.humanize_seconds(secs),
                 "cost_usd": row["cost_usd"],
                 "num_turns": row["num_turns"],
+                # `_row_get`, because not every query that reaches here selects
+                # the whole runs table. See app/promptbudget.py for what these
+                # are for.
+                "prompt_bytes": db._row_get(row, "prompt_bytes"),  # noqa: SLF001
+                "output_tokens": db._row_get(row, "output_tokens"),  # noqa: SLF001
+                "cache_read_tokens": db._row_get(row, "cache_read_tokens"),  # noqa: SLF001
                 "events": row["events"] or 0,
                 "summary": row["summary"] or "",
                 "has_log": runlog.log_path(row["id"]).exists(),

@@ -80,6 +80,16 @@ RULES: tuple[tuple[str, str], ...] = (
     ("visualis", "visualiz"),
     ("authoris", "authoriz"),
     ("apologis", "apologiz"),
+    # Added 2026-07-28 after `generalised` sat in the compaction agent's own
+    # guidance in app/agent_runner.py and this suite reported the tree clean.
+    # A needle list is only as good as its coverage, so these were taken from
+    # the `-ise` verbs a person actually reaches for writing about software.
+    ("generalis", "generaliz"),
+    ("specialis", "specializ"),
+    ("standardis", "standardiz"),
+    ("synchronis", "synchroniz"),
+    ("categoris", "categoriz"),
+    ("prioritis", "prioritiz"),
     ("optimis(?=[eai])", "optimiz"),      # not `optimistic`
     ("utilis(?=[eai])", "utiliz"),
     ("minimis(?=[eai])", "minimiz"),

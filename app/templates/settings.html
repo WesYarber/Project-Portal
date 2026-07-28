@@ -158,7 +158,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,run_memory_max,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,run_memory_max,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines,prompt_learnings_kb,prompt_journal_kb">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -275,6 +275,14 @@
         <div class="field">
           <label for="learnings_cap_lines">Learnings auto-compact at{% call info() %}Lines. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). 0 disables it.{% endcall %}</label>
           <input type="number" id="learnings_cap_lines" name="learnings_cap_lines" value="{{ settings.learnings_cap_lines or '200' }}" min="0" max="5000">
+        </div>
+        <div class="field">
+          <label for="prompt_learnings_kb">Learnings in a prompt{% call info() %}KB. Learnings memory is in every run's prompt on every project, so it is the biggest single block there. Sections are taken in the file's own order and the one that overflows keeps its newest entries; the rest are named, and the agent is told it may read the whole file.{% endcall %}</label>
+          <input type="number" id="prompt_learnings_kb" name="prompt_learnings_kb" value="{{ settings.prompt_learnings_kb or '16' }}" min="1" max="512">
+        </div>
+        <div class="field">
+          <label for="prompt_journal_kb">Journal in a prompt{% call info() %}KB. The last 20 journal entries go in a prompt and an agent's progress report can run to 10 KB on its own. Every entry keeps its heading whatever happens; older ones fall back to heading plus opening paragraph, and the newest is always whole.{% endcall %}</label>
+          <input type="number" id="prompt_journal_kb" name="prompt_journal_kb" value="{{ settings.prompt_journal_kb or '24' }}" min="1" max="512">
         </div>
         <div class="field">
           <label for="max_parallel_runs">Parallel runs{% call info() %}Agents in flight at once, on different projects. 1-{{ max_parallel_limit }}.{% endcall %}</label>

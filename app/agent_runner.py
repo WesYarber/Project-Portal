@@ -13,8 +13,8 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, limits, memory, notes, orphans, people, qdedupe, runlimit,
-    runlog, spawnauth, subprojects, todos,
+    attachments, config, db, limits, memory, notes, orphans, people, promptbudget,
+    qdedupe, runlimit, runlog, spawnauth, subprojects, todos,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -92,6 +92,12 @@ available in your session, write the same JSON to a file at
   embed the best one rather than only describing what it showed. Keep the
   files in the workspace (committed, reasonably sized) or the embed breaks
   when the workspace is cleaned.
+  Open it with a heading, then ONE self-contained opening paragraph that says
+  what you did, what state you left things in, and any landmine you know
+  about. That paragraph is load-bearing: once this entry is a few runs old the
+  prompt shows a later agent your heading and that paragraph and nothing else,
+  so anything a future run must not rediscover the hard way has to be in it.
+  Everything after it can be as long as it deserves to be.
 - "questions": only include items here if you are genuinely blocked on
   $OWNERS intent or a decision only $THEY can make. Otherwise use an empty list.
   Write each question so it stands alone: assume $OWNER is reading it on $THEIR
@@ -279,7 +285,7 @@ _TASK_GUIDANCE_TEMPLATES = {
         "but adds a lot of unhelpful context to every agent, burying the lines "
         "that would actually have helped. Your job is to make what survives "
         "worth its place.\n\n"
-        "KEEP, merged and generalised: durable facts about $OWNER (working style, "
+        "KEEP, merged and generalized: durable facts about $OWNER (working style, "
         "preferences, turns of phrase, location, hardware and accounts); "
         "lessons that would change how a future agent "
         "behaves on a DIFFERENT project; hard-won environment facts that are "
@@ -293,10 +299,26 @@ _TASK_GUIDANCE_TEMPLATES = {
         "TIMESTAMPS: remove the leading [timestamp] from every line. Only keep "
         "a date inside a line when the line is about a moment in time (a price "
         "quoted, a credential rotated, a decision taken on a date).\n\n"
+        "ORDER IS NOW LOAD-BEARING, so put real thought into it. A prompt gets "
+        "a byte budget of this file, filled from the TOP in your order, and "
+        "whole `## ` sections are taken while they fit. The section that "
+        "overflows keeps only its newest entries and anything below that is "
+        "listed by name and left out. So: keep the general sections - who "
+        "$OWNER is, how $OWNER wants agents to work, what $THEIR machines can "
+        "and cannot do, the cross-project engineering lessons - at the TOP and "
+        "tight, and let the long tail of one-off domain notes be the LAST "
+        "section. A hazard that has bitten more than once belongs up in the "
+        "engineering lessons, not down in the tail. Keep the `# ` title and the "
+        "short paragraph under it stating what earns a place here: a prompt "
+        "always shows those, and they are the standard the next agent writes "
+        "to.\n\n"
         "Group what remains under a handful of headings, write each as one "
         "plain sentence, and aim to end up at roughly a quarter of the length "
         "you started with - if you cannot get near that, you are keeping "
-        "project trivia. Do not touch profile.md. Report (via the "
+        "project trivia. A distilled line must keep the concrete trigger "
+        "condition, not just the moral: \"in CSS, position:fixed inside a "
+        "transformed ancestor is not viewport-fixed\" is a learning, \"be "
+        "careful with CSS positioning\" is not. Do not touch profile.md. Report (via the "
         "StructuredOutput tool, per the contract below) with a `summary` "
         "saying what you cut and what you kept, and `journal_entry_md` "
         "likewise; leave every other field null/empty."
@@ -386,6 +408,12 @@ class RunResult:
     # succeeded, and is a fact worth reporting either way.
     oom_killed: bool = False
     peak_memory_bytes: Optional[int] = None
+    # The CLI's own accounting for the run, off the result event's `usage`, plus
+    # the size of the prompt the portal handed it. Recorded so that "is the
+    # prompt too big?" is a question the portal can answer from its own history
+    # instead of from a hand-run experiment. See app/promptbudget.py.
+    usage: Optional[dict] = None
+    prompt_bytes: Optional[int] = None
     # The result event's subtype ("success", "error_max_turns",
     # "error_during_execution"). On failures with an empty `result` string this
     # is the only thing the CLI says about *why* - dropping it is how eight
@@ -614,10 +642,7 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         parts.append(TASK_GUIDANCE["reflect"])
         parts.append(AGENT_CONTRACT)
         profile = config.PROFILE_MD.read_text(encoding="utf-8") if config.PROFILE_MD.exists() else ""
-        learnings = ""
-        if config.LEARNINGS_MD.exists():
-            lines = config.LEARNINGS_MD.read_text(encoding="utf-8").splitlines()
-            learnings = "\n".join(lines[-100:])
+        learnings = _learnings_for_prompt()
         journal = db.list_journal(project_id=None, limit=40)
         journal_txt = "\n".join(
             f"- [{row['ts']}] ({row['project_title'] or 'n/a'}) {row['author']}/{row['kind']}: "
@@ -626,7 +651,7 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         )
         parts.append(f"## Recent cross-project journal (last {len(journal)})\n{journal_txt}")
         parts.append(f"## Current profile.md\n{profile}")
-        parts.append(f"## Recent learnings.md (tail)\n{learnings}")
+        parts.append(f"## Recent learnings.md\n{learnings}")
         return "\n\n".join(parts)
 
     assert project is not None
@@ -686,9 +711,19 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     # failed delivery degrades to the old behavior instead of losing the note.
     delivered_now = set(delivery.ids)
     journal = [row for row in journal if int(row["id"]) not in delivered_now]
-    journal_txt = "\n".join(
-        f"- [{row['ts']}] {row['author']}/{row['kind']}: {row['content_md']}" for row in journal
-    ) or "(no journal entries yet)"
+    # Capped at 20 entries, but an entry is an agent's progress report and those
+    # run to 10 KB on their own - so the count was never a bound on the size.
+    # See app/promptbudget.py.
+    journal_txt = promptbudget.journal_for_prompt(
+        [
+            promptbudget.JournalEntry(
+                prefix=f"- [{row['ts']}] {row['author']}/{row['kind']}: ",
+                body=row["content_md"] or "",
+            )
+            for row in journal
+        ],
+        _budget_bytes("prompt_journal_kb", 24),
+    )
     parts.append(f"## Recent journal (last {len(journal)})\n{journal_txt}")
 
     # Uploaded files sit in the workspace, so the agent only needs to be told
@@ -721,13 +756,58 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     profile = config.PROFILE_MD.read_text(encoding="utf-8") if config.PROFILE_MD.exists() else "(none)"
     parts.append(f"## Memory: profile.md (full)\n{profile}")
 
-    learnings = "(none)"
-    if config.LEARNINGS_MD.exists():
-        lines = config.LEARNINGS_MD.read_text(encoding="utf-8").splitlines()
-        learnings = "\n".join(lines[-100:])
-    parts.append(f"## Memory: learnings.md (tail)\n{learnings}")
+    parts.append(f"## Memory: learnings.md\n{_learnings_for_prompt()}")
 
     return "\n\n".join(parts)
+
+
+def _record_usage(run_id: Optional[int], usage: Optional[dict], prompt_bytes: int) -> None:
+    """Store what the run cost. Never raises.
+
+    Recorded here rather than in `finish_run` because this is the one place
+    that has both the prompt and the result event, and because `finish_run` is
+    called from a dozen exit paths - threading five more arguments through all
+    of them would mean the timeout and crash paths silently recording nothing.
+    Losing the accounting must never be the thing that fails a run that worked.
+    """
+    if run_id is None:
+        return
+    try:
+        db.record_run_usage(
+            run_id,
+            input_tokens=(usage or {}).get("input_tokens"),
+            output_tokens=(usage or {}).get("output_tokens"),
+            cache_write_tokens=(usage or {}).get("cache_creation_input_tokens"),
+            cache_read_tokens=(usage or {}).get("cache_read_input_tokens"),
+            prompt_bytes=prompt_bytes,
+        )
+    except Exception:  # noqa: BLE001 - see docstring
+        log.exception("Could not record token usage for run %s", run_id)
+
+
+def _budget_bytes(key: str, default_kb: int) -> int:
+    try:
+        kb = int(db.get_setting(key) or default_kb)
+    except (TypeError, ValueError):
+        kb = default_kb
+    return max(1, kb) * 1024
+
+
+def _learnings_for_prompt() -> str:
+    """The learnings block, section-aware and under a byte budget.
+
+    This used to be `lines[-100:]`. That is a line count rather than a budget,
+    and on 2026-07-28 the live file's 100th-from-last line fell 98 lines inside
+    the last of its seven sections - so every prompt the portal had ever built
+    silently dropped all seven headings and the six general sections above it.
+    """
+    if not config.LEARNINGS_MD.exists():
+        return "(none)"
+    return promptbudget.learnings_for_prompt(
+        config.LEARNINGS_MD.read_text(encoding="utf-8"),
+        _budget_bytes("prompt_learnings_kb", 16),
+        str(config.LEARNINGS_MD),
+    )
 
 
 def _orphan_section(slug: str) -> str:
@@ -1006,7 +1086,7 @@ async def run_claude(
     # first time the CLI emitted an event while we were still filling stdin.
     feeder = asyncio.create_task(_feed_prompt(proc, prompt))
     try:
-        return await _supervise(proc, cwd, run_id, on_event, timeout_min)
+        return await _supervise(proc, cwd, run_id, on_event, timeout_min, len(prompt))
     finally:
         feeder.cancel()
         _forget(run_id)
@@ -1042,6 +1122,7 @@ async def _supervise(
     run_id: Optional[int],
     on_event: Optional[EventCallback],
     timeout_min: int,
+    prompt_bytes: int = 0,
 ) -> RunResult:
     parsed: dict = {}
     raw_parts: list[str] = []
@@ -1126,8 +1207,13 @@ async def _supervise(
         if isinstance(bullets, list) and bullets:
             result_text = "; ".join(str(b) for b in bullets)
 
+    usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else None
+    _record_usage(run_id, usage, prompt_bytes)
+
     return RunResult(
         ok=not is_error and proc.returncode == 0,
+        usage=usage,
+        prompt_bytes=prompt_bytes,
         session_id=parsed.get("session_id"),
         cost_usd=parsed.get("total_cost_usd"),
         num_turns=parsed.get("num_turns"),

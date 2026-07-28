@@ -404,6 +404,19 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "suggestions": [
         ("status_ts", "TEXT NOT NULL DEFAULT ''"),
     ],
+    # What a run actually cost, read off the CLI's own `result` event, plus the
+    # size of the prompt the portal handed it. All of this was being parsed and
+    # dropped on the floor until 2026-07-28 - which is why the question "is the
+    # prompt too big?" had to be answered with byte counts and a hand-run cache
+    # experiment instead of with the portal's own history. See
+    # app/promptbudget.py.
+    "runs": [
+        ("input_tokens", "INTEGER"),
+        ("output_tokens", "INTEGER"),
+        ("cache_write_tokens", "INTEGER"),
+        ("cache_read_tokens", "INTEGER"),
+        ("prompt_bytes", "INTEGER"),
+    ],
 }
 
 
@@ -2250,6 +2263,34 @@ def create_run(
         )
         conn.commit()
         return int(cur.lastrowid)
+
+
+def record_run_usage(
+    run_id: int,
+    *,
+    input_tokens: Optional[int] = None,
+    output_tokens: Optional[int] = None,
+    cache_write_tokens: Optional[int] = None,
+    cache_read_tokens: Optional[int] = None,
+    prompt_bytes: Optional[int] = None,
+) -> None:
+    """What a run cost, from the CLI's result event plus the prompt we sent.
+
+    Separate from `finish_run` on purpose: this is written the moment the
+    result event is parsed, and `finish_run` is reached by a dozen different
+    paths. A run that times out or is canceled after producing usage still
+    keeps its numbers this way.
+    """
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            """UPDATE runs SET input_tokens = ?, output_tokens = ?,
+                                cache_write_tokens = ?, cache_read_tokens = ?,
+                                prompt_bytes = ? WHERE id = ?""",
+            (input_tokens, output_tokens, cache_write_tokens, cache_read_tokens,
+             prompt_bytes, run_id),
+        )
+        conn.commit()
 
 
 def finish_run(

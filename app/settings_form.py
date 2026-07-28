@@ -144,6 +144,8 @@ def _build_registry() -> dict[str, Field]:
         Field("run_max_budget_usd", _decimal_or_blank()),
         Field("run_memory_max", _memory_size),
         Field("learnings_cap_lines", _positive_int("200", low=0, high=5000)),
+        Field("prompt_learnings_kb", _positive_int("16", low=1, high=512)),
+        Field("prompt_journal_kb", _positive_int("24", low=1, high=512)),
         Field("limit_hold_percent", _positive_int("90", low=1, high=100)),
         Field("spend_down_session_hold", _positive_int("70", low=1, high=100)),
         Field("spend_front_load", _ratio("0.75")),

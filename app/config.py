@@ -201,6 +201,17 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # See app/worker.py _maybe_compact. 0 disables the automatic trigger.
     "learnings_cap_lines": "200",
     "last_auto_compact_date": "",
+    # How much of each unbounded block reaches a prompt, in KB. See
+    # app/promptbudget.py for why these are byte budgets and not counts, and
+    # for the measurement that says reordering the prompt would buy nothing.
+    #
+    # 16 is not a round number picked for looking tidy: learnings.md's general
+    # sections (who Wes is, how he wants agents to work, what the machines can
+    # do, the cross-project engineering lessons) came to 12.3 KB when this was
+    # written, so 16 keeps all of them whole with room for the newest domain
+    # notes on top. It is the constraint that chose the number.
+    "prompt_learnings_kb": "16",
+    "prompt_journal_kb": "24",
     # Appearance: how much of the CRT treatment to apply (see APPEARANCE below).
     "ui_theme": "terminal",
     "crt_scanlines": "all",

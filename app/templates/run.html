@@ -18,6 +18,19 @@
     <span class="stat"><em>{{ run.cost_usd|cost }}</em>{{ cost_noun() }}</span>
     <span class="stat"><em>{{ run.num_turns if run.num_turns is not none else '-' }}</em>turns</span>
     <span class="stat"><em>{{ run.events }}</em>events</span>
+    {# What the run cost, off the CLI's own result event, plus the size of the
+       prompt the portal handed it. Only on runs that have it: every run before
+       2026-07-28 parsed these numbers and threw them away, and a column of
+       dashes across the history would say less than nothing. #}
+    {% if run.prompt_bytes %}
+    <span class="stat"><em>{{ (run.prompt_bytes / 1024)|round|int }}K</em>prompt</span>
+    {% endif %}
+    {% if run.output_tokens is not none %}
+    <span class="stat"><em>{{ '{:,}'.format(run.output_tokens) }}</em>out</span>
+    {% endif %}
+    {% if run.cache_read_tokens is not none %}
+    <span class="stat"><em>{{ '{:,}'.format(run.cache_read_tokens) }}</em>cached</span>
+    {% endif %}
   </div>
   {% if run.status == 'running' %}
   <form method="post" action="/run/{{ run.id }}/cancel" style="margin-top:0.8rem;">

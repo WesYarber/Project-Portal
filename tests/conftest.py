@@ -28,6 +28,16 @@ def temp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "LEARNINGS_MD", tmp_path / "memory" / "learnings.md")
     monkeypatch.setattr(config, "SUGGESTIONS_MD", tmp_path / "memory" / "suggestions.md")
 
+    # `config.cli_version()` shells out to `claude --version` and memoizes the
+    # answer in a module global, so exactly one test per process paid for a
+    # real subprocess - whichever one happened to run first. That made
+    # `test_the_tick_holds_new_runs_and_fires_once_quiet` (which asserts a tick
+    # spawns nothing) pass in a full run and fail on its own, and it meant the
+    # suite behaved differently on a machine with no CLI installed. Pinned, so
+    # no test can reach the real binary.
+    monkeypatch.setattr(config, "_cli_version_cache", config.DEFAULT_CLI_VERSION,
+                        raising=False)
+
     if db._CONN is not None:  # noqa: SLF001
         db._CONN.close()  # noqa: SLF001
     monkeypatch.setattr(db, "_CONN", None, raising=False)
