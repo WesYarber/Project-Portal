@@ -69,7 +69,14 @@
    It sits at the top because asking is the cheapest thing you can do here, but
    it stays folded to a button: it is a thing you reach for, not a box that
    should be occupying the space above the project every time you open it. #}
-<details class="ask-block" id="ask" {{ 'open' if ask_pending }}>
+{# data-jump="ask": the A key. Wes, 2026-07-28: "Hitting 'a' should go to the
+   'ask question' prompt, activate it, and highlight the text field to begin
+   typing." All three verbs are here - the attribute is on the <details> rather
+   than on the card inside it, which is what makes "activate" work: jumpTo
+   opens every <details> between the page and its target, and `closest` counts
+   the element itself, so the box unfolds before the cursor is put in it. #}
+<details class="ask-block" id="ask" data-jump="ask"
+         data-jump-focus=".ask-form textarea[name='question']" {{ 'open' if ask_pending }}>
   <summary class="btn secondary ask-open">ask project</summary>
   <div class="card">
     <form method="post" action="/project/{{ project.slug }}/ask" class="ask-form">
@@ -127,6 +134,20 @@
         {% endfor %}
       </select>
     </form>
+    {# Wes, 2026-07-28: "move the GitHub-like usage chart to the project status
+       area to the right of the button that lets you pick the model the project
+       is using. Clicking the chart should show the usage over time page for it
+       on the activity page."
+
+       So it is a link, not a decoration - and it is labeled, because a grid of
+       colored squares is not self-evidently clickable and a screen reader gets
+       nothing at all from the squares themselves. It is last in the row and
+       pushed right by `margin-left: auto`, so adding or hiding a control (the
+       priority picker is optional) never moves it off the right edge. #}
+    <a class="control-heat heatmap-link" href="/activity?project={{ project.slug }}"
+       aria-label="usage over time - {{ heatmap.total }} run{{ 's' if heatmap.total != 1 else '' }} in the last {{ heatmap.days }} days">
+      {% include "_heatmap.html" %}
+    </a>
   </div>
 
   <p class="hint control-hint">
@@ -717,25 +738,36 @@
 </div>
 </details>
 
-{# J lands here rather than on the scroll box below, so the heading and the
-   run-count line stay on screen - the box's own top edge still ends up in the
-   first ~130px of the window, which is what "along the top" was asking for. #}
+{# J lands on the scroll box below, not on this heading. Wes, 2026-07-28:
+   "hitting J for journal should not go to the top of the journal subsection and
+   show the 'Journal' header but rather put the scrollable journal section to
+   the top of the window."
+
+   The previous run's reasoning - keep the heading and the run count on screen -
+   was mine, not his, and he had used it and said no. So the box carries
+   `journal-box` and this heading keeps `journal` as the second-preference
+   target: jumpkeys lists them in that order, app.js takes the first that
+   exists, and on a project with no entries at all (where there IS no box) the
+   key still lands on the heading rather than doing nothing. #}
 <h2 data-jump="journal">Journal</h2>
 {# What the Runs section used to be. The table it hid duplicated /activity row
    for row, so all that is kept is the count and the link - the journal below
    is the readable account of the same runs. #}
+{# The activity grid used to sit here. Wes, 2026-07-28: "move the GitHub-like
+   usage chart to the project status area to the right of the button that lets
+   you pick the model the project is using" - so it is now in the control bar
+   at the top of the page, and this line keeps the count and the link. #}
 <div class="journal-runs">
   <p class="small muted">
     {{ runs|length }} run{{ 's' if runs|length != 1 else '' }} on this project &middot;
     <a href="/activity?project={{ project.slug }}">usage over time</a>
   </p>
-  {% include "_heatmap.html" %}
 </div>
 {# Scrolls too, but at a far higher cap than the todo and file lists - the
    journal is the thing you came to read, so its box is most of a screen tall
    rather than a ten-line window onto it. #}
 {% if journal %}
-<div class="card scroll-cap scroll-cap-journal" id="journal">
+<div class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box">
   {% for j in journal %}
   {% set pending = note_pending(j) %}
   {% set aside = is_side_thread(j.author, j.kind) %}

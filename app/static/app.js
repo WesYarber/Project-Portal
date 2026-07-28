@@ -2069,9 +2069,17 @@ function quoteInto(kind, text) {
 // shape; this file reads them there rather than fetching, because the map has
 // to be known before the first keystroke - a page that answered N only after a
 // round trip would drop the key you pressed while it was still asking.
+// Kept byte-identical to jumpkeys.bindings({}) on the server - a test asserts
+// the two agree, because the only page that uses this copy is one rendered
+// before the attribute existed, and a silent disagreement there would present
+// as "the keys do something different in my other tab".
 var JUMP_KEYS_DEFAULT = {
   n: ["note", "idea"],
-  j: ["journal"],
+  a: ["ask"],
+  // The scrolling journal box first, its heading second: Wes asked for the
+  // box's top edge at the top of the window, and the heading is what an empty
+  // journal (which renders no box) has instead.
+  j: ["journal-box", "journal"],
   t: ["todo"],
   p: ["project"]
 };

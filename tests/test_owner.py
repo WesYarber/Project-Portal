@@ -237,3 +237,34 @@ def test_the_notes_block_follows_the_owner(as_ada):
     db.add_journal(project["id"], "user", "note", "a note")
     block = notes.render(notes.pending(project["id"]))
     assert "Ada Lovelace" in block and "Wes" not in block
+
+
+# --- American English ------------------------------------------------------
+#
+# Wes, 2026-07-28: "add some note to a system prompt or something somewhere that
+# I want to always use American English spellings rather than British. I want
+# 'color,' not 'colour.' 'Gray,' not 'grey,' etc. I have seen you use 'colour'
+# in a few places."
+
+
+def test_the_contract_asks_for_american_spellings():
+    from app import agent_runner
+
+    contract = agent_runner.AGENT_CONTRACT
+    assert "American English" in contract
+    for pair in ('"color" not "colour"', '"gray"'):
+        assert pair in contract, pair
+
+
+def test_the_contract_itself_uses_them():
+    """It would be a poor instruction to give in British English."""
+    from app import agent_runner
+
+    text = agent_runner.AGENT_CONTRACT
+    # The words the instruction names, checked against the instruction. Each is
+    # bounded so "colour" does not match inside the quoted counter-example the
+    # rule has to spell out to forbid it.
+    body = text.replace('"color" not "colour"', "").replace('"gray"\nnot "grey"', "")
+    body = body.replace('"gray" not "grey"', "")
+    for british in ("behaviour", "recognise", "labelled", "centre "):
+        assert british not in body, british

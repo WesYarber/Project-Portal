@@ -126,12 +126,37 @@ const PROJECT_PAGE = [
   { name: "projectCard", attrs: { "data-jump": "project" } },
   { name: "todoHead", attrs: { "data-jump": "todo" } },
   { name: "journalHead", attrs: { "data-jump": "journal" } },
+  // The scrolling box J actually aims at, with the heading above it as the
+  // second-preference target. Wes, 2026-07-28: "hitting J for journal should
+  // not go to the top of the journal subsection and show the 'Journal' header
+  // but rather put the scrollable journal section to the top of the window."
+  { name: "journalBox", attrs: { "data-jump": "journal-box" } },
   {
     name: "noteHead",
     attrs: { "data-jump": "note", "data-jump-focus": ".note-form textarea[name='note']" },
   },
   { name: "noteBox", tag: "TEXTAREA", selector: ".note-form textarea[name='note']" },
+  // The ask block. A <details> that sits closed, so unlike every other target
+  // this one has to be OPENED before the cursor can land in it - Wes,
+  // 2026-07-28: "Hitting 'a' should go to the 'ask question' prompt, activate
+  // it, and highlight the text field to begin typing."
+  {
+    name: "askBlock",
+    tag: "DETAILS",
+    open: false,
+    attrs: { "data-jump": "ask", "data-jump-focus": ".ask-form textarea[name='question']" },
+  },
+  {
+    name: "askBox",
+    tag: "TEXTAREA",
+    parent: "askBlock",
+    selector: ".ask-form textarea[name='question']",
+  },
 ];
+
+// The same page before its first run, so the journal has no entries and the
+// template renders no scroll box at all - only the heading.
+const PROJECT_PAGE_EMPTY_JOURNAL = PROJECT_PAGE.filter((s) => s.name !== "journalBox");
 
 // The dashboard: no note section at all, an idea section instead.
 const DASHBOARD = [
@@ -145,10 +170,19 @@ const scenes = {
   noteOnProject: { elements: PROJECT_PAGE, key: "n" },
   // Shift is not a modifier here - Wes wrote "N", and shift is how you type it.
   shiftedNote: { elements: PROJECT_PAGE, key: "N", shiftKey: true },
-  // The three navigation-only keys.
+  // The three navigation-only keys. J takes the scroll box, not the heading.
   journal: { elements: PROJECT_PAGE, key: "j" },
+  // ...and on a project with no entries yet there IS no box, so it lands on
+  // the heading rather than doing nothing - which would read as a broken key
+  // rather than as an empty journal.
+  journalEmpty: { elements: PROJECT_PAGE_EMPTY_JOURNAL, key: "j" },
   todo: { elements: PROJECT_PAGE, key: "t" },
   project: { elements: PROJECT_PAGE, key: "p" },
+  // A on a project page: unfold the ask block, put the cursor in it, ring it.
+  askOnProject: { elements: PROJECT_PAGE, key: "a", detailsName: "askBlock" },
+  // A on the dashboard: nothing to ask, so nothing happens and the keystroke
+  // stays the browser's.
+  askOnDashboard: { elements: DASHBOARD, key: "a" },
   // N on the dashboard finds `idea` instead, and focuses the title.
   ideaOnDashboard: { elements: DASHBOARD, key: "n" },
   // J on the dashboard: no journal there, so nothing at all happens.

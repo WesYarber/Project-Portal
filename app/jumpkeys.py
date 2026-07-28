@@ -5,7 +5,7 @@ thing:
 
   2026-07-27: "Allow these key commands to be reconfigured in settings."
 
-So the letters n / j / t / p are now defaults, not facts. This module owns the
+So the letters n / a / j / t / p are now defaults, not facts. This module owns the
 whole of that: the list of jumpable sections, the setting key each one lives
 under, what a valid binding is, and the `key -> [target]` map app.js consumes.
 
@@ -38,7 +38,7 @@ from typing import Mapping, Optional
 #   so binding one gives you a jump that fights a browser feature on one
 #   browser and not the others.
 #
-# Twenty-six letters for four sections is not a constraint anyone will feel.
+# Twenty-six letters for five sections is not a constraint anyone will feel.
 ALPHABET = "abcdefghijklmnopqrstuvwxyz"
 
 # What "unbound" looks like, in the settings row and in the stored value.
@@ -70,12 +70,32 @@ ACTIONS: tuple[Action, ...] = (
         default="n",
         targets=("note", "idea"),
     ),
+    # Wes, 2026-07-28: "Hitting 'a' should go to the 'ask question' prompt,
+    # activate it, and highlight the text field to begin typing."
+    #
+    # "Activate it" is the word that matters: the ask block is a <details> that
+    # sits closed, so unlike the other four this jump has to OPEN its target
+    # before the cursor can land in it. jumpTo already opens any <details> on
+    # the way to a target, and `closest` counts the element itself - so the
+    # attribute goes on the <details> and the opening comes for free.
+    Action(
+        name="ask",
+        label="ask a question",
+        hint="opens the ask box at the top of a project and puts the cursor in it",
+        default="a",
+        targets=("ask",),
+    ),
     Action(
         name="journal",
         label="journal",
         hint="the run-by-run account, near the bottom of a project",
         default="j",
-        targets=("journal",),
+        # The scrolling box first, its heading second. Wes asked for the box's
+        # own top edge against the top of the window rather than the heading
+        # above it - and the fallback is not decoration: a project with no
+        # entries yet renders no box, and a key that silently does nothing on
+        # an empty project reads as a broken key rather than an empty journal.
+        targets=("journal-box", "journal"),
     ),
     Action(
         name="todo",

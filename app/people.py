@@ -60,11 +60,12 @@ second person can do everything the owner can.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
 import time
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Mapping, Optional, Sequence
 
 from app import config, db, site
 
@@ -353,6 +354,109 @@ def update(person_id: int, **fields) -> None:
     conn = db.get_conn()
     with db._LOCK:
         conn.execute(f"UPDATE people SET {', '.join(sets)} WHERE id = ?", tuple(args))
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# Each person's own look
+# ---------------------------------------------------------------------------
+#
+# Wes, 2026-07-28: "It would be cool as well if she was able to customize the
+# theme of the site for her user to her liking."
+#
+# The appearance layers (scanlines, glow, animations, typeface, density) were
+# one global setting each, which is the right answer for one person and the
+# wrong one for two: her turning the scanlines off would turn them off on his
+# phone as well. So the settings row becomes the *install's* look and each
+# person may override any subset of it.
+#
+# A subset, not a copy. Somebody who has never opened the appearance panel
+# follows the install as it changes; somebody who has turned one layer off has
+# pinned that one layer and still follows the rest. Storing a full copy on
+# first save would silently freeze the other four at whatever they were that
+# afternoon, which is the kind of quiet divergence nobody would ever trace.
+
+
+def _valid_appearance(values: Mapping[str, str]) -> dict[str, str]:
+    """Only recognized keys, only recognized values.
+
+    Anything else is dropped rather than stored. This is the boundary between
+    a form (or a hand-edited database) and a `<body>` class name, so a value
+    that got through would be painted into the page as `scan-<junk>` and match
+    no rule - a setting that appears to save and then does nothing.
+    """
+    out: dict[str, str] = {}
+    for key, choices in config.APPEARANCE_CHOICES.items():
+        if key not in values:
+            continue
+        value = str(values[key] or "")
+        if value in {v for v, _ in choices}:
+            out[key] = value
+    return out
+
+
+def appearance_of(person: Optional[sqlite3.Row]) -> dict[str, str]:
+    """The appearance keys this person has explicitly chosen.
+
+    Returns only their overrides - never a full set - so the caller can tell
+    "she picked no-scanlines" apart from "she has never picked anything". A
+    row written before this column existed, or holding junk that a restore or
+    a hand edit put there, reads as no overrides rather than raising: a bad
+    byte in a preference must not be able to stop a page rendering.
+    """
+    if person is None:
+        return {}
+    try:
+        raw = person["appearance"]
+    except (IndexError, KeyError):  # a row selected before the column existed
+        return {}
+    if not raw:
+        return {}
+    try:
+        stored = json.loads(raw)
+    except (TypeError, ValueError):
+        log.debug("Ignoring unreadable appearance for person row", exc_info=True)
+        return {}
+    if not isinstance(stored, dict):
+        return {}
+    return _valid_appearance(stored)
+
+
+def set_appearance(person_id: int, values: Mapping[str, str]) -> dict[str, str]:
+    """Store this person's overrides, merged over whatever they had.
+
+    Merged rather than replaced because the appearance panel may one day post
+    a subset - and because `apply()` already drops a field the running code
+    does not recognize, so a partial submission reaching here is a normal
+    event rather than a bug to be strict about.
+
+    Returns what is now stored, which is what the caller needs to re-render
+    the page it is about to redirect to.
+    """
+    person = get(person_id)
+    if person is None:
+        return {}
+    merged = {**appearance_of(person), **_valid_appearance(values)}
+    conn = db.get_conn()
+    with db._LOCK:
+        conn.execute(
+            "UPDATE people SET appearance = ? WHERE id = ?",
+            (json.dumps(merged, sort_keys=True) if merged else "", int(person_id)),
+        )
+        conn.commit()
+    return merged
+
+
+def clear_appearance(person_id: int) -> None:
+    """Drop this person's overrides so they follow the install's look again.
+
+    Distinct from setting every layer back to the shipped default, and the
+    difference is the whole point of storing a subset: this re-attaches them
+    to the install, so a later change to the install's look reaches them.
+    """
+    conn = db.get_conn()
+    with db._LOCK:
+        conn.execute("UPDATE people SET appearance = '' WHERE id = ?", (int(person_id),))
         conn.commit()
 
 

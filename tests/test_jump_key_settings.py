@@ -80,10 +80,17 @@ def _appearance_form(**overrides: str) -> dict[str, str]:
 
 def test_the_shipped_letters_are_the_defaults():
     assert jumpkeys.configured({}) == {
-        "note": "n", "journal": "j", "todo": "t", "project": "p"
+        "note": "n", "ask": "a", "journal": "j", "todo": "t", "project": "p"
     }
     assert jumpkeys.bindings({}) == {
-        "n": ["note", "idea"], "j": ["journal"], "t": ["todo"], "p": ["project"]
+        "n": ["note", "idea"],
+        "a": ["ask"],
+        # The scrolling box first, its heading second - Wes asked for the box's
+        # own top edge at the top of the window, and the heading is the
+        # fallback for a project whose journal is empty (no box is rendered).
+        "j": ["journal-box", "journal"],
+        "t": ["todo"],
+        "p": ["project"],
     }
 
 
@@ -109,7 +116,7 @@ def test_a_blank_setting_means_off_and_is_not_read_as_unset():
 
 def test_a_rebound_letter_replaces_the_old_one_entirely():
     binds = jumpkeys.bindings({"jump_key_journal": "g"})
-    assert binds["g"] == ["journal"]
+    assert binds["g"] == ["journal-box", "journal"]
     assert "j" not in binds
 
 
@@ -141,7 +148,7 @@ def test_a_hand_edited_database_still_yields_an_unambiguous_map():
     # `configured` runs the conflict pass on the READ path too, so a duplicate
     # written straight into the settings table by hand cannot reach app.js.
     binds = jumpkeys.bindings({"jump_key_todo": "j", "jump_key_journal": "j"})
-    assert binds["j"] == ["journal"]
+    assert binds["j"] == ["journal-box", "journal"]
     assert list(binds.values()).count(["todo"]) == 0
 
 
@@ -187,7 +194,7 @@ def test_saving_a_new_letter_sticks(client):
                        follow_redirects=False)
     assert resp.status_code == 303
     assert db.get_setting("jump_key_journal") == "g"
-    assert json.loads(jumpkeys.bindings_json(db.get_all_settings()))["g"] == ["journal"]
+    assert json.loads(jumpkeys.bindings_json(db.get_all_settings()))["g"] == ["journal-box", "journal"]
 
 
 def test_saving_a_blank_unbinds_and_stays_unbound(client):
@@ -248,7 +255,7 @@ def test_the_attribute_follows_the_setting(client):
     client.post("/settings", data=_appearance_form(jump_key_journal="g", jump_key_todo=""),
                 follow_redirects=False)
     binds = _rendered_bindings(client.get("/").text)
-    assert binds["g"] == ["journal"]
+    assert binds["g"] == ["journal-box", "journal"]
     assert "j" not in binds
     assert "t" not in binds
 

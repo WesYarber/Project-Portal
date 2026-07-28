@@ -1357,6 +1357,22 @@ summary:hover { color: var(--ansi-blue); }
 .control-bar > .control-status { width: 9.5rem; }
 .control-bar > .control-priority { width: 5rem; }
 .control-bar > .control-model { width: 11rem; }
+/* The activity grid, moved into this row from above the journal (Wes,
+   2026-07-28). `margin-left: auto` rather than a width: the row's controls are
+   fixed-width and the priority picker is optional, so anything sized would
+   leave a gap exactly when priority is off. `flex: none` because the grid is
+   sized in absolute pixels on purpose ("relatively small and unobtrusive")
+   and a flex item's default min-width would let it be squeezed.
+
+   No padding, deliberately: 13 weeks of 7px squares and 2px gaps is 61px tall,
+   and a label plus a 37px select is 62px - so the untouched grid lines up with
+   the controls at BOTH edges on its own. Measured in a real chromium: pad it
+   and it becomes the tallest thing in the row, grows the card, and hangs 12px
+   below the selects. */
+.control-bar > .control-heat {
+  margin-left: auto;
+  flex: none;
+}
 .control { margin: 0; min-width: 0; }
 .control label {
   font-size: 0.72rem;

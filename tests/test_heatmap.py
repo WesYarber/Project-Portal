@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from starlette.testclient import TestClient
 
-from app import db, usage
+from app import config, db, usage
 
 
 @pytest.fixture
@@ -123,3 +123,70 @@ def test_the_dashboard_shows_a_site_wide_grid(client, project):
 def test_the_project_page_shows_its_own_grid(client, project):
     body = client.get(f"/project/{project['slug']}").text
     assert body.count("heat-week") == usage.HEATMAP_WEEKS
+
+
+# --- where the grid lives on a project page -------------------------------
+#
+# Wes, 2026-07-28: "move the GitHub-like usage chart to the project status area
+# to the right of the button that lets you pick the model the project is using.
+# Clicking the chart should show the usage over time page for it on the activity
+# page."
+
+
+def test_the_grid_sits_in_the_control_bar_right_of_the_model_picker(client, project):
+    html = client.get(f"/project/{project['slug']}").text
+    bar = html.index('class="control-bar"')
+    model = html.index('class="control control-model"', bar)
+    grid = html.index("control-heat", bar)
+    # Inside the control bar, and after the model picker in source order -
+    # which with `margin-left: auto` is what puts it at the right of the row.
+    assert bar < model < grid
+    # ...and still inside the bar: the hint paragraph is the first thing after
+    # the row closes, so the grid landing after it would mean it fell out.
+    assert grid < html.index("control-hint", bar)
+
+
+def test_the_grid_no_longer_sits_above_the_journal(client, project):
+    html = client.get(f"/project/{project['slug']}").text
+    # It moved, rather than being duplicated: exactly one grid on the page.
+    assert html.count('class="heatmap"') == 1
+    assert html.index("control-heat") < html.index(">Journal</h2>")
+
+
+def test_clicking_the_grid_opens_this_projects_usage_over_time(client, project):
+    html = client.get(f"/project/{project['slug']}").text
+    link = html[html.index("control-heat") - 200:html.index("control-heat") + 400]
+    assert f'href="/activity?project={project["slug"]}"' in link
+    # A grid of colored squares is not self-evidently clickable and gives a
+    # screen reader nothing at all, so the link has to carry its own label.
+    assert "aria-label=\"usage over time" in link
+
+
+def test_the_grid_is_pushed_to_the_right_of_the_row_by_margin_not_by_width():
+    """The row's controls are fixed-width and the priority picker is optional
+    (Settings > appearance can hide it), so anything sized would leave a gap
+    exactly when priority is off. `margin-left: auto` cannot."""
+    css = (config.BASE_DIR / "app" / "static" / "style.css").read_text()
+    block = css.split(".control-bar > .control-heat {", 1)[1].split("}", 1)[0]
+    assert "margin-left: auto" in block
+    # A flex item's default min-width would let the fixed-pixel grid be
+    # squeezed at narrow widths; the grid is sized in absolute pixels on
+    # purpose (Wes: "relatively small and unobtrusive").
+    assert "flex: none" in block
+    # And no padding. Measured in a real chromium at 1280 wide: 13 weeks of 7px
+    # squares with 2px gaps is 61px tall and a label over a 37px select is 61px
+    # too, so the untouched grid shares both edges with the controls. The first
+    # cut added 0.35rem of vertical padding "to center it", which made the grid
+    # the tallest item in the row, grew the whole card by 11px and left the
+    # squares hanging below the selects. No DOM test can see that.
+    assert "padding" not in block
+
+
+def test_the_control_bar_rule_outranks_the_dashboards_heatmap_link_rule():
+    """Both rules set `margin-left`, and `.heatmap-link` comes later in the
+    file - so this only works because the control-bar selector is more
+    specific. Resolved for real rather than assumed."""
+    css = (config.BASE_DIR / "app" / "static" / "style.css").read_text()
+    assert css.index(".control-bar > .control-heat {") < css.index(".heatmap-link {")
+    # class + class (0,2,0) beats a single class (0,1,0) regardless of order.
+    assert ".control-bar > .control-heat" .count(".") == 2

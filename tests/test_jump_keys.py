@@ -25,13 +25,14 @@ Two halves, and both are needed:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from app import config
+from app import config, jumpkeys
 
 STATIC = Path(config.APP_ROOT) / "app" / "static"
 TEMPLATES = Path(config.APP_ROOT) / "app" / "templates"
@@ -45,9 +46,9 @@ def _template(name: str) -> str:
 # The targets the templates declare
 # --------------------------------------------------------------------------
 
-def test_project_page_declares_all_four_sections():
+def test_project_page_declares_every_section():
     html = _template("project.html")
-    for name in ("note", "journal", "todo", "project"):
+    for name in ("note", "ask", "journal", "journal-box", "todo", "project"):
         assert f'data-jump="{name}"' in html, name
 
 
@@ -70,13 +71,65 @@ def test_dashboard_declares_the_idea_section_and_focuses_the_title():
     assert 'data-jump="note"' not in html
 
 
-def test_the_journal_target_is_the_heading_not_the_scroll_box():
-    # Measured in a real chromium at 1280x900 (viewport 757 tall): pressing J
-    # puts the <h2> at y=14 and the scroll box's own top edge at y=130, so the
-    # heading and the run-count line stay on screen and the box still starts in
-    # the first sixth of the window.
+def test_the_journal_target_is_the_scroll_box_not_the_heading():
+    """Wes, 2026-07-28, after using the first version of this:
+
+      "hitting J for journal should not go to the top of the journal subsection
+      and show the 'Journal' header but rather put the scrollable journal
+      section to the top of the window."
+
+    The previous run's argument for the heading - it keeps the run-count line
+    on screen - was mine and he has now overruled it. The heading stays as the
+    SECOND target, which is not a hedge: a project with no entries renders no
+    box at all, and the key landing nowhere would read as broken.
+    """
     html = _template("project.html")
+    assert 'class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box"' in html
     assert '<h2 data-jump="journal">Journal</h2>' in html
+    # The order in ACTIONS is what decides which one wins, so pin it here too.
+    assert jumpkeys.bindings({})["j"] == ["journal-box", "journal"]
+
+
+def test_a_opens_the_ask_block_and_puts_the_cursor_in_it():
+    """Wes, 2026-07-28: "Hitting 'a' should go to the 'ask question' prompt,
+    activate it, and highlight the text field to begin typing."
+
+    The attribute has to be on the <details> rather than on the card inside it:
+    that is what makes "activate" happen, because jumpTo opens every <details>
+    between the page and its target and `closest` counts the element itself.
+    """
+    html = _template("project.html")
+    assert 'data-jump="ask"' in html
+    assert 'data-jump-focus=".ask-form textarea[name=\'question\']"' in html
+    # The tag carrying it must be the <details>, not something inside it.
+    tag = re.search(r"<details[^>]*data-jump=\"ask\"[^>]*>", html)
+    assert tag, "data-jump=\"ask\" is not on the <details>"
+    # ...and the focus selector has to match the box the ask form really uses.
+    assert 'class="ask-form"' in html
+    assert '<textarea name="question"' in html
+
+
+def test_a_is_the_shipped_letter_for_the_ask_block():
+    assert jumpkeys.bindings({})["a"] == ["ask"]
+
+
+def test_app_js_ships_the_same_defaults_as_the_server():
+    """The two copies of the shipped map must agree.
+
+    app.js only reaches for its own copy on a page with no `data-jump-keys`
+    attribute - a tab cached from before the setting existed. That is rare
+    enough that a divergence would never show up in normal use, and would then
+    present as "the keys do something different in my other tab", which is
+    close to undiagnosable. So it is pinned rather than trusted.
+    """
+    js = (STATIC / "app.js").read_text()
+    literal = js.split("var JUMP_KEYS_DEFAULT = ", 1)[1].split("};", 1)[0] + "}"
+    # Strip the comment lines, then quote the bare JS keys into JSON.
+    body = "\n".join(
+        line for line in literal.splitlines() if not line.strip().startswith("//")
+    )
+    shipped = json.loads(re.sub(r"(\w+):", r'"\1":', body))
+    assert shipped == jumpkeys.bindings({})
 
 
 def test_the_footer_hint_is_rendered_empty_and_hidden():
@@ -173,11 +226,45 @@ def test_shift_is_not_treated_as_a_modifier(jumps):
 
 
 def test_j_t_and_p_are_navigation_only(jumps):
-    for key, target in (("journal", "journalHead"), ("todo", "todoHead"), ("project", "projectCard")):
+    for key, target in (("journal", "journalBox"), ("todo", "todoHead"), ("project", "projectCard")):
         scene = jumps[key]
         assert _scrolled(scene) == [target], key
         assert scene["scrolls"][0]["opts"]["block"] == "start", key
         assert _focused(scene) == [], key
+
+
+def test_j_takes_the_scroll_box_over_the_heading(jumps):
+    # Both targets are on the page and the box wins, which is the whole of
+    # Wes's 2026-07-28 correction. Asserted on the behavior rather than on the
+    # bindings, because the preference is only real if app.js honors the order.
+    assert _scrolled(jumps["journal"]) == ["journalBox"]
+
+
+def test_j_falls_back_to_the_heading_on_an_empty_journal(jumps):
+    # No entries means no scroll box in the template. Landing on the heading
+    # beats doing nothing: a key that silently fails reads as a broken key.
+    scene = jumps["journalEmpty"]
+    assert _scrolled(scene) == ["journalHead"]
+    assert scene["defaultPrevented"] is True
+
+
+def test_a_unfolds_the_ask_block_and_focuses_its_box(jumps):
+    """All three verbs of "go to it, activate it, and highlight the field"."""
+    scene = jumps["askOnProject"]
+    # go to it - the <details> itself, top edge to the top of the window
+    assert _scrolled(scene) == ["askBlock"]
+    assert scene["scrolls"][0]["opts"]["block"] == "start"
+    # activate it - it started closed
+    assert scene["detailsOpen"] is True
+    # highlight the field to begin typing
+    assert _focused(scene) == ["askBox"]
+    assert scene["classAdds"] == [["askBox", "jump-flash"]]
+
+
+def test_a_on_the_dashboard_does_nothing_and_keeps_the_keystroke(jumps):
+    scene = jumps["askOnDashboard"]
+    assert _scrolled(scene) == []
+    assert scene["defaultPrevented"] is False
 
 
 def test_n_on_the_dashboard_finds_the_idea_section_instead(jumps):
@@ -218,7 +305,7 @@ def test_the_open_image_viewer_swallows_the_keys(jumps):
     assert _scrolled(jumps["lightboxOpen"]) == []
     # Closed, the same key works - so this is the viewer's state, not a
     # blanket refusal whenever the viewer exists in the DOM.
-    assert _scrolled(jumps["lightboxClosed"]) == ["journalHead"]
+    assert _scrolled(jumps["lightboxClosed"]) == ["journalBox"]
 
 
 def test_a_folded_target_is_unfolded_first(jumps):
@@ -273,14 +360,14 @@ def test_turning_every_jump_off_is_honoured_rather_than_overruled(jumps):
 def test_a_page_with_no_attribute_keeps_the_shipped_letters(jumps):
     # A tab cached from before the setting existed, or a template rendered
     # somewhere else: the keys degrade to their defaults, not to nothing.
-    assert _scrolled(jumps["attributeAbsent"]) == ["journalHead"]
+    assert _scrolled(jumps["attributeAbsent"]) == ["journalBox"]
 
 
 def test_an_unreadable_attribute_falls_back_instead_of_throwing(jumps):
     # A throw here would abort the whole script tag, taking every other
     # behaviour in app.js with it - so this is not only about the jumps.
     for name in ("bindingsNotJson", "bindingsNotAnObject"):
-        assert _scrolled(jumps[name]) == ["journalHead"], name
+        assert _scrolled(jumps[name]) == ["journalBox"], name
 
 
 def test_an_entry_the_handler_could_not_act_on_is_dropped(jumps):

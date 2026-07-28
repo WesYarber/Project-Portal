@@ -99,8 +99,12 @@ def test_ask_opens_itself_while_an_answer_is_pending(client, project, monkeypatc
 
     monkeypatch.setattr(main.ask, "pending", lambda pid: True)
     html = _page(client)
-    # The <details> carries `open`, so the "thinking..." line is not folded away.
-    assert re.search(r'<details class="ask-block" id="ask" open', html)
+    # The <details> carries `open`, so the "thinking..." line is not folded
+    # away. Matched loosely across the tag's other attributes rather than by
+    # their exact order: the ask block also carries the A key's data-jump
+    # attributes now, and this test is about `open`, not about markup order.
+    tag = re.search(r"<details class=\"ask-block\"[^>]*>", html)
+    assert tag and " open" in tag.group(0)
     assert "thinking..." in html
 
 

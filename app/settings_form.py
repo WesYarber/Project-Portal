@@ -183,6 +183,36 @@ def _build_registry() -> dict[str, Field]:
 REGISTRY: dict[str, Field] = _build_registry()
 KNOWN_KEYS = tuple(REGISTRY)
 
+# The settings that belong to a PERSON rather than to the install.
+#
+# Wes, 2026-07-28: "It would be cool as well if she was able to customize the
+# theme of the site for her user to her liking." The appearance layers were one
+# global row each, which is right for one person and wrong for two - her
+# turning the scanlines off would turn them off on his phone as well.
+#
+# Validation is unchanged: these still go through the same `Field.clean` as
+# everything else, and only the *destination* differs. `split_personal` is the
+# one place that knows the difference, so a new appearance option is still a
+# one-line change in config.
+#
+# The keyboard jumps are deliberately NOT here. A jump key is a fact about the
+# page - the footer hint prints it, and the letters are the same ones the docs
+# name - whereas a typeface is a fact about the reader. Wes asked for the theme
+# to be hers, not the keys.
+PERSONAL_KEYS: frozenset[str] = frozenset(config.APPEARANCE_CHOICES)
+
+
+def split_personal(values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """`(install settings, this person's settings)` from one cleaned form.
+
+    Returned as two dicts rather than written here, for the same reason
+    `apply` returns instead of writing: the caller owns persistence, and the
+    split is then testable without a database.
+    """
+    mine = {k: v for k, v in values.items() if k in PERSONAL_KEYS}
+    theirs = {k: v for k, v in values.items() if k not in PERSONAL_KEYS}
+    return theirs, mine
+
 
 def declared_fields(raw: Optional[str]) -> list[str]:
     """The settings a submitted form claims to own.

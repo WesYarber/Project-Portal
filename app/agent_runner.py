@@ -36,6 +36,12 @@ another device - $THEY will never be on the machine your code runs on. Write
 `$HOST` (e.g. `$BASE_URL`), never `localhost` or
 `127.0.0.1`, in summaries, journal entries, questions and preview_url alike.
 
+Write **American English**, everywhere: in what you say to $OWNER, in the UI you
+build, and in code, comments and test names alike. "color" not "colour", "gray"
+not "grey", "behavior", "recognize", "center", "labeled". $OWNER has asked for
+this more than once, so treat a British spelling as a defect and fix it on any
+line you are already touching.
+
 Before you finish, you MUST deliver a report by calling the **StructuredOutput**
 tool with EXACTLY this JSON shape - the harness provides that tool and
 validates your report as you submit it. If no StructuredOutput tool is
@@ -63,7 +69,7 @@ available in your session, write the same JSON to a file at
   "since you last looked" banner. This is often the ONLY part of your report
   $THEY will read, so each bullet must say what actually changed, in $THEIR
   terms, well enough that $THEY should never have to open the journal to find
-  out. Name the feature, the file or the behaviour. Counting your own output
+  out. Name the feature, the file or the behavior. Counting your own output
   is not a summary:
   "two commits", "two todo items shipped", "ten items cleared off the list" and
   anything opening with "Done." are all worthless to $THEM and are not acceptable.
@@ -409,7 +415,7 @@ def _project_section(project: sqlite3.Row) -> str:
     separately. The description is the agent's own summary of what the project
     has become and gets rewritten as work lands; the idea is the sentence Wes
     actually typed, and it is the only record of what he was originally after -
-    so summarising it away would quietly lose the brief.
+    so summarizing it away would quietly lose the brief.
     """
     idea = (_row_get(project, "initial_idea", "") or "").strip()
     description = (project["description"] or "").strip()
@@ -654,7 +660,7 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     #
     # Empty on a single-person install, which is every install until somebody
     # adds a second person, so an ordinary prompt is byte-for-byte unchanged and
-    # none of the existing behaviour shifts under a feature nobody is using.
+    # none of the existing behavior shifts under a feature nobody is using.
     try:
         people_txt = people.prompt_section(project["id"])
     except Exception:  # pragma: no cover - defensive
@@ -677,7 +683,7 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     # side thread has continuity of its own.
     journal = db.list_journal_asc(project["id"], limit=20, exclude=db.SIDE_THREAD)
     # Dropped from the tail only if they made it into the block above, so a
-    # failed delivery degrades to the old behaviour instead of losing the note.
+    # failed delivery degrades to the old behavior instead of losing the note.
     delivered_now = set(delivery.ids)
     journal = [row for row in journal if int(row["id"]) not in delivered_now]
     journal_txt = "\n".join(

@@ -366,8 +366,18 @@
     <input type="hidden" name="_section" value="appearance">
     <input type="hidden" name="_fields" value="crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority,{{ jump_keys|map(attribute='field')|join(',') }}">
     <div class="card">
-      <p class="hint" style="margin-top:0;">Every layer is independent, so you can keep the parts of
-        the terminal look you like and drop the parts that make text tiring. Applies on save.</p>
+      {# Whose look this is. Said out loud rather than assumed: this panel used
+         to be one global setting per layer, and a page that quietly switched
+         from "everyone's" to "yours" without saying so would be the worst kind
+         of change - invisible until the moment somebody wonders why their
+         change did not reach the other person's phone. #}
+      {% set current = me() %}
+      <p class="hint" style="margin-top:0;">
+        {% if current %}Your look{% if people_count > 1 %}, {{ current.name }}{% endif %} &mdash;
+        kept per person, so changing it here changes nothing on anybody else&rsquo;s screen.
+        {% else %}Your look.{% endif %}
+        Every layer is independent, so you can keep the parts of the terminal look you like and drop
+        the parts that make text tiring. Applies on save.</p>
       <div class="grid grid-2 field-grid">
         {{ select_field('crt_scanlines', 'Scanlines') }}
         {{ select_field('crt_glow', 'Phosphor glow') }}
@@ -377,6 +387,19 @@
       </div>
       <p class="hint">Journal entries, notes and agent reports are rendered as Markdown either way
         &mdash; the typeface setting is what decides whether that prose is monospaced.</p>
+
+      {# Only offered once there is something to undo. "Follow the install"
+         is NOT the same as picking the shipped defaults by hand: it drops the
+         overrides, so a later change to the install's look reaches you again.
+         A separate form because it is a different verb - this one throws
+         choices away, and burying it in "save appearance" would make the save
+         button ambiguous. #}
+      {% if my_look %}
+      <p class="hint">You have pinned
+        <strong>{{ my_look|length }}</strong> of these
+        ({{ my_look.keys()|map('replace', 'crt_', '')|map('replace', 'ui_', '')|join(', ') }});
+        the rest follow the install&rsquo;s look as it changes.</p>
+      {% endif %}
       <div class="field checkbox-row">
         <input type="checkbox" id="show_priority" name="show_priority"
                {{ 'checked' if (settings.show_priority or '1') == '1' else '' }}>
@@ -398,7 +421,9 @@
       <p class="hint">One letter each, pressed while you are not typing in a box, scrolls that
         section to the top of the window. Leave a field blank to unbind it. Two sections cannot
         share a letter &mdash; the one listed first here keeps it and the other is unbound, and
-        the line under each field says what the key actually is now.</p>
+        the line under each field says what the key actually is now.{% if people_count > 1 %}
+        Unlike the look above, the keys are shared: the footer hint prints them, so everybody
+        using this portal presses the same letters.{% endif %}</p>
       <div class="grid grid-2 field-grid">
         {% for row in jump_keys %}
         <div class="field">
@@ -414,6 +439,11 @@
       <div class="button-row"><button type="submit">save appearance</button></div>
     </div>
   </form>
+  {% if my_look %}
+  <form method="post" action="/settings/appearance/reset" class="appearance-reset">
+    <button type="submit" class="btn secondary small">follow the install&rsquo;s look again</button>
+  </form>
+  {% endif %}
   <p class="hint">The portal follows a reusable dark terminal theme:
     <a href="/style">the theme page</a> has every component with markup to
     copy, and a one-click download of <code>terminal-theme.css</code> to drop

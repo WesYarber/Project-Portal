@@ -205,6 +205,38 @@ templates = Jinja2Templates(directory=str(config.BASE_DIR / "app" / "templates")
 templates.env.auto_reload = False
 
 
+def _precompile_templates() -> int:
+    """Load every template now, so this process serves the ones it booted with.
+
+    `auto_reload = False` above was believed to give template/code lockstep. It
+    does not, and the hole cost Wes a broken page on 2026-07-28: Jinja loads a
+    template the first time it is RENDERED, not at import, so a template nobody
+    had visited since the last restart was still read fresh off disk hours
+    later. An agent editing settings.html at 14:45 therefore had its new markup
+    picked up by a process still running the Python from 05:35, the page 500'd
+    on a context variable the new template used and the old handler did not
+    pass - and because auto_reload is off, that broken compile was then cached
+    for good. Wes found it before the tests did, which is the wrong way round.
+
+    Loading them all here closes the window properly: after this, every
+    template is in `env.cache`, no later render touches the disk, and a
+    template can only change together with the code that feeds it - at a
+    restart, which is what the comment above always claimed.
+
+    A template that will not compile is logged and skipped rather than raised.
+    It would 500 on its own page either way, and taking the whole portal down
+    at boot - including the restart that would fix it - is strictly worse.
+    """
+    loaded = 0
+    for name in templates.env.list_templates():
+        try:
+            templates.env.get_template(name)
+            loaded += 1
+        except Exception:  # noqa: BLE001 - one bad template must not stop boot
+            log.exception("Template %s could not be compiled at startup", name)
+    return loaded
+
+
 def render_markdown(text: Optional[str]) -> str:
     if not text:
         return ""
@@ -408,16 +440,42 @@ def open_question_total() -> int:
     return len([q for q in db.open_questions() if q["project_id"] not in shelved])
 
 
-def appearance() -> dict[str, str]:
-    """The CRT layer settings, each falling back to its default if unset or
-    unrecognised. Rendered as classes on <body> so the whole page can respond
-    without any per-element markup."""
+def install_appearance() -> dict[str, str]:
+    """The install's look: the settings rows, each falling back to its default
+    if unset or unrecognised.
+
+    This is what a person who has chosen nothing sees, and what a new person
+    starts from.
+    """
     out = {}
     for key, choices in config.APPEARANCE_CHOICES.items():
         value = db.get_setting(key) or ""
         allowed = {v for v, _ in choices}
         out[key] = value if value in allowed else config.APPEARANCE_DEFAULTS[key]
     return out
+
+
+def appearance(person=None) -> dict[str, str]:
+    """The CRT layers as the person in front of this request should see them.
+
+    Three tiers, narrowest first: this person's own overrides, then the
+    install's settings, then the shipped defaults. Rendered as classes on
+    <body> so the whole page can respond without any per-element markup.
+
+    `person` defaults to the acting person, which is what every template
+    render wants. It is an argument at all so the settings page can render
+    somebody's panel without pretending to be them.
+
+    A person with no overrides gets exactly `install_appearance()`, byte for
+    byte - so a one-person portal, and every page of it, is unchanged by this
+    feature existing.
+    """
+    look = install_appearance()
+    try:
+        look.update(people.appearance_of(person if person is not None else me()))
+    except Exception:  # pragma: no cover - defensive
+        log.debug("Could not read a personal appearance; using the install's", exc_info=True)
+    return look
 
 
 def body_classes() -> str:
@@ -536,6 +594,10 @@ templates.env.globals["DEFAULT_MODEL"] = config.DEFAULT_MODEL
 templates.env.filters["cost"] = usage.format_cost
 templates.env.globals["cost_noun"] = usage.cost_noun
 templates.env.globals["COST_UNIT_CHOICES"] = usage.COST_UNIT_CHOICES
+
+# Last, deliberately: a template may reference a filter or a global at compile
+# time, so everything a template can name has to be registered above this line.
+_TEMPLATES_LOADED = _precompile_templates()
 
 
 # --------------------------------------------------------------------------
@@ -1818,6 +1880,20 @@ async def style_guide(request: Request) -> HTMLResponse:
 @app.get("/settings", response_class=HTMLResponse)
 async def settings_page(request: Request) -> HTMLResponse:
     settings = db.get_all_settings()
+    # The appearance dropdowns must show what THIS reader actually sees, not
+    # the install's rows - otherwise the panel opens showing somebody else's
+    # scanlines and the first save quietly adopts them. Overlaying the
+    # resolved look onto `settings` keeps `select_field` unchanged: the macro
+    # reads `settings[key]` and does not need to learn about people.
+    viewer = None
+    try:
+        viewer = resolve_person(request)
+    except Exception:  # pragma: no cover - defensive
+        log.debug("Could not resolve who is reading Settings", exc_info=True)
+    settings.update(appearance(viewer))
+    # Which layers this person has pinned, so the panel can say so and offer
+    # the way back to following the install.
+    my_look = people.appearance_of(viewer)
     # `saved` is the comma-separated list of keys the previous POST actually
     # wrote. Echoing it back turns "did that stick?" into something the page
     # answers directly, instead of a silent redirect that looks identical
@@ -1848,6 +1924,11 @@ async def settings_page(request: Request) -> HTMLResponse:
             # the template, so a new jumpable section grows its settings field
             # without anyone remembering to add one.
             "jump_keys": jumpkeys.rows(settings),
+            # Whose theme the appearance panel is editing, and which of its
+            # layers they have pinned away from the install's look.
+            "my_look": my_look,
+            "install_look": install_appearance(),
+            "people_count": len(people.everyone()),
             # Archived people included on purpose: this is the one page where
             # bringing somebody back has to be possible, and a person who has
             # vanished from every screen is a person nobody can un-archive.
@@ -1866,6 +1947,21 @@ async def settings_page(request: Request) -> HTMLResponse:
             "model_catalog": modelwatch.catalog(),
         },
     )
+
+
+@app.post("/settings/appearance/reset")
+async def reset_my_appearance(request: Request) -> RedirectResponse:
+    """Follow the install's look again, dropping this person's overrides.
+
+    Not the same as setting every layer back to the shipped default: this
+    re-attaches them to the install, so a later change to the install's look
+    reaches them. That distinction is why the column stores a subset rather
+    than a full copy (see people.appearance_of).
+    """
+    person_id = _person_id(request)
+    if person_id is not None:
+        people.clear_appearance(person_id)
+    return RedirectResponse(url="/settings#appearance", status_code=303)
 
 
 @app.post("/settings/bonus-runs")
@@ -1896,8 +1992,23 @@ async def save_settings(request: Request) -> RedirectResponse:
         {key: str(value) for key, value in form.multi_items()},
         declared if isinstance(declared, str) else None,
     )
-    for key, value in values.items():
+    # The appearance layers belong to whoever is reading, not to the install -
+    # see settings_form.PERSONAL_KEYS. Everything else is one portal-wide row
+    # as it always was.
+    install, personal = settings_form.split_personal(values)
+    for key, value in install.items():
         db.set_setting(key, value)
+    if personal:
+        person_id = _person_id(request)
+        if person_id is None:
+            # No identifiable person - a script, or an identity lookup that
+            # failed. Writing the theme to nobody would silently discard it, so
+            # it lands on the install instead, which is exactly what this form
+            # did before people existed.
+            for key, value in personal.items():
+                db.set_setting(key, value)
+        else:
+            people.set_appearance(person_id, personal)
     section = str(form.get("_section") or "").strip()
     saved = ",".join(sorted(values))
     url = f"/settings?saved={quote(saved)}"

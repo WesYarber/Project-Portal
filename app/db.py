@@ -260,6 +260,10 @@ CREATE TABLE IF NOT EXISTS people (
     -- The `tailscale whois` LoginName that identifies this person on sight,
     -- or ''. Only useful once two people are two tailnet users.
     tailnet_login TEXT NOT NULL DEFAULT '',
+    -- This person's own look: a JSON object of the appearance keys they have
+    -- picked, '' while they have picked none. See people.appearance_of for the
+    -- fallback chain (person -> the install's setting -> the shipped default).
+    appearance TEXT NOT NULL DEFAULT '',
     -- The person the install was set up for (config's OWNER). Exactly one row
     -- carries it, and it buys one thing only: people.owner() can never return
     -- None, so there is always somebody to attribute a note to.
@@ -368,6 +372,20 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # projects.parent_id: SQLite cannot add a column with a foreign key to a
     # populated table, and this is added by ALTER on every existing portal.db.
     "journal": [("delivered_at", "TEXT"), ("person_id", "INTEGER")],
+    # This person's own look, as a JSON object of appearance keys they have
+    # chosen (see config.APPEARANCE_CHOICES). Wes, 2026-07-28: "It would be
+    # cool as well if she was able to customize the theme of the site for her
+    # user to her liking."
+    #
+    # A JSON blob rather than one column per layer, because the set of layers
+    # grows - scanlines, glow, animations, typeface and density are five today
+    # and were three in June - and a schema migration per look-and-feel option
+    # would make adding one expensive enough that nobody would.
+    #
+    # '' means "has chosen nothing", which is NOT the same as "has chosen the
+    # defaults": an empty override set follows the install's look as it
+    # changes, while an explicit choice pins it. See people.appearance_of.
+    "people": [("appearance", "TEXT NOT NULL DEFAULT ''")],
 }
 
 

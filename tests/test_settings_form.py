@@ -105,6 +105,8 @@ def test_interval_zero_is_a_real_value_not_junk():
 # --- End to end through the route ------------------------------------------
 
 def test_saving_appearance_does_not_clobber_the_telegram_token(client):
+    from app import people
+
     db.set_setting("telegram_token", "secret-token")
     client.post("/settings", data={
         "_fields": APPEARANCE_FIELDS,
@@ -112,8 +114,15 @@ def test_saving_appearance_does_not_clobber_the_telegram_token(client):
         "ui_font": "hybrid", "ui_density": "compact",
     })
     assert db.get_setting("telegram_token") == "secret-token"
-    assert db.get_setting("crt_scanlines") == "off"
-    assert db.get_setting("ui_font") == "hybrid"
+    # The appearance layers land on the PERSON, not on the install - they are
+    # a fact about the reader (Wes, 2026-07-28: "It would be cool as well if
+    # she was able to customize the theme of the site for her user to her
+    # liking"). The install's rows are untouched, which is what lets somebody
+    # else keep the look they had.
+    mine = people.appearance_of(people.owner())
+    assert mine["crt_scanlines"] == "off"
+    assert mine["ui_font"] == "hybrid"
+    assert db.get_setting("crt_scanlines") == config.APPEARANCE_DEFAULTS["crt_scanlines"]
 
 
 def test_saving_agent_settings_does_not_turn_off_glados(client):
