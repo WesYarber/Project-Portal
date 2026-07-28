@@ -354,7 +354,18 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # quick_options: JSON list of one-tap answers offered on the Telegram
     # message ('' = none); frozen at creation so a tapped index always
     # resolves to the text that was actually on the button. See quickreplies.
-    "questions": [("slot", "INTEGER"), ("quick_options", "TEXT NOT NULL DEFAULT ''")],
+    # `answered_by` is which person answered, once more than one could. NULL
+    # means nobody knows - every answer given before this column existed, and
+    # every one that arrives over a channel the portal cannot yet put a face to
+    # (Telegram, until a chat id is mapped to a person). NULL is left as NULL
+    # rather than back-filled to the owner: inventing an attribution is worse
+    # than admitting one is missing, because the agent reads it and pitches its
+    # next answer at whoever it names.
+    #
+    # Not declared REFERENCES, for the same reason as journal.person_id below:
+    # SQLite cannot ALTER a populated table to add a column with a foreign key.
+    "questions": [("slot", "INTEGER"), ("quick_options", "TEXT NOT NULL DEFAULT ''"),
+                  ("answered_by", "INTEGER")],
     "todos": [
         ("cleared_at", "TEXT"),
         ("tags", "TEXT NOT NULL DEFAULT ''"),
@@ -1836,27 +1847,43 @@ def open_question_counts() -> dict[int, int]:
     return {int(row["project_id"]): int(row["c"]) for row in rows}
 
 
-def answer_question(question_id: int, answer: str) -> Optional[sqlite3.Row]:
+def answer_question(question_id: int, answer: str,
+                    person_id: Optional[int] = None) -> Optional[sqlite3.Row]:
+    """Record an answer, and who gave it if the caller knows.
+
+    `person_id` is left NULL when the channel cannot say. See the schema note on
+    `answered_by`: an unattributed answer is a fact, and guessing at one is not.
+    """
     conn = get_conn()
     with _LOCK:
         conn.execute(
             "UPDATE questions SET status = 'answered', answer = ?, answered_at = ?, "
-            "slot = NULL WHERE id = ?",
-            (answer, now(), question_id),
+            "slot = NULL, answered_by = ? WHERE id = ?",
+            (answer, now(), int(person_id) if person_id else None, question_id),
         )
         conn.commit()
         return conn.execute("SELECT * FROM questions WHERE id = ?", (question_id,)).fetchone()
 
 
-def answer_question_and_resume(question_id: int, answer: str) -> Optional[sqlite3.Row]:
+def answer_question_and_resume(question_id: int, answer: str,
+                               person_id: Optional[int] = None) -> Optional[sqlite3.Row]:
     """Answer a question and journal it. There is nothing to "resume" any more:
     an open question never moved the project, so answering the last one simply
-    changes the count and every derived badge follows by itself."""
+    changes the count and every derived badge follows by itself.
+
+    The journal entry carries the same `person_id` as the question row. Two
+    places to keep in step, but they are read by different things - the journal
+    entry is what the prompt's note-and-journal machinery sees, the column is
+    what the answered-questions section reads - and an answer attributed in one
+    and anonymous in the other would be worse than either.
+    """
     question = get_question(question_id)
     if question is None:
         return None
-    answer_question(question_id, answer)
-    add_journal(question["project_id"], "user", "answer", f"**Q:** {question['question']}\n\n**A:** {answer}")
+    answer_question(question_id, answer, person_id)
+    add_journal(question["project_id"], "user", "answer",
+                f"**Q:** {question['question']}\n\n**A:** {answer}",
+                person_id=person_id)
     return question
 
 

@@ -660,6 +660,28 @@ templates.env.globals["THEME_CHROME"] = config.THEME_CHROME
 templates.env.globals["THEME_STOCK"] = config.THEME_STOCK
 templates.env.globals["status_choices"] = config.status_choices
 templates.env.globals["display_state"] = db.display_state
+def byline(entry) -> str:
+    """What to print on a journal row's author badge.
+
+    The generic `user` is right on a one-person install and useless on a shared
+    one: two people writing notes into the same journal both show up as "user",
+    so the timeline cannot say who asked for what. When the portal recorded a
+    person and there is more than one it could be, the badge carries the name.
+
+    Falls back to the bare author rather than to the owner's name - see
+    `people.known_name`. An old note written before person stamping existed is
+    honestly anonymous, and printing the owner over it would be a guess that
+    reads exactly like a fact.
+    """
+    try:
+        author = entry["author"]
+        if not people.more_than_one():
+            return author
+        return people.known_name(entry["person_id"]) or author
+    except (IndexError, KeyError, TypeError):  # pragma: no cover - defensive
+        return ""
+
+
 # A global rather than a per-route context value: priority shows up on the
 # dashboard cells, the project page control and the sub-project list, and a
 # route that forgot to pass it would leave one of those three still showing it.
@@ -673,6 +695,7 @@ templates.env.globals["me"] = me
 templates.env.globals["everyone"] = people.everyone
 templates.env.globals["project_members"] = people.members
 templates.env.globals["person_pronouns"] = people.pronouns_of
+templates.env.globals["byline"] = byline
 templates.env.globals["is_side_thread"] = db.is_side_thread
 templates.env.globals["summary_bullet"] = db.summary_bullet
 templates.env.filters["status_badge"] = config.status_badge
@@ -1709,6 +1732,7 @@ def _after_question(question: sqlite3.Row, next: str) -> str:
 
 @app.post("/questions/{question_id}/answer")
 async def answer_question(
+    request: Request,
     question_id: int,
     answer: str = Form(""),
     choice: str = Form(""),
@@ -1745,7 +1769,10 @@ async def answer_question(
         # would settle the question against a blank, which reads to the next
         # agent as a decision that was never made.
         return RedirectResponse(url=_after_question(question, next), status_code=303)
-    db.answer_question_and_resume(question_id, text)
+    # Who is answering, so the next agent can pitch its reply at them rather
+    # than at whoever it assumed. Resolved from the request, not from the
+    # ContextVar - see _person_id.
+    db.answer_question_and_resume(question_id, text, _person_id(request))
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 

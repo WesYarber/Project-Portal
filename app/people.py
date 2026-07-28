@@ -234,6 +234,37 @@ def name_of(person: Optional[sqlite3.Row]) -> str:
     return config.SITE.owner
 
 
+def known_name(person_id: Optional[int]) -> str:
+    """The name of a person the portal actually recorded, or "" if it did not.
+
+    Deliberately NOT `name_of`, whose owner fallback is right for a byline that
+    must never render blank and wrong here. This is used where the answer feeds
+    an agent's prompt, and there the difference between "Wes answered" and
+    "nobody recorded who answered" is the whole point: falling back to the owner
+    would manufacture an attribution and get the pitch of the next reply wrong
+    for the one person it matters for.
+    """
+    if not person_id:
+        return ""
+    row = get(int(person_id))
+    if row is None:
+        return ""
+    try:
+        return (row["name"] or "").strip()
+    except (IndexError, KeyError):  # pragma: no cover - defensive
+        return ""
+
+
+def more_than_one() -> bool:
+    """True when this install has more than one active person.
+
+    The gate on printing who did something. On a one-person install naming them
+    is noise in every prompt and on every page - and the prompt is under a byte
+    budget (app/promptbudget.py), so noise there has a price.
+    """
+    return len(everyone()) > 1
+
+
 # ---------------------------------------------------------------------------
 # Writing
 # ---------------------------------------------------------------------------

@@ -769,7 +769,10 @@
   {% set aside = is_side_thread(j.author, j.kind) %}
   <div class="journal-entry from-{{ j.author }}{{ ' note-unsent' if pending }}{{ ' journal-aside' if aside }}">
     <div class="meta">
-      <span class="badge author-{{ j.author }}">{{ j.author }}</span>
+      {# The name, not "user", once more than one person writes here - otherwise
+         two people's notes are indistinguishable in the same timeline. The
+         class keeps the author so the row's color does not move. #}
+      <span class="badge author-{{ j.author }}">{{ byline(j) }}</span>
       <span class="badge">{{ j.kind }}</span>
       <span class="small muted">{{ j.ts|timeago }}</span>
       {% if pending %}<span class="badge badge-unsent" title="No agent has read this yet, so you can still change it">not sent yet</span>{% endif %}

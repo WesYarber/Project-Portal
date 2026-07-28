@@ -748,9 +748,20 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     if waiting_txt:
         parts.append(waiting_txt)
 
+    # Who answered, so a reply can be pitched at the person who actually asked
+    # for it rather than at whoever the agent assumed - the contract tells it to
+    # do that, and until now the prompt gave it nothing to do it with. Named
+    # only on an install with more than one person, where the name changes
+    # something; on a one-person install this section is byte-identical to
+    # before. An answer nobody was recorded for stays unnamed rather than being
+    # credited to the owner - see people.known_name.
     qa = db.answered_qa(project["id"])
-    qa_txt = "\n".join(f"- Q: {row['question']}\n  A: {row['answer']}" for row in qa) or "(none)"
-    parts.append(f"## Answered questions\n{qa_txt}")
+    show_who = people.more_than_one()
+    qa_lines = []
+    for row in qa:
+        who = people.known_name(row["answered_by"]) if show_who else ""
+        qa_lines.append(f"- Q: {row['question']}\n  A{f' ({who})' if who else ''}: {row['answer']}")
+    parts.append(f"## Answered questions\n{'\n'.join(qa_lines) or '(none)'}")
 
     skills_txt = _skills_section()
     if skills_txt:
