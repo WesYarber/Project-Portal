@@ -479,12 +479,22 @@
 
 {# Saved for later: off the questions page, still here, still answerable in
    place. Wes, 2026-07-28: "it should still show the question in the relevant
-   project page, but it should be removed from the questions page." Open by
-   default rather than folded, because a saved question is a thing you meant
-   to come back to and this is where you come back to it. #}
+   project page, but it should be removed from the questions page."
+
+   And then, the same day: "Make the 'Saved for later' question tab be in a
+   collapsed section that sits in the bottom of the questions section rather
+   than having its own static headers." The previous pass gave it an <h2> of
+   its own, level with "Open questions" - which said the two were equals when
+   the whole point of saving one is that you have decided it is not pressing.
+   Folded, and last, it takes one line of the page until you want it. #}
 {% if dismissed_questions %}
-<h2>Saved for later</h2>
-{% for q in dismissed_questions %}{{ question_card(q, next='', saved=true) }}{% endfor %}
+<details class="fold-section saved-questions">
+  <summary>
+    <span class="fold-section-label">Saved for later</span>
+    <span class="muted small">{{ dismissed_questions|length }} question{{ 's' if dismissed_questions|length != 1 else '' }} taken off the questions page &mdash; still answerable here</span>
+  </summary>
+  {% for q in dismissed_questions %}{{ question_card(q, next='', saved=true) }}{% endfor %}
+</details>
 {% endif %}
 
 {# Deleted ones are read-only history. They are kept so it is visible that the
@@ -743,19 +753,12 @@
    exists, and on a project with no entries at all (where there IS no box) the
    key still lands on the heading rather than doing nothing. #}
 <h2 data-jump="journal">Journal</h2>
-{# What the Runs section used to be. The table it hid duplicated /activity row
-   for row, so all that is kept is the count and the link - the journal below
-   is the readable account of the same runs. #}
-{# The activity grid used to sit here. Wes, 2026-07-28: "move the GitHub-like
-   usage chart to the project status area to the right of the button that lets
-   you pick the model the project is using" - so it is now in the control bar
-   at the top of the page, and this line keeps the count and the link. #}
-<div class="journal-runs">
-  <p class="small muted">
-    {{ runs|length }} run{{ 's' if runs|length != 1 else '' }} on this project &middot;
-    <a href="/activity?project={{ project.slug }}">usage over time</a>
-  </p>
-</div>
+{# There used to be a "N runs on this project - usage over time" line here, the
+   last remnant of a Runs table that duplicated /activity row for row. Wes,
+   2026-07-28: "Get rid of the '50 runs on this project * usage over time' text
+   in the journal section." Nothing is lost: the activity grid in the control
+   bar at the top of this page is a link to the same /activity view, and the
+   journal below is the readable account of those same runs. #}
 {# Scrolls too, but at a far higher cap than the todo and file lists - the
    journal is the thing you came to read, so its box is most of a screen tall
    rather than a ten-line window onto it. #}

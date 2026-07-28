@@ -829,6 +829,144 @@ function initSubtabs() {
 
 document.addEventListener("DOMContentLoaded", initSubtabs);
 
+// --- Trying a look on, before you save it -----------------------------------
+// Wes, 2026-07-28: "when one is chosen in from the drop-down in settings,
+// instantly change that page to preview that theme that it was changed to."
+//
+// Every appearance setting is one class on <body> (see config.APPEARANCE_
+// CLASS_PREFIX), which is what makes this cheap: swapping the class re-renders
+// the whole page in the new look with no request and nothing saved. The page
+// you are standing on IS the preview - and the sample strip in the panel
+// carries the things a settings page has none of.
+//
+// The prefixes are read off the selects rather than listed here, so a new
+// appearance setting previews on the day it is added.
+
+var appearanceApply = null;
+
+function initAppearancePreview() {
+  var selects = document.querySelectorAll("select[data-appearance-prefix]");
+  if (!selects.length) return;
+  var field = document.querySelector(".theme-field");
+  var chrome = {};
+  var stock = {};
+  try {
+    chrome = JSON.parse((field && field.dataset.themeChrome) || "{}");
+    stock = JSON.parse((field && field.dataset.themeStock) || "{}");
+  } catch (e) {
+    /* a malformed table costs the browser chrome its tint, not the preview */
+  }
+
+  // What the server rendered, so "changed back to what it was" stops saying
+  // there is something unsaved.
+  var saved = {};
+  selects.forEach(function (sel) {
+    saved[sel.name] = sel.value;
+  });
+
+  function paint() {
+    var dirty = false;
+    selects.forEach(function (sel) {
+      var prefix = sel.dataset.appearancePrefix;
+      if (!prefix) return;
+      if (sel.value !== saved[sel.name]) dirty = true;
+      // Remove whatever class this layer currently contributes, whatever it
+      // is: matching on the prefix means the class list cannot accumulate two
+      // themes if a value is renamed server-side.
+      Array.prototype.slice.call(document.body.classList).forEach(function (cls) {
+        if (cls.indexOf(prefix + "-") === 0) document.body.classList.remove(cls);
+      });
+      document.body.classList.add(prefix + "-" + sel.value);
+      if (prefix !== "theme") return;
+      // <html> is outside <body> and carries the overscroll fill and the
+      // color-scheme that paints the scrollbars and the checkbox glyphs -
+      // none of which any body-scoped stylesheet can reach.
+      var tint = chrome[sel.value];
+      if (tint) {
+        document.documentElement.style.backgroundColor = tint;
+        var meta = document.querySelector('meta[name="theme-color"]');
+        if (meta) meta.setAttribute("content", tint);
+      }
+      // The stock class, which is the half a preview cannot skip: the light
+      // themes get all their structure from it (no scanlines, no glow, the
+      // chrome re-faced, the terminal's borrowed punctuation emptied). Without
+      // this the preview showed meadow's colors wearing the CRT's clothes -
+      // a scanlined console, bracketed tabs and a hatched footer.
+      var scheme = stock[sel.value] || "dark";
+      document.body.classList.toggle("theme-stock-light", scheme === "light");
+      document.documentElement.style.colorScheme = scheme;
+      // The CRT dials are inert under a light theme, and the panel fades them
+      // to say so. Server-rendered from the SAVED theme, so a preview has to
+      // move it too or the page shows scanlines it is not applying.
+      document.querySelectorAll(".field-grid").forEach(function (grid) {
+        if (grid.querySelector('[name="crt_scanlines"]')) {
+          grid.classList.toggle("layers-inert", scheme === "light");
+        }
+      });
+    });
+    document.body.classList.toggle("appearance-previewing", dirty);
+  }
+
+  selects.forEach(function (sel) {
+    if (sel._previewBound) return;
+    sel._previewBound = true;
+    sel.addEventListener("change", paint);
+  });
+
+  // The morph resets <body>'s class attribute to the server's render, which
+  // would snap an unsaved preview back mid-look. reinit() calls this, the same
+  // way it re-applies the settings sub-tab.
+  appearanceApply = paint;
+  paint();
+}
+
+document.addEventListener("DOMContentLoaded", initAppearancePreview);
+
+// --- The "i" bubbles --------------------------------------------------------
+// Wes, 2026-07-28: "There is a lot of texts on the settings pages defining what
+// different variables/parameters do. Please add these as a little 'i' in a
+// circle to hover over to get more information."
+//
+// Hover is CSS (:hover on the wrapper, and :focus-within so the keyboard gets
+// there too). This is the other half: a tap, because a phone has no hover at
+// all and Wes reads this page on one. Only one is open at a time - two bubbles
+// overlapping is how a tooltip becomes unreadable.
+
+function initInfoDots() {
+  document.addEventListener("click", function (ev) {
+    var dot = ev.target.closest ? ev.target.closest(".info-dot") : null;
+    var open = document.querySelectorAll(".info-wrap.open");
+    Array.prototype.forEach.call(open, function (wrap) {
+      if (dot && wrap.contains(dot)) return;
+      wrap.classList.remove("open");
+      wrap.querySelector(".info-bubble").hidden = true;
+      wrap.querySelector(".info-dot").setAttribute("aria-expanded", "false");
+    });
+    if (!dot) return;
+    // Inside a form whose other button is a save; type="button" already stops
+    // the submit, and this stops a click on the dot toggling the <label> or
+    // <details> it may be sitting in.
+    ev.preventDefault();
+    ev.stopPropagation();
+    var wrap = dot.closest(".info-wrap");
+    var bubble = wrap.querySelector(".info-bubble");
+    var nowOpen = !wrap.classList.contains("open");
+    wrap.classList.toggle("open", nowOpen);
+    bubble.hidden = !nowOpen;
+    dot.setAttribute("aria-expanded", nowOpen ? "true" : "false");
+  });
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape") return;
+    document.querySelectorAll(".info-wrap.open").forEach(function (wrap) {
+      wrap.classList.remove("open");
+      wrap.querySelector(".info-bubble").hidden = true;
+      wrap.querySelector(".info-dot").setAttribute("aria-expanded", "false");
+    });
+  });
+}
+
+document.addEventListener("DOMContentLoaded", initInfoDots);
+
 // --- Pull to refresh (installed-to-home-screen only) ------------------------
 // Chromeless standalone mode has no reload button and no browser pull-to-
 // refresh, which on a phone leaves a stale page with no way back short of
@@ -1451,56 +1589,151 @@ function refreshBlocked() {
   return false;
 }
 
-// The panels that scroll internally keep their place across a patch - and one
-// pinned to its bottom (a transcript being followed) stays pinned.
+// --- Holding the view still across a patch ---------------------------------
+// Wes, 2026-07-28:
+//
+//   "when in the journal or somewhere on a page and the page is updating
+//    because a run is ongoing, just finished and is adding summary text above,
+//    or something else that changes the dimensions/size of content on the page,
+//    it is moving my current view around. I instead want it to, if it is adding
+//    something outside my screen, to not disturb my current view but instead
+//    sort of extend the view above outside my screen."
+//
+// That is scroll anchoring. Chrome implements it in the engine (`overflow-
+// anchor`); WebKit does not, and Wes reads this portal on an iPhone - so on the
+// browser he actually uses, this code IS the feature rather than a fallback for
+// one. It is also why the bug is invisible in a headless chromium: the engine
+// quietly cleans up after us there.
+//
+// The rule, in one line: measure where the reader's line of text is BEFORE the
+// patch, and scroll by however far it moved AFTER everything has finished
+// moving it.
+
+// The panels that scroll internally get the same treatment as the page - and
+// one pinned to its bottom (a transcript being followed) stays pinned.
 var SCROLL_SEL = ".scroll-cap, #console-out";
+
+// How deep the anchor walk descends. Purely a runaway guard: the walk stops on
+// its own when a node has no on-screen element children.
+var ANCHOR_MAX_DEPTH = 24;
+
+// An element that does not move when the document does is no use as an anchor -
+// it would report `moved === 0` for every patch and silently disable the whole
+// mechanism. The site header is exactly this.
+function isPinned(el) {
+  if (!window.getComputedStyle) return false;
+  var pos = window.getComputedStyle(el).position;
+  return pos === "fixed" || pos === "sticky";
+}
+
+// The deepest element whose box is inside the band, found by descending into
+// the first on-screen child at each level.
+//
+// Deepest, not "the topmost thing with an id", which is what this used to look
+// for. An id here is a fact about what somebody once needed to link to, not
+// about what is being read: on a page whose only ids are its <section>s, the
+// nearest one can be a screenful above the line in view, and it is the wrong
+// thing to hold still if the growth happened in between.
+function anchorNode(root, top, bottom) {
+  var node = root;
+  for (var depth = 0; depth < ANCHOR_MAX_DEPTH; depth++) {
+    var kids = node.children;
+    var next = null;
+    for (var i = 0; i < kids.length; i++) {
+      var el = kids[i];
+      // The offline overlay covers the viewport and belongs to no position in
+      // the document, so anchoring to it means anchoring to nothing.
+      if (el.id === "offline-overlay") continue;
+      var r = el.getBoundingClientRect();
+      if (!r.height) continue;
+      if (r.bottom <= top || r.top >= bottom) continue;
+      if (isPinned(el)) continue;
+      next = el;
+      break; // first in document order that is on screen
+    }
+    if (!next) break;
+    node = next;
+  }
+  return node === root ? null : node;
+}
+
+// A chain of NODE references (leaf first, then each ancestor), each with the
+// top edge it had. Nodes, not ids, because the morph reuses the nodes it
+// matches - that is its whole purpose - so the anchor survives the patch
+// without needing a name. The ancestors are the fallback: if the patch really
+// did replace the paragraph being read, its section is still there and still
+// moved by the same amount.
+function viewAnchor(scroller) {
+  var top, bottom, root;
+  if (scroller) {
+    if (!scroller.scrollTop) return null; // at its top; the top is the anchor
+    var box = scroller.getBoundingClientRect();
+    top = box.top;
+    bottom = box.bottom;
+    root = scroller;
+  } else {
+    if (!(window.scrollY > 0)) return null;
+    top = 0;
+    bottom = window.innerHeight || document.documentElement.clientHeight;
+    root = document.body;
+  }
+  var node = anchorNode(root, top, bottom);
+  if (!node) return null;
+  var chain = [];
+  for (var el = node; el && el !== root; el = el.parentElement) {
+    chain.push({ el: el, top: el.getBoundingClientRect().top });
+  }
+  return { scroller: scroller || null, chain: chain };
+}
+
+// Put the anchor back where it was. Idempotent on purpose: it corrects against
+// the position recorded at snapshot time, never against the last correction, so
+// calling it twice converges instead of accumulating.
+function holdAnchor(anchor) {
+  if (!anchor) return;
+  for (var i = 0; i < anchor.chain.length; i++) {
+    var link = anchor.chain[i];
+    if (!document.contains(link.el)) continue;
+    var moved = link.el.getBoundingClientRect().top - link.top;
+    if (moved) {
+      if (anchor.scroller) anchor.scroller.scrollTop += moved;
+      else window.scrollBy(0, moved);
+    }
+    return; // deepest surviving link wins; the rest are only fallbacks
+  }
+}
 
 function snapshotScrolls() {
   return Array.prototype.map.call(document.querySelectorAll(SCROLL_SEL), function (el) {
     return {
+      // The element itself, not its index. Two patches apart the set of
+      // scrolling panels can differ by one (a journal box appearing on a
+      // project that had no entries), and index-matching then hands one
+      // panel's scroll position to another.
+      el: el,
       top: el.scrollTop,
       atBottom: el.scrollTop + el.clientHeight >= el.scrollHeight - 4,
+      anchor: viewAnchor(el),
     };
   });
 }
 
 function restoreScrolls(saved) {
-  Array.prototype.forEach.call(document.querySelectorAll(SCROLL_SEL), function (el, i) {
-    var s = saved[i];
-    if (!s || !s.top) return;
-    el.scrollTop = s.atBottom ? el.scrollHeight : s.top;
+  saved.forEach(function (s) {
+    if (!document.contains(s.el)) return;
+    if (s.atBottom) s.el.scrollTop = s.el.scrollHeight;
+    else if (s.top) s.el.scrollTop = s.top;
   });
 }
 
-// Keep what Wes is looking at where it is: remember the topmost on-screen
-// element with an id, and after the patch scroll by however far it moved -
-// so content growing above the viewport (a new journal entry, a new card)
-// cannot push the line he is reading down the page.
-function viewAnchor() {
-  if (!(window.scrollY > 0)) return null; // at the top, the top is the anchor
-  var best = null;
-  var above = null;
-  var els = document.body.querySelectorAll("[id]");
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    if (el.id === "offline-overlay") continue;
-    var r = el.getBoundingClientRect();
-    if (!r.height || r.bottom <= 0) continue;
-    if (r.top >= 0) {
-      if (!best || r.top < best.top) best = { id: el.id, top: r.top };
-    } else if (!above || r.top > above.top) {
-      above = { id: el.id, top: r.top };
-    }
-  }
-  return best || above;
-}
-
-function holdAnchor(anchor) {
-  if (!anchor) return;
-  var el = document.getElementById(anchor.id);
-  if (!el) return;
-  var moved = el.getBoundingClientRect().top - anchor.top;
-  if (moved) window.scrollBy(0, moved);
+// Every anchor, page and panels, held in one place - called after the DOM has
+// stopped changing rather than in the middle of it.
+function holdEverything(pageAnchor, scrolls) {
+  holdAnchor(pageAnchor);
+  scrolls.forEach(function (s) {
+    if (s.atBottom || !document.contains(s.el)) return;
+    holdAnchor(s.anchor);
+  });
 }
 
 // Per-element enhancers, re-run for whatever the patch brought in. Every one
@@ -1517,6 +1750,11 @@ function reinit() {
   // span - empty and hidden - would blank it on every live patch.
   if (typeof jumpHintSync === "function") jumpHintSync();
   if (subtabsApply) subtabsApply();
+  // The morph resets <body>'s class attribute to the server's render, so an
+  // unsaved theme preview has to be re-applied or it snaps back on the next
+  // patch - which on a page that patches every couple of seconds reads as the
+  // dropdown not working.
+  if (appearanceApply) appearanceApply();
 }
 
 var refreshQueued = false;
@@ -1537,12 +1775,31 @@ function liveRefreshNow() {
       var doc = new DOMParser().parseFromString(html, "text/html");
       if (!doc || !doc.body) return;
       var scrolls = snapshotScrolls();
-      var anchor = viewAnchor();
+      var anchor = viewAnchor(null);
       if (doc.title && doc.title !== document.title) document.title = doc.title;
       morphNode(document.body, doc.body);
       restoreScrolls(scrolls);
-      holdAnchor(anchor);
+      // reinit() BEFORE the correction, not after. It re-enhances the selects,
+      // re-hides the settings panels the user is not looking at and re-sizes
+      // the textareas - all of which change heights above the viewport. Held
+      // in the old order the correction was computed against a layout that
+      // existed for one frame and was then thrown away, so the leftover shift
+      // stuck, and every patch added another one in the same direction. That
+      // is the settings page "scrolling up every second or so".
       reinit();
+      holdEverything(anchor, scrolls);
+      // Layout still is not final: an image the patch brought in has no height
+      // until it decodes, and a rebuilt dropdown settles on its own width. One
+      // more correction on the next frame catches those. Skipped if the reader
+      // has scrolled in the meantime - their scroll wins over ours, always.
+      var settled = window.scrollY || 0;
+      if (window.requestAnimationFrame) {
+        window.requestAnimationFrame(function () {
+          if (Math.abs((window.scrollY || 0) - settled) < 2) {
+            holdEverything(anchor, scrolls);
+          }
+        });
+      }
     })
     .catch(function () {
       // A miss is a skipped patch, never an error surface: the offline

@@ -6,7 +6,11 @@
 <html lang="en" style="background-color:{{ theme_chrome() }}">
 <head>
 <meta charset="utf-8">
-<meta name="color-scheme" content="{{ 'dark' if theme() != 'paper' else 'light' }}">
+{# From the theme's stock, not from `!= 'paper'`: this is what paints the
+   scrollbars, the checkbox glyphs and the native select popup, so a new light
+   theme left out of the test grows black scrollbars and invisible tick marks -
+   the one class of bug a screenshot of the page body cannot show. #}
+<meta name="color-scheme" content="{{ theme_stock() }}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Project Portal{% endblock %}</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">

@@ -269,11 +269,12 @@ def test_api_usage_history_is_json(client, project):
 
 def test_project_page_reaches_its_runs_through_scoped_activity(client, project):
     """The project page listed every run in a table of its own until Wes asked
-    for that section to go. What is left is the count and a link, and the runs
-    themselves are one click away on the activity page filtered to it."""
+    for that section to go, and then for the count line that replaced it to go
+    too (2026-07-28). What is left is the activity grid in the control bar, and
+    the runs themselves are one click away on the activity page filtered to
+    this project."""
     run_id = _run(project["id"])
     page = client.get("/project/history-project").text
-    assert "1 run on this project" in page
     assert 'href="/activity?project=history-project"' in page
     assert f"/run/{run_id}" in client.get("/activity?project=history-project").text
 

@@ -534,17 +534,37 @@ def appearance(person=None) -> dict[str, str]:
 
 def body_classes() -> str:
     look = appearance()
-    return " ".join(
+    classes = [
         f"{prefix}-{look[key]}"
         for key, prefix in config.APPEARANCE_CLASS_PREFIX.items()
         if key in look
-    )
+    ]
+    # The stock rides along beside the theme name, so every light theme picks
+    # up the same structural undoing (no scanlines, no glow, none of the
+    # terminal's borrowed punctuation) without each one restating it. Only the
+    # light stock gets a class: dark is the shipped look and has no rules.
+    if theme_stock() == "light":
+        classes.append("theme-stock-light")
+    return " ".join(classes)
 
 
 def theme() -> str:
     """The theme name on screen right now, for the two things that have to be
     decided before any CSS is read (see base.html)."""
     return appearance().get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"])
+
+
+def theme_stock() -> str:
+    """"light" or "dark" for the theme on screen.
+
+    Read by `body_classes` for the family class, and by base.html for the
+    `color-scheme` meta - which is what paints the scrollbars, the checkbox
+    glyphs and the native select popup, none of which any stylesheet reaches.
+    Getting it from a table beats the `!= 'paper'` test this replaced: that
+    test made every future light theme grow black scrollbars, silently, and
+    the one place the bug would not show is a screenshot of the page body.
+    """
+    return config.THEME_STOCK.get(theme(), config.DEFAULT_THEME_STOCK)
 
 
 def theme_chrome() -> str:
@@ -626,12 +646,18 @@ templates.env.globals["open_oneoff_total"] = open_oneoff_total
 templates.env.globals["restart_pending_runs"] = worker.restart_pending_runs
 templates.env.globals["body_classes"] = body_classes
 templates.env.globals["theme"] = theme
+templates.env.globals["theme_stock"] = theme_stock
 templates.env.globals["theme_chrome"] = theme_chrome
 templates.env.globals["looking_as"] = looking_as
 templates.env.globals["static_url"] = static_url
 templates.env.globals["icon_url"] = icon_url
 templates.env.globals["APPEARANCE_CHOICES"] = config.APPEARANCE_CHOICES
 templates.env.globals["APPEARANCE_DEFAULTS"] = config.APPEARANCE_DEFAULTS
+# The body-class prefix per appearance key, so the settings page can tell app.js
+# which class to swap for a live preview without a second copy of the table.
+templates.env.globals["APPEARANCE_CLASS_PREFIX"] = config.APPEARANCE_CLASS_PREFIX
+templates.env.globals["THEME_CHROME"] = config.THEME_CHROME
+templates.env.globals["THEME_STOCK"] = config.THEME_STOCK
 templates.env.globals["status_choices"] = config.status_choices
 templates.env.globals["display_state"] = db.display_state
 # A global rather than a per-route context value: priority shows up on the
@@ -1894,6 +1920,7 @@ async def memory_page(request: Request) -> HTMLResponse:
             # erring high would leave exactly the description Wes complained
             # about with no way to read the rest of it.
             "SUGGESTION_EXPAND_CHARS": 110,
+            "dismissal_days": db.SUGGESTION_DISMISSAL_DAYS,
             "learnings_lines": len(learnings.splitlines()),
             "learnings_chars": len(learnings),
             "learnings_cap": worker.learnings_cap(),
@@ -1990,7 +2017,16 @@ async def accept_suggestion(suggestion_id: int) -> RedirectResponse:
     suggestion = db.get_suggestion(suggestion_id)
     if suggestion is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
-    project = db.create_project(title=suggestion["title"], description=suggestion["description"], kind="unknown", status="inbox")
+    # `stage`, not `status`: the eight-value status enum was folded into the
+    # stage model on 2026-07-22 and this call was never updated, so accepting a
+    # suggestion raised TypeError and Wes got a 500 on every attempt. A new
+    # idea lands in `backlog` unapproved, exactly like one typed in by hand.
+    project = db.create_project(
+        title=suggestion["title"],
+        description=suggestion["description"],
+        kind="unknown",
+        stage="backlog",
+    )
     db.set_suggestion_status(suggestion_id, "accepted")
     return RedirectResponse(url=f"/project/{project['slug']}", status_code=303)
 
@@ -2001,6 +2037,21 @@ async def dismiss_suggestion(suggestion_id: int) -> RedirectResponse:
     if suggestion is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     db.set_suggestion_status(suggestion_id, "dismissed")
+    return RedirectResponse(url="/memory", status_code=303)
+
+
+@app.post("/suggestions/{suggestion_id}/restore")
+async def restore_suggestion(suggestion_id: int) -> RedirectResponse:
+    """Undo a dismissal. Wes, 2026-07-28: "I also want to be able to undo where
+    I've told it some projects that I don't want it to work on."
+
+    Accepted suggestions are restorable too - accepting created a project, and
+    changing your mind about that is deleting the project, not un-accepting the
+    row - but the button is only offered on dismissed ones for that reason."""
+    suggestion = db.get_suggestion(suggestion_id)
+    if suggestion is None:
+        raise HTTPException(status_code=404, detail="Suggestion not found")
+    db.set_suggestion_status(suggestion_id, "proposed")
     return RedirectResponse(url="/memory", status_code=303)
 
 
@@ -2078,22 +2129,36 @@ async def settings_page(request: Request) -> HTMLResponse:
             "my_theme": appearance(me()).get(
                 "ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]
             ),
+            # The stock, not the theme name: the CRT layers are inert under
+            # EVERY light theme, so the panel that says so has to ask the
+            # question that way round or the third light theme silently starts
+            # claiming its scanlines work.
+            "my_stock": config.THEME_STOCK.get(
+                appearance(me()).get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]),
+                config.DEFAULT_THEME_STOCK,
+            ),
             "install_look": install_appearance(),
             "people_count": len(people.everyone()),
             # Archived people included on purpose: this is the one page where
             # bringing somebody back has to be possible, and a person who has
             # vanished from every screen is a person nobody can un-archive.
             "people_rows": people.everyone(include_archived=True),
-            # One question, and the words follow from it - so each option says
-            # what it will make the agent write ("male - he/him"), which is the
-            # only part of the answer that has any visible effect. The blank
-            # first option is not a third choice, it is the state of a row
-            # nobody has answered yet; see site.UNSPECIFIED.
-            "GENDER_CHOICES": [("", "not saying - they/them")]
-            + [
-                (key, f"{key} - {forms[0]}/{forms[1]}")
-                for key, forms in site.GENDERS.items()
-            ],
+            # Wes, 2026-07-28: "remove the pronouns from the actual gender
+            # selection field and just have it say 'male,' 'female,' or 'rather
+            # not say'" - and then, when the first pass missed the add-someone
+            # form: "The pronouns still show up in the user creation drop-down."
+            # Both forms read this list, so there is one place to get it right.
+            #
+            # The pronouns were there to show what the answer would make the
+            # agent write, which is a thing the person answering does not need
+            # to know: they are being asked about themselves, not about the
+            # prose. The blank option stays FIRST despite reading last in the
+            # note, because a <select> with no selected option shows its first
+            # - so putting it anywhere else would make "male" the silent
+            # default on the add form. It is not a third answer; it is the
+            # state of a row nobody has answered. See site.UNSPECIFIED.
+            "GENDER_CHOICES": [("", "rather not say")]
+            + [(key, key) for key in site.GENDERS],
             "saved": saved,
             "sent": request.query_params.get("sent") == "1",
             "push_sent": request.query_params.get("push_sent"),

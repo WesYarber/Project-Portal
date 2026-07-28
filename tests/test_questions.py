@@ -459,3 +459,81 @@ def test_no_options_means_no_button_strip(client, project):
     db.create_question(project["id"], "What should this be called?")
     html = client.get("/questions").text
     assert "quick-options" not in html
+
+
+# --------------------------------------------------------------------------
+# Where "Saved for later" sits, and what happened to the ones from before
+# --------------------------------------------------------------------------
+
+def test_saved_for_later_is_folded_at_the_bottom_of_the_questions(client, project):
+    """Wes, 2026-07-28: "Make the 'Saved for later' question tab be in a
+    collapsed section that sits in the bottom of the questions section rather
+    than having its own static headers."
+
+    The previous pass gave it an <h2> level with "Open questions", which said
+    the two were equals when the whole point of saving one is deciding it is
+    not pressing.
+    """
+    saved = db.create_question(project["id"], "The saved one?")
+    client.post(f"/questions/{saved['id']}/dismiss")
+    live = db.create_question(project["id"], "The open one?")
+
+    html = client.get("/project/dice-tower").text
+
+    assert "<h2>Saved for later</h2>" not in html
+    assert '<details class="fold-section saved-questions">' in html
+    # Folded, and below the open ones - the order is the claim.
+    assert html.index("The open one?") < html.index("The saved one?")
+    assert html.index("Open questions") < html.index("saved-questions")
+    assert str(live["id"]) in html
+
+
+def test_the_fold_is_not_rendered_at_all_with_nothing_in_it(client, project):
+    """An empty collapsed section is a row of chrome that never opens."""
+    html = client.get("/project/dice-tower").text
+    assert "saved-questions" not in html
+
+
+def test_questions_dismissed_before_save_for_later_existed_are_deleted():
+    """Wes, 2026-07-28: "all existing 'Saved for later' questions should be
+    instantly deleted here since they were treated as deleted before."
+
+    Until that morning the dismiss button was a throw-away with no way back, so
+    every row already sitting in 'dismissed' was a refusal. Reusing the status
+    for save-for-later retroactively turned a pile of noes into a pile of
+    things Wes had supposedly meant to come back to.
+
+    Dry-run against a copy of the real board before shipping: 34 dismissed
+    questions settled, the 6 open ones untouched.
+    """
+    project = db.create_project("Legacy")
+    q = db.create_question(project["id"], "An old one?")
+    conn = db.get_conn()
+    conn.execute("UPDATE questions SET status = 'dismissed' WHERE id = ?", (q["id"],))
+    conn.commit()
+    # As if the portal had never run the purge.
+    db.set_setting(db.SHELVED_PURGE_KEY, "")
+
+    db.init_db()
+
+    row = db.get_question(q["id"])
+    assert row["status"] == "deleted"
+    assert row["answer"] == db.DELETED_ANSWER
+
+
+def test_the_purge_runs_once_and_never_again():
+    """Guarded by a settings key, not by a date: "dismissed before the feature
+    shipped" is exactly what this means and no timestamp says it. Unguarded it
+    would delete a question Wes saved for later that afternoon, at the next
+    restart."""
+    project = db.create_project("Legacy")
+    db.init_db()  # the purge has now run
+
+    q = db.create_question(project["id"], "Saved on purpose?")
+    conn = db.get_conn()
+    conn.execute("UPDATE questions SET status = 'dismissed' WHERE id = ?", (q["id"],))
+    conn.commit()
+
+    db.init_db()
+
+    assert db.get_question(q["id"])["status"] == "dismissed"

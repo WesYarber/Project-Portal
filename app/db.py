@@ -398,6 +398,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("appearance", "TEXT NOT NULL DEFAULT ''"),
         ("gender", "TEXT NOT NULL DEFAULT ''"),
     ],
+    # When `status` was last changed, which is what the week-long dismissal
+    # timeout runs from. `ts` cannot serve: it is when the suggestion was
+    # made. See SUGGESTION_DISMISSAL_DAYS.
+    "suggestions": [
+        ("status_ts", "TEXT NOT NULL DEFAULT ''"),
+    ],
 }
 
 
@@ -431,6 +437,15 @@ def init_db() -> None:
         # away the edit window the column exists to provide.
         if ("journal", "delivered_at") in added:
             conn.execute("UPDATE journal SET delivered_at = ts WHERE delivered_at IS NULL")
+
+        # Suggestions dismissed before there was anything to time out serve
+        # their week from the upgrade, not from whenever they were made.
+        # Stamping them with `ts` would be nearer the truth for a row dismissed
+        # the day it appeared and wildly wrong for one dismissed months later -
+        # and would put every old dismissal back on the page at once, which
+        # reads as the portal having forgotten every no it was ever told.
+        if ("suggestions", "status_ts") in added:
+            conn.execute("UPDATE suggestions SET status_ts = ? WHERE status_ts = ''", (now(),))
 
         # Back-fill the original idea for projects created before the column
         # existed. Until now `description` *was* the idea as Wes typed it and
@@ -492,6 +507,42 @@ def init_db() -> None:
 
     _backfill_people()
     _backfill_gender()
+    _clear_legacy_shelved_questions()
+
+
+SHELVED_PURGE_KEY = "legacy_shelved_questions_purged"
+
+
+def _clear_legacy_shelved_questions() -> None:
+    """Delete the questions that were dismissed back when dismissing meant gone.
+
+    Wes, 2026-07-28: "all existing 'Saved for later' questions should be
+    instantly deleted here since they were treated as deleted before."
+
+    Until 2026-07-28 the questions page's dismiss button was a throw-away with
+    no way back, so every row now sitting in 'dismissed' was somebody saying
+    "no" and not "later". The status was reused for the new save-for-later
+    behavior, which retroactively turned a pile of refusals into a pile of
+    things Wes had supposedly meant to come back to. This settles them as what
+    they actually were, once.
+
+    Guarded by a settings key and not by a date, because "dismissed before the
+    feature shipped" is exactly what this means and there is no timestamp that
+    says it - `answered_at` is the dismissal time either way.
+    """
+    if get_setting(SHELVED_PURGE_KEY) == "1":
+        return
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "UPDATE questions SET status = 'deleted', answer = ?, slot = NULL "
+            "WHERE status = 'dismissed'",
+            (DELETED_ANSWER,),
+        )
+        conn.commit()
+    if cur.rowcount:
+        log.info("Deleted %s question(s) dismissed before save-for-later existed", cur.rowcount)
+    set_setting(SHELVED_PURGE_KEY, "1")
 
 
 GENDER_BACKFILL_KEY = "people_gender_backfilled"
@@ -2989,18 +3040,61 @@ def latest_oneoff_run(task_id: int) -> Optional[sqlite3.Row]:
 # Suggestions
 # --------------------------------------------------------------------------
 
+# How long a dismissal holds. Wes, 2026-07-28: "I want past declined ones to
+# time out after a week."
+#
+# The reason a dismissal expires at all is that it is an answer to *this week's*
+# board, not a permanent verdict on the idea: "not now" is what a dismissal
+# usually means, and a suggestion that can never come back turns a one-tap
+# no into a decision you have to be sure about. A week is long enough that
+# nothing you just said no to is back tomorrow, and short enough that the
+# suggestion list does not quietly become write-only.
+SUGGESTION_DISMISSAL_DAYS = 7
+
+
 def add_suggestion(title: str, description: str = "") -> sqlite3.Row:
     conn = get_conn()
     with _LOCK:
+        ts = now()
         cur = conn.execute(
-            "INSERT INTO suggestions (ts, title, description, status) VALUES (?, ?, ?, 'proposed')",
-            (now(), title, description),
+            "INSERT INTO suggestions (ts, title, description, status, status_ts) "
+            "VALUES (?, ?, ?, 'proposed', ?)",
+            (ts, title, description, ts),
         )
         conn.commit()
         return conn.execute("SELECT * FROM suggestions WHERE id = ?", (cur.lastrowid,)).fetchone()
 
 
+def expire_dismissed_suggestions() -> int:
+    """Put dismissals older than SUGGESTION_DISMISSAL_DAYS back on the list.
+
+    Called from `list_suggestions` rather than from a scheduled job, because
+    the only thing that observes a suggestion's status is somebody reading the
+    memory page: doing it on read means there is no window in which the page
+    and the database disagree, and no timer to be running for it to work.
+
+    `status_ts` is compared as a string, which is exact here because `now()`
+    writes a fixed-width UTC ISO timestamp - lexical order is chronological
+    order. A row with no `status_ts` at all (dismissed before the column
+    existed) is left alone: init_db stamps those with the upgrade time, so
+    they serve their week from then rather than all reappearing at once.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=SUGGESTION_DISMISSAL_DAYS)
+    ).isoformat()
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "UPDATE suggestions SET status = 'proposed', status_ts = ? "
+            "WHERE status = 'dismissed' AND status_ts != '' AND status_ts < ?",
+            (now(), cutoff),
+        )
+        conn.commit()
+        return cur.rowcount
+
+
 def list_suggestions() -> list[sqlite3.Row]:
+    expire_dismissed_suggestions()
     conn = get_conn()
     with _LOCK:
         return conn.execute("SELECT * FROM suggestions ORDER BY ts DESC").fetchall()
@@ -3013,9 +3107,16 @@ def get_suggestion(suggestion_id: int) -> Optional[sqlite3.Row]:
 
 
 def set_suggestion_status(suggestion_id: int, status: str) -> None:
+    """`status_ts` is when the status was last set, not when the row was made -
+    that is what `ts` is, and the dismissal clock has to run from the dismissal
+    or a suggestion made eight days ago would be un-dismissed the moment it was
+    dismissed."""
     conn = get_conn()
     with _LOCK:
-        conn.execute("UPDATE suggestions SET status = ? WHERE id = ?", (status, suggestion_id))
+        conn.execute(
+            "UPDATE suggestions SET status = ?, status_ts = ? WHERE id = ?",
+            (status, now(), suggestion_id),
+        )
         conn.commit()
 
 

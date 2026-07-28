@@ -4,15 +4,43 @@
 {# Each section is its own form declaring the settings it owns via `_fields`,
    so saving one panel can never blank out another's values - and every panel
    gets its own save button, which is what makes the sub-tabs safe. #}
-{% macro select_field(key, label, hint='') %}
+{# Wes, 2026-07-28: "There is a lot of texts on the settings pages defining what
+   different variables/parameters do. Please add these as a little 'i' in a
+   circle to hover over to get more information instead of putting the long
+   blocks of text all over settings."
+
+   `{% call info() %}...{% endcall %}` rather than an argument, because half of
+   these paragraphs contain <strong>, <code> and interpolated numbers, and the
+   ones that do are exactly the ones worth keeping intact.
+
+   A <button>, not a hovered <span>. Wes reads this page on a phone, where hover
+   does not exist - so the affordance has to be tappable, and a button is the
+   one element that is focusable, keyboard-operable and announced without any
+   ARIA at all. `type="button"` because every one of these sits inside a form
+   whose submit button is a save.
+
+   The text stays in the DOM rather than being fetched or stashed in a title=,
+   so find-in-page still finds it and a screen reader still reaches it. What
+   changes is that it is not occupying the page until you ask. #}
+{# Two spellings of one thing. `info_html` takes already-safe markup, which is
+   what a macro needs when it wants to put an explanation inside a label it is
+   building; `info` is the `{% call %}` form, which is what everything written
+   inline uses. One implementation, so the two cannot drift. #}
+{% macro info_html(html) %}<span class="info-wrap"><button type="button" class="info-dot" aria-expanded="false" aria-label="what this setting does">i</button><span class="info-bubble" role="tooltip" hidden>{{ html }}</span></span>{% endmacro %}
+{% macro info() %}{{ info_html(caller()) }}{% endmacro %}
+
+{% macro select_field(key, label, help='') %}
   <div class="field">
-    <label for="{{ key }}">{{ label }}</label>
-    <select id="{{ key }}" name="{{ key }}">
+    <label for="{{ key }}">{{ label }}{% if help %}{{ info_html(help) }}{% endif %}</label>
+    {# The prefix is what app.js needs to swap this layer live, and it comes
+       from the same table main.body_classes() renders from - so a new
+       appearance setting previews without anybody remembering to add it. #}
+    <select id="{{ key }}" name="{{ key }}"
+            data-appearance-prefix="{{ APPEARANCE_CLASS_PREFIX[key] }}">
       {% for value, option_label in APPEARANCE_CHOICES[key] %}
       <option value="{{ value }}" {{ 'selected' if value == (settings[key] or APPEARANCE_DEFAULTS[key]) else '' }}>{{ option_label }}</option>
       {% endfor %}
     </select>
-    {% if hint %}<p class="hint">{{ hint }}</p>{% endif %}
   </div>
 {% endmacro %}
 
@@ -138,128 +166,82 @@
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="require_build_approval" name="require_build_approval" {{ 'checked' if (settings.require_build_approval or '1') == '1' else '' }}>
-        <label for="require_build_approval">Ask before building</label>
+        <label for="require_build_approval">Ask before building{% call info() %}Agents always triage and plan on their own. With this on, actually writing code waits until you press <strong>approve build</strong> on the project (or set its status to building yourself). Off means a finished plan rolls straight into a build.{% endcall %}</label>
       </div>
-      <p class="hint">Agents always triage and plan on their own. With this on, actually writing
-        code waits until you press <strong>approve build</strong> on the project (or set its status
-        to building yourself). Off means a finished plan rolls straight into a build.</p>
       <div class="field">
-        <label for="worker_model">Default agent</label>
+        <label for="worker_model">Default agent{% call info() %}Used by any project that hasn't set its own agent.{% endcall %}</label>
         <select id="worker_model" name="worker_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == settings.worker_model else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">Used by any project that hasn't set its own agent.</p>
       </div>
       <div class="field">
-        <label for="research_model">Research burst agent</label>
+        <label for="research_model">Research burst agent{% call info() %}Used for a queued <strong>research burst</strong>, which only runs while weekly Claude allowance is about to expire. It overrides a project's own agent on purpose: that setting is usually there to save cost, and a burst spends allowance that would be lost anyway.{% endcall %}</label>
         <select id="research_model" name="research_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == (settings.research_model or 'fable') else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">Used for a queued <strong>research burst</strong>, which only runs while
-          weekly Claude allowance is about to expire. It overrides a project's own agent on
-          purpose: that setting is usually there to save cost, and a burst spends allowance that
-          would be lost anyway.</p>
       </div>
       <div class="field">
-        <label for="spend_down_model">Spend-down agent</label>
+        <label for="spend_down_model">Spend-down agent{% call info() %}While a <strong>spend-down</strong> is running, a project pinned to a cheaper agent is routed up to this one - so an expiring weekly window is spent on quality, not just on more runs. Only upgrades, never downgrades, and only during a spend-down you approved.{% endcall %}</label>
         <select id="spend_down_model" name="spend_down_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == (settings.spend_down_model or 'opus') else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">While a <strong>spend-down</strong> is running, a project pinned to a cheaper
-          agent is routed up to this one - so an expiring weekly window is spent on quality, not just
-          on more runs. Only upgrades, never downgrades, and only during a spend-down you approved.</p>
       </div>
       <div class="field">
-        <label for="ask_model">Question model</label>
+        <label for="ask_model">Question model{% call info() %}Answers the <strong>just asking</strong> box on a project (and <code>/btw</code> over Telegram). Read-only: it can look at the workspace but not change it, and it doesn't use up a run.{% endcall %}</label>
         <select id="ask_model" name="ask_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == (settings.ask_model or 'sonnet') else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">Answers the <strong>just asking</strong> box on a project (and <code>/btw</code>
-          over Telegram). Read-only: it can look at the workspace but not change it, and it doesn't
-          use up a run.</p>
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="self_review" name="self_review" {{ 'checked' if (settings.self_review or '1') == '1' else '' }}>
-        <label for="self_review">Self-review before surfacing for review</label>
+        <label for="self_review">Self-review before surfacing for review{% call info() %}When a run says its work is finished, a read-only critic first checks the committed diff against what the run claims and the project's open todos. If it finds concrete gaps, the project stays on the <strong>active</strong> shelf with those gaps journalled for the next run, so your review queue only sees finished work. Fails open - anything uncertain surfaces as normal.{% endcall %}</label>
       </div>
-      <p class="hint">When a run says its work is finished, a read-only critic first checks the
-        committed diff against what the run claims and the project's open todos. If it finds concrete
-        gaps, the project stays on the <strong>active</strong> shelf with those gaps journalled for the
-        next run, so your review queue only sees finished work. Fails open - anything uncertain
-        surfaces as normal.</p>
       <div class="field">
-        <label for="self_review_model">Self-review agent</label>
+        <label for="self_review_model">Self-review agent{% call info() %}The read-only model that critiques a run's own diff before it reaches you.{% endcall %}</label>
         <select id="self_review_model" name="self_review_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == (settings.self_review_model or 'sonnet') else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">The read-only model that critiques a run's own diff before it reaches you.</p>
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="hook_guardrails" name="hook_guardrails" {{ 'checked' if (settings.hook_guardrails or '1') == '1' else '' }}>
-        <label for="hook_guardrails">Guardrail hooks on runs</label>
+        <label for="hook_guardrails">Guardrail hooks on runs{% call info() %}Every run's tool calls are screened by the portal before they execute: writes to the portal's own source or data, another project's workspace, or the Claude credentials are blocked at the CLI hook layer, even under skip-permissions. A run's own workspace family (parent and sub-projects) stays writable, and the portal meta-project is exempt. Denials are listed on the run's page. Fails open - if the portal can't be reached the tool call goes ahead.{% endcall %}</label>
       </div>
-      <p class="hint">Every run's tool calls are screened by the portal before they execute: writes to
-        the portal's own source or data, another project's workspace, or the Claude credentials are
-        blocked at the CLI hook layer, even under skip-permissions. A run's own workspace family
-        (parent and sub-projects) stays writable, and the portal meta-project is exempt. Denials are
-        listed on the run's page. Fails open - if the portal can't be reached the tool call goes ahead.</p>
       <div class="field checkbox-row">
         <input type="checkbox" id="stop_report_nudge" name="stop_report_nudge" {{ 'checked' if (settings.stop_report_nudge or '1') == '1' else '' }}>
-        <label for="stop_report_nudge">Report nudge at run end</label>
+        <label for="stop_report_nudge">Report nudge at run end{% call info() %}A project run that tries to finish without delivering its report is bounced once at the CLI's Stop hook and told to submit it - so a run can't end reportless and leave only "(no output)" behind. One bounce at most, and it fails open; one-off tasks are never nudged.{% endcall %}</label>
       </div>
-      <p class="hint">A project run that tries to finish without delivering its report is bounced once
-        at the CLI's Stop hook and told to submit it - so a run can't end reportless and leave only
-        "(no output)" behind. One bounce at most, and it fails open; one-off tasks are never nudged.</p>
       <div class="field checkbox-row">
         <input type="checkbox" id="hook_audit" name="hook_audit" {{ 'checked' if (settings.hook_audit or '1') == '1' else '' }}>
-        <label for="hook_audit">Tool-call audit trail on runs</label>
+        <label for="hook_audit">Tool-call audit trail on runs{% call info() %}Every tool call a run makes is recorded as one structured row and listed on the run's page - so "what did this run actually do" survives after its transcript is pruned. Capped per run, and plain rows age out after a month; guardrail denials are kept forever.{% endcall %}</label>
       </div>
-      <p class="hint">Every tool call a run makes is recorded as one structured row and listed on the
-        run's page - so "what did this run actually do" survives after its transcript is pruned.
-        Capped per run, and plain rows age out after a month; guardrail denials are kept forever.</p>
       {# Wes tracks model releases himself and wants the newest one adopted the day it
          ships. This is that job, done by the portal instead. #}
       <div class="field checkbox-row">
         <input type="checkbox" id="model_watch" name="model_watch" {{ 'checked' if (settings.model_watch or '1') == '1' else '' }}>
-        <label for="model_watch">Watch for new models</label>
+        <label for="model_watch">Watch for new models{% call info() %}Once a day the portal asks Anthropic which models your subscription can reach. A model it hasn't seen before gets a notification and a one-tap question here &ndash; it never switches the default agent by itself, because a new id on the list doesn't prove the CLI can spawn it yet. Uses the CLI's own login; no API key, no billing. {% if model_catalog.models %} <br><span class="muted">Knows {{ model_catalog.models|length }} models, newest <code>{{ model_catalog.models[0].id }}</code>{% if model_catalog.fetched_at %}, last checked {{ model_catalog.fetched_at[:16]|replace('T', ' ') }} UTC{% endif %}.</span> {% else %} <br><span class="muted">Nothing checked yet &ndash; the first check runs within a day and is recorded silently, so only genuinely new releases ever notify you.</span> {% endif %}{% endcall %}</label>
       </div>
-      <p class="hint">Once a day the portal asks Anthropic which models your subscription can reach.
-        A model it hasn't seen before gets a notification and a one-tap question here &ndash; it never
-        switches the default agent by itself, because a new id on the list doesn't prove the CLI can
-        spawn it yet. Uses the CLI's own login; no API key, no billing.
-        {% if model_catalog.models %}
-        <br><span class="muted">Knows {{ model_catalog.models|length }} models, newest
-        <code>{{ model_catalog.models[0].id }}</code>{% if model_catalog.fetched_at %}, last checked
-        {{ model_catalog.fetched_at[:16]|replace('T', ' ') }} UTC{% endif %}.</span>
-        {% else %}
-        <br><span class="muted">Nothing checked yet &ndash; the first check runs within a day and is
-        recorded silently, so only genuinely new releases ever notify you.</span>
-        {% endif %}</p>
       <div class="grid grid-2 field-grid">
         <div class="field">
-          <label for="worker_interval_min">Interval between runs</label>
+          <label for="worker_interval_min">Interval between runs{% call info() %}Minutes. 0 runs back to back, with no pacing.{% endcall %}</label>
           <input type="number" id="worker_interval_min" name="worker_interval_min" value="{{ settings.worker_interval_min }}" min="0" max="1440">
-          <p class="hint">Minutes. 0 runs back to back, with no pacing.</p>
         </div>
         <div class="field">
-          <label for="run_timeout_min">Run timeout</label>
+          <label for="run_timeout_min">Run timeout{% call info() %}Minutes. A run past this is killed.{% endcall %}</label>
           <input type="number" id="run_timeout_min" name="run_timeout_min" value="{{ settings.run_timeout_min }}" min="1" max="1440">
-          <p class="hint">Minutes. A run past this is killed.</p>
         </div>
         <div class="field">
-          <label for="run_max_turns">Turn limit per run</label>
+          <label for="run_max_turns">Turn limit per run{% call info() %}The CLI stops a run at this many turns. The timeout above is the real backstop.{% endcall %}</label>
           <input type="number" id="run_max_turns" name="run_max_turns" value="{{ settings.run_max_turns or '400' }}" min="10" max="2000">
-          <p class="hint">The CLI stops a run at this many turns. The timeout above is the real backstop.</p>
         </div>
         <div class="field">
           <label for="run_max_budget_usd">Per-run $ ceiling</label>
@@ -285,56 +267,47 @@
           {% endif %}
         </div>
         <div class="field">
-          <label for="learnings_cap_lines">Learnings auto-compact at</label>
+          <label for="learnings_cap_lines">Learnings auto-compact at{% call info() %}Lines. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). 0 disables it.{% endcall %}</label>
           <input type="number" id="learnings_cap_lines" name="learnings_cap_lines" value="{{ settings.learnings_cap_lines or '200' }}" min="0" max="5000">
-          <p class="hint">Lines. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). 0 disables it.</p>
         </div>
         <div class="field">
-          <label for="max_parallel_runs">Parallel runs</label>
+          <label for="max_parallel_runs">Parallel runs{% call info() %}Agents in flight at once, on different projects. 1-{{ max_parallel_limit }}.{% endcall %}</label>
           <input type="number" id="max_parallel_runs" name="max_parallel_runs" value="{{ settings.max_parallel_runs or '2' }}" min="1" max="{{ max_parallel_limit }}">
-          <p class="hint">Agents in flight at once, on different projects. 1-{{ max_parallel_limit }}.</p>
         </div>
         <div class="field">
-          <label for="max_runs_per_day">Max runs per day</label>
+          <label for="max_runs_per_day">Max runs per day{% call info() %}The permanent budget. One-off bumps below.{% endcall %}</label>
           <input type="number" id="max_runs_per_day" name="max_runs_per_day" value="{{ settings.max_runs_per_day }}" min="0" max="999">
-          <p class="hint">The permanent budget. One-off bumps below.</p>
         </div>
         <div class="field">
-          <label for="limit_hold_percent">Hold scheduled runs at</label>
+          <label for="limit_hold_percent">Hold scheduled runs at{% call info() %}% of a real Claude window. Scheduled runs stop here; run now still goes.{% endcall %}</label>
           <input type="number" id="limit_hold_percent" name="limit_hold_percent" value="{{ settings.limit_hold_percent or '90' }}" min="1" max="100">
-          <p class="hint">% of a real Claude window. Scheduled runs stop here; run now still goes.</p>
         </div>
         <div class="field">
-          <label for="spend_down_session_hold">Burst session guard</label>
+          <label for="spend_down_session_hold">Burst session guard{% call info() %}% of the 5h window a spend-down or ahead-of-pace burst may use, so it spreads across sessions.{% endcall %}</label>
           <input type="number" id="spend_down_session_hold" name="spend_down_session_hold" value="{{ settings.spend_down_session_hold or '70' }}" min="1" max="100">
-          <p class="hint">% of the 5h window a spend-down or ahead-of-pace burst may use, so it spreads across sessions.</p>
         </div>
         <div class="field">
-          <label for="spend_front_load">Front-load pace curve</label>
+          <label for="spend_front_load">Front-load pace curve{% call info() %}&lt;1 spends the weekly window ahead of the clock (a hedge against it resetting early); 1 is plain linear pacing.{% endcall %}</label>
           <input type="number" id="spend_front_load" name="spend_front_load" value="{{ settings.spend_front_load or '0.75' }}" min="0.1" max="1" step="0.05">
-          <p class="hint">&lt;1 spends the weekly window ahead of the clock (a hedge against it resetting early); 1 is plain linear pacing.</p>
         </div>
         <div class="field">
-          <label for="saturation_max_duty">Don't-saturate guard</label>
+          <label for="saturation_max_duty">Don't-saturate guard{% call info() %}% of the last 5h the portal may run before it holds to leave an idle gap, so steady use doesn't look like a 24/7 bot. 0 or 100 turns it off; spend-downs are exempt.{% endcall %}</label>
           <input type="number" id="saturation_max_duty" name="saturation_max_duty" value="{{ settings.saturation_max_duty or '85' }}" min="0" max="100">
-          <p class="hint">% of the last 5h the portal may run before it holds to leave an idle gap, so steady use doesn't look like a 24/7 bot. 0 or 100 turns it off; spend-downs are exempt.</p>
         </div>
         <div class="field">
-          <label for="day_reset_hour">Day resets at</label>
+          <label for="day_reset_hour">Day resets at{% call info() %}Local. Everything daily rolls over here, not midnight.{% endcall %}</label>
           <select id="day_reset_hour" name="day_reset_hour">
             {% for h in range(24) %}
             <option value="{{ h }}" {{ 'selected' if h|string == (settings.day_reset_hour or '5') else '' }}>{{ '%02d:00'|format(h) }}</option>
             {% endfor %}
           </select>
-          <p class="hint">Local. Everything daily rolls over here, not midnight.</p>
         </div>
         <div class="field">
-          <label for="cost_units">Show run cost as</label>
+          <label for="cost_units">Show run cost as{% call info() %}You're on Max and aren't billed per token.{% endcall %}</label>
           <select id="cost_units" name="cost_units">
             <option value="weight" {{ 'selected' if settings.cost_units != 'usd' else '' }}>relative weight (0.421w)</option>
             <option value="usd" {{ 'selected' if settings.cost_units == 'usd' else '' }}>US dollars ($0.421)</option>
           </select>
-          <p class="hint">You're on Max and aren't billed per token.</p>
         </div>
       </div>
       <div class="button-row"><button type="submit">save agent settings</button></div>
@@ -373,36 +346,83 @@
          change did not reach the other person's phone. #}
       {% set current = me() %}
       <p class="hint" style="margin-top:0;">
-        {% if current %}Your look{% if people_count > 1 %}, {{ current.name }}{% endif %} &mdash;
-        kept per person, so changing it here changes nothing on anybody else&rsquo;s screen.
-        {% else %}Your look.{% endif %}
-        Every layer is independent, so you can keep the parts of the terminal look you like and drop
-        the parts that make text tiring. Applies on save.</p>
+        {% if current %}Your look{% if people_count > 1 %}, {{ current.name }}{% endif %}.
+        {% else %}Your look.{% endif %}{% call info() %}Kept per person, so it
+        changes nothing on anybody else&rsquo;s screen. Every layer is independent, so you can keep the
+        parts of the terminal look you like and drop the parts that make text tiring. The page
+        previews your choice the moment you make it; nothing is stored until you save.{% endcall %}</p>
 
       {# The theme first and on its own row: it is which look you are dialling,
          where everything under it is a dial on that look. #}
-      <div class="field theme-field">
-        {{ select_field('ui_theme', 'Theme') }}
-        <p class="hint">The whole visual language. <strong>Terminal</strong> is the dark CRT look
-          this portal shipped with; <strong>paper</strong> is warm, light and printed, with a serif
-          for anything you read. Every button, list and panel is in the same place in both &mdash; a
-          theme changes only how things look, never what is there or where it is.</p>
+      {% set theme_help %}The whole visual language. <strong>Terminal</strong> is the dark CRT look
+        this portal shipped with; <strong>midnight</strong> and <strong>amber</strong> are the same
+        shape in deep indigo and in a warm monochrome; <strong>paper</strong> is light and printed,
+        with a serif for anything you read, and <strong>meadow</strong> is that printed look in a
+        garden palette. Every button, list and panel is in the same place in all of them &mdash; a
+        theme changes only how things look, never what is there or where it is. Pick one and the
+        page changes under you straight away; nothing is kept until you save.{% endset %}
+      <div class="field theme-field"
+           data-theme-chrome='{{ THEME_CHROME|tojson }}'
+           data-theme-stock='{{ THEME_STOCK|tojson }}'>
+        {{ select_field('ui_theme', 'Theme', theme_help) }}
+      </div>
+
+      {# Wes, 2026-07-28: "when one is chosen in from the drop-down in settings,
+         instantly change that page to preview that theme that it was changed
+         to. It could even be good to show a preview of other elements that
+         might not show up on the settings page that would want to be
+         previewed."
+
+         The page itself is the preview - app.js swaps the body class on change,
+         so everything you can see re-renders - and this strip is the second
+         half of it: the things a settings page has none of. A badge, a status
+         chip, a journal entry, a transcript line, the activity grid, a one-tap
+         answer button. All real markup with the real classes, so it cannot
+         drift from what the rest of the portal looks like; the only thing
+         made up is the content. #}
+      <div class="theme-sample" aria-label="how a theme looks elsewhere in the portal">
+        <p class="hint" style="margin-top:0;">Elsewhere in the portal:</p>
+        <div class="theme-sample-row">
+          <span class="badge">build</span>
+          <span class="badge author-agent">agent</span>
+          <span class="badge warn">needs you</span>
+          <span class="todo-tag">blocked</span>
+          <button type="button" class="small">a button</button>
+          <button type="button" class="small go">run now</button>
+          <button type="button" class="small quick-option">merge it</button>
+        </div>
+        <div class="journal-entry">
+          <div class="meta">
+            <span class="badge author-agent">agent</span>
+            <span class="badge">progress</span>
+            <span class="small muted">2 hours ago</span>
+          </div>
+          <p>A journal entry, which is where most of the words on this portal are.
+            The typeface setting decides whether this paragraph is monospaced.</p>
+        </div>
+        <pre class="console-out theme-sample-console">&gt; Bash(pytest -q)
+&lt; 2748 passed in 51s
+The suite is green, so the change is in.</pre>
+        <div class="theme-sample-row">
+          <div class="heat-week"><span class="heat-day heat-none"></span><span class="heat-day heat-1"></span><span class="heat-day heat-3"></span></div>
+          <div class="heat-week"><span class="heat-day heat-2"></span><span class="heat-day heat-4"></span><span class="heat-day heat-1"></span></div>
+          <div class="heat-week"><span class="heat-day heat-4"></span><span class="heat-day heat-none"></span><span class="heat-day heat-2"></span></div>
+          <span class="small muted">activity</span>
+        </div>
       </div>
 
       <h3 class="settings-subhead">The terminal look</h3>
-      <p class="hint">{% if my_theme == 'paper' %}These have no effect while you are on the paper
+      <p class="hint">{% if my_stock == 'light' %}These have no effect while you are on a light
         theme &mdash; a sheet of paper with scanlines on it is neither thing. They are kept as you
-        set them and come back if you switch back to terminal.{% else %}Each layer is independent,
+        set them and come back if you switch back.{% else %}Each layer is independent,
         so you can keep the parts you like and drop the parts that make text tiring.{% endif %}</p>
-      <div class="grid grid-2 field-grid{{ ' layers-inert' if my_theme == 'paper' else '' }}">
+      <div class="grid grid-2 field-grid{{ ' layers-inert' if my_stock == 'light' else '' }}">
         {{ select_field('crt_scanlines', 'Scanlines') }}
         {{ select_field('crt_glow', 'Phosphor glow') }}
         {{ select_field('crt_animations', 'Animations') }}
         {{ select_field('ui_font', 'Typeface') }}
         {{ select_field('ui_density', 'Density') }}
       </div>
-      <p class="hint">Journal entries, notes and agent reports are rendered as Markdown either way
-        &mdash; the typeface setting is what decides whether that prose is monospaced.</p>
 
       {# Only offered once there is something to undo. "Follow the install"
          is NOT the same as picking the shipped defaults by hand: it drops the
@@ -419,14 +439,14 @@
       <div class="field checkbox-row">
         <input type="checkbox" id="show_priority" name="show_priority"
                {{ 'checked' if (settings.show_priority or '1') == '1' else '' }}>
-        <label for="show_priority">Show project priority</label>
+        <label for="show_priority">Show project priority{% call info() %}The 0&ndash;9 number on
+          each project. Turning it off takes it off the project page, the dashboard cells and the
+          sub-project list &mdash; and out of the ordering as well, so nothing is left ranking by a
+          number you can no longer see. Projects are then picked least-recently-touched first,
+          which is a fair round-robin. Priority earns its keep when there is not enough allowance
+          to go round and some projects should get the runs; with plenty of headroom it mostly
+          just sits at 0.{% endcall %}</label>
       </div>
-      <p class="hint">The 0&ndash;9 number on each project. Turning it off takes it off the project
-        page, the dashboard cells and the sub-project list &mdash; and out of the ordering as well,
-        so nothing is left ranking by a number you can no longer see. Projects are then picked
-        least-recently-touched first, which is a fair round-robin. Priority earns its keep when
-        there is not enough allowance to go round and some projects should get the runs;
-        with plenty of headroom it mostly just sits at 0.</p>
 
       {# Keyboard jumps. The rows come from app/jumpkeys.py, so a new jumpable
          section appears here on its own - there is no list of sections in this
@@ -434,25 +454,36 @@
          after a save, which is how a rejected duplicate letter is visible
          without a flash message. #}
       <h3 class="settings-subhead">Keyboard jumps</h3>
-      <p class="hint">One letter each, pressed while you are not typing in a box, scrolls that
-        section to the top of the window. Leave a field blank to unbind it. Two sections cannot
-        share a letter &mdash; the one listed first here keeps it and the other is unbound, and
-        the line under each field says what the key actually is now.{% if people_count > 1 %}
-        Unlike the look above, the keys are shared: the footer hint prints them, so everybody
-        using this portal presses the same letters.{% endif %}</p>
+      <p class="hint">One letter each, and the line under each field says what it is now.{% call info() %}A
+        jump key is pressed while you are not typing in a box, and scrolls that section to the top
+        of the window. Leave a field blank to unbind it. Two sections cannot share a letter &mdash;
+        the one listed first here keeps it and the other is unbound.{% if people_count > 1 %}
+        Unlike the look above, the keys are shared: the footer hint prints them, so everybody using
+        this portal presses the same letters.{% endif %}{% endcall %}</p>
       <div class="grid grid-2 field-grid">
         {% for row in jump_keys %}
         <div class="field">
-          <label for="{{ row.field }}">{{ row.label }}</label>
+          {# The DEFINITION goes behind the dot; the STATE stays on the page.
+             `row.state` is what the key actually is after a save, which is how
+             a duplicate letter being rejected is visible without a flash
+             message - and a rejection nobody can see is a field that appears
+             not to save. #}
+          <label for="{{ row.field }}">{{ row.label }}{% call info() %}{{ row.hint }}{% endcall %}</label>
           <input type="text" id="{{ row.field }}" name="{{ row.field }}" value="{{ row.key }}"
                  maxlength="1" size="1" autocomplete="off" autocapitalize="off"
                  spellcheck="false" class="jump-key-input">
-          <p class="hint">{{ row.hint }} &middot; <strong>{{ row.state }}</strong></p>
+          <p class="hint"><strong>{{ row.state }}</strong></p>
         </div>
         {% endfor %}
       </div>
 
-      <div class="button-row"><button type="submit">save appearance</button></div>
+      <div class="button-row">
+        <button type="submit">save appearance</button>
+        {# Shown by CSS only while a dropdown differs from what was saved. A
+           page that changes its whole look on a dropdown and says nothing has
+           just told you it saved. #}
+        <span class="appearance-unsaved" role="status">previewing &mdash; not saved yet</span>
+      </div>
     </div>
   </form>
   {% if my_look %}
@@ -500,12 +531,8 @@
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="telegram_enabled" name="telegram_enabled" {{ 'checked' if settings.telegram_enabled == '1' else '' }}>
-        <label for="telegram_enabled">Telegram integration</label>
+        <label for="telegram_enabled">Telegram integration{% call info() %}Off by default. Turning it on starts the bot <em>and</em> puts a short number back on every question (&ldquo;Q7&rdquo;) &mdash; that number is the handle you type back at the bot, so the two travel together. Web push and ntfy work either way; answering in the browser never needed a number.{% endcall %}</label>
       </div>
-      <p class="hint">Off by default. Turning it on starts the bot <em>and</em> puts a short number
-        back on every question (&ldquo;Q7&rdquo;) &mdash; that number is the handle you type back at the
-        bot, so the two travel together. Web push and ntfy work either way; answering in the browser
-        never needed a number.</p>
       <div class="field checkbox-row" style="margin-top:1rem;">
         <input type="checkbox" id="telegram_natural_language" name="telegram_natural_language" {{ 'checked' if settings.telegram_natural_language == '1' else '' }}>
         <label for="telegram_natural_language">Understand plain English</label>

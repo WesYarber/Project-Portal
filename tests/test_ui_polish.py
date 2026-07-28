@@ -118,28 +118,29 @@ def test_runs_section_is_gone(client, project):
     assert "<th>turns</th>" not in html
 
 
-def test_run_count_line_sits_at_the_top_of_the_journal(client, project):
+def test_run_count_line_is_gone_too(client, project):
+    """Wes, 2026-07-28: "Get rid of the '50 runs on this project * usage over
+    time' text in the journal section."
+
+    It was the last remnant of the Runs table, kept when that table went so the
+    count and the link would survive somewhere. Both survive elsewhere now: the
+    activity grid moved into the control bar at the top of this page on the
+    morning of the same day and is itself a link to /activity for this project,
+    so the line was saying a second time what the grid says with a picture.
+    """
     db.create_run(project["id"], "build", "opus")
     db.create_run(project["id"], "build", "opus")
     html = _page(client)
-    assert "2 runs on this project" in html
-    assert 'href="/activity?project=fridge"' in html
-    # The heading carries data-jump so the J key can scroll to it.
-    journal = html.index(">Journal</h2>")
-    line = html.index("2 runs on this project")
-    assert journal < line
-    # Above the entries themselves, not buried under them.
-    if "journal-entry" in html:
-        assert line < html.index("journal-entry")
+    assert "runs on this project" not in html
+    assert "run on this project" not in html
 
 
-def test_run_count_line_is_singular_for_one_run(client, project):
+def test_the_journal_still_reaches_the_activity_page(client, project):
+    """What the line was FOR is not gone - only the sentence is. The heatmap in
+    the control bar links to the same filtered activity view."""
     db.create_run(project["id"], "build", "opus")
-    assert "1 run on this project" in _page(client)
-
-
-def test_run_count_line_reads_zero_with_no_runs(client, project):
-    assert "0 runs on this project" in _page(client)
+    html = _page(client)
+    assert 'href="/activity?project=fridge"' in html
 
 
 # --- the agent console, folded shut between runs ---------------------------

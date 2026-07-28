@@ -229,9 +229,19 @@ APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
     # chain that already exists for the CRT layers, and a person choosing a
     # theme is the same act as a person turning the scanlines off. "terminal"
     # is the absence of any override, so the shipped look costs no CSS at all.
+    # Wes, 2026-07-28: "Generate some additional themes that would be cool as
+    # options." Adding one is three edits and no new mechanism: a value here, a
+    # chrome color in THEME_CHROME, and a palette block in static/themes.css -
+    # plus a line in THEME_STOCK saying whether it prints on light or dark
+    # stock, which is what decides whether it inherits the CRT structure or the
+    # printed structure. See the sheet's header for what a theme may and may
+    # not do.
     "ui_theme": [
         ("terminal", "terminal - the dark CRT look"),
+        ("midnight", "midnight - deep indigo, soft neon"),
+        ("amber", "amber - a warm monochrome CRT"),
         ("paper", "paper - warm, light, printed"),
+        ("meadow", "meadow - soft green, light, floral"),
     ],
     "crt_scanlines": [
         ("all", "everywhere"),
@@ -279,8 +289,30 @@ APPEARANCE_CLASS_PREFIX: dict[str, str] = {
 # page loads. Keys must match ui_theme's values.
 THEME_CHROME: dict[str, str] = {
     "terminal": "#0d1016",
+    "midnight": "#0e0b1c",
+    "amber": "#140f06",
     "paper": "#f0e8da",
+    "meadow": "#eef1e6",
 }
+
+# Which stock a theme prints on: "dark" or "light". This is not decoration -
+# it selects a whole family of structural rules in static/themes.css, because
+# everything the paper theme had to undo (the scanline overlays, the glow, the
+# terminal's borrowed punctuation, the dark-only `color-scheme`) has to be
+# undone identically by any other light theme. Written once against
+# `theme-stock-light` rather than copied per theme, so a new light theme is a
+# palette and nothing else.
+#
+# `dark` is the shipped stock and carries no rules of its own: a dark theme is
+# style.css exactly as it always was, with different variables pointed at it.
+THEME_STOCK: dict[str, str] = {
+    "terminal": "dark",
+    "midnight": "dark",
+    "amber": "dark",
+    "paper": "light",
+    "meadow": "light",
+}
+DEFAULT_THEME_STOCK = "dark"
 
 APPEARANCE_DEFAULTS = {key: choices[0][0] for key, choices in APPEARANCE_CHOICES.items()}
 # The shipped default for glow is the middle option, not the first one.

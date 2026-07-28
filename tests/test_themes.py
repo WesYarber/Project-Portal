@@ -214,3 +214,172 @@ def test_the_preview_control_appears_once_there_is_somebody_else(client, erin):
     html = client.get("/settings").text
     assert "See it as someone else does" in html
     assert 'value="erin"' in html
+
+
+# --------------------------------------------------------------------------
+# More themes, and the stock they print on
+#
+# Wes, 2026-07-28: "Generate some additional themes that would be cool as
+# options and when one is chosen in from the drop-down in settings, instantly
+# change that page to preview that theme that it was changed to."
+#
+# The point of the stock split is that adding a theme is a palette and nothing
+# else. These are the checks that keep it that way: if a new theme has to write
+# structure, one of them fails and says which structure it forgot.
+# --------------------------------------------------------------------------
+
+def _light_themes() -> list[str]:
+    return [t for t, stock in config.THEME_STOCK.items() if stock == "light"]
+
+
+def test_every_theme_says_which_stock_it_prints_on():
+    """A theme missing from the table would silently fall to `dark`, and a
+    light theme rendered on the dark stock is the actual bug this caught in a
+    browser: meadow's colors wearing the CRT's clothes - a scanlined console,
+    bracketed tabs and a hatched footer."""
+    for value, _label in config.APPEARANCE_CHOICES["ui_theme"]:
+        assert value in config.THEME_STOCK, value
+        assert config.THEME_STOCK[value] in ("light", "dark"), value
+
+
+def test_the_light_stock_carries_the_structure_not_the_themes():
+    """Everything a light theme has to undo is written once. If this list ever
+    appears under a theme's own name instead, the next light theme ships with
+    scanlines on it."""
+    css = _css()
+    for marker in (
+        "body.theme-stock-light .terminal-header",   # the chrome re-faced
+        "body.theme-stock-light.scan-all::before",   # the CRT killed
+        "body.theme-stock-light .badge::before",     # the borrowed punctuation
+        "body.theme-stock-light .heat-day",          # the 7px squares
+    ):
+        assert marker in css, marker
+
+
+def test_every_light_theme_defines_what_the_light_stock_reads():
+    """The stock's rules are written against variables so they know nothing
+    about which light theme is on screen - which means a theme that forgets one
+    renders that rule with no value at all. In CSS that is not an error: it is
+    a transparent button or an invisible heatmap square, and nothing says so.
+    """
+    body = re.sub(r"/\*.*?\*/", "", _css(), flags=re.S)
+    stock_block = body.split("THE PALETTES")[0]
+    needed = {
+        v for v in re.findall(r"var\((--(?:stock|heat)-[a-z0-9-]+)\)", stock_block)
+    }
+    assert needed, "the stock stopped using variables; this test is now vacuous"
+    for theme in _light_themes():
+        block = body.split(f"body.theme-{theme} {{", 1)[1].split("\n}", 1)[0]
+        declared = set(re.findall(r"(--[a-z0-9-]+)\s*:", block))
+        assert not (needed - declared), (theme, sorted(needed - declared))
+
+
+def test_a_dark_theme_needs_no_structure_at_all():
+    """The dark stock is style.css exactly as shipped, so a dark theme is
+    variables plus the handful of CRT literals style.css spells out. If one
+    ever needs a font-family or a border-radius, the split has gone wrong."""
+    body = re.sub(r"/\*.*?\*/", "", _css(), flags=re.S)
+    for theme, stock in config.THEME_STOCK.items():
+        if stock != "dark" or theme == "terminal":
+            continue
+        for chunk in body.split("}"):
+            if f"body.theme-{theme}" not in chunk or "{" not in chunk:
+                continue
+            decls = chunk.split("{")[-1]
+            for banned in ("font-family", "border-radius", "letter-spacing", "content"):
+                assert banned not in decls, (theme, banned, decls.strip()[:80])
+
+
+def test_the_terminal_theme_is_still_untouched_by_all_of_this():
+    """The one thing every new theme must not do. `terminal` is the absence of
+    any rule, so a portal with no override renders the exact bytes it always
+    did."""
+    body = re.sub(r"/\*.*?\*/", "", _css(), flags=re.S)
+    selectors = [s.strip() for chunk in body.split("}") for s in chunk.split("{")[:-1]]
+    for sel in selectors:
+        assert "theme-terminal" not in sel or sel.startswith("html:has"), sel
+
+
+def test_the_new_themes_are_actually_offered(client):
+    """A theme in the sheet that is not in the dropdown is dead CSS."""
+    offered = {v for v, _ in config.APPEARANCE_CHOICES["ui_theme"]}
+    assert {"midnight", "amber", "meadow"} <= offered
+    html = client.get("/settings").text
+    for value in offered:
+        assert f'value="{value}"' in html, value
+
+
+def test_a_light_theme_gets_the_light_color_scheme(client):
+    """`color-scheme` is what paints the scrollbars, the checkbox glyphs and the
+    native select popup - none of which any body-scoped stylesheet reaches. It
+    used to be decided by `!= 'paper'`, which would have left every future light
+    theme with black scrollbars and no visible way to notice."""
+    for theme in _light_themes():
+        db.set_setting("ui_theme", theme)
+        html = client.get("/").text
+        assert 'content="light"' in html, theme
+        assert "theme-stock-light" in html, theme
+    db.set_setting("ui_theme", "midnight")
+    html = client.get("/").text
+    assert 'content="dark"' in html
+    assert "theme-stock-light" not in html
+
+
+# --------------------------------------------------------------------------
+# Trying one on before you save it
+# --------------------------------------------------------------------------
+
+APP_JS = config.BASE_DIR / "app" / "static" / "app.js"
+
+
+def test_the_settings_page_hands_the_preview_everything_it_needs(client):
+    """The dropdown carries the body-class prefix and the page carries the
+    chrome and stock tables - all three read from the same Python dicts the
+    server renders <body> from, so a new appearance setting or a new theme
+    previews without a second copy of the table to keep in step."""
+    html = client.get("/settings").text
+    assert 'data-appearance-prefix="theme"' in html
+    assert 'data-appearance-prefix="scan"' in html
+    assert "data-theme-chrome=" in html
+    assert "data-theme-stock=" in html
+    for theme in config.THEME_CHROME:
+        assert config.THEME_CHROME[theme] in html, theme
+
+
+def test_the_preview_swaps_the_stock_class_as_well_as_the_theme():
+    """Caught in a real browser and not by any test: swapping only the theme
+    class previewed meadow's palette on the CRT's structure. The stock class
+    has to move with it."""
+    src = APP_JS.read_text()
+    assert 'classList.toggle("theme-stock-light", scheme === "light")' in src
+
+
+def test_the_preview_survives_a_live_patch():
+    """The page patches itself every couple of seconds while a run is going,
+    and the morph resets <body>'s class to the server's render - which would
+    snap an unsaved preview back and read as the dropdown not working."""
+    src = APP_JS.read_text()
+    reinit = src.split("function reinit()")[1].split("\n}")[0]
+    assert "appearanceApply" in reinit
+
+
+def test_the_preview_says_it_is_not_saved(client):
+    """A page that changes its entire look on a dropdown and says nothing has
+    just told you it saved."""
+    assert "previewing" in client.get("/settings").text
+    assert ".appearance-previewing .appearance-unsaved" in (
+        (config.BASE_DIR / "app" / "static" / "style.css").read_text()
+    )
+
+
+def test_the_sample_strip_shows_what_a_settings_page_has_none_of(client):
+    """Wes: "It could even be good to show a preview of other elements that
+    might not show up on the settings page that would want to be previewed."
+
+    Real markup with the real classes, so it cannot drift from the rest of the
+    app - only the words in it are made up."""
+    html = client.get("/settings").text
+    sample = html.split('class="theme-sample"')[1].split("</div>\n\n")[0]
+    for cls in ("badge", "todo-tag", "journal-entry", "console-out", "heat-day",
+                "quick-option"):
+        assert cls in sample, cls

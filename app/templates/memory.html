@@ -258,6 +258,19 @@
         <button type="submit" class="secondary">dismiss</button>
       </form>
     </div>
+    {% elif s.status == 'dismissed' %}
+    {# Wes, 2026-07-28: "I also want to be able to undo where I've told it some
+       projects that I don't want it to work on in the suggested section from
+       the past." A dismissal is a one-tap no, so undoing it has to be a one-tap
+       yes - and the row is still here, so the only thing that was ever missing
+       was the button. It also times out on its own after a week; see
+       db.SUGGESTION_DISMISSAL_DAYS. #}
+    <div class="button-row" style="margin-top:0.5rem;">
+      <form method="post" action="/suggestions/{{ s.id }}/restore" class="inline">
+        <button type="submit" class="secondary">undo dismiss</button>
+      </form>
+      <span class="hint">comes back on its own {{ dismissal_days }} days after it was dismissed</span>
+    </div>
     {% endif %}
   </div>
   {% endfor %}
