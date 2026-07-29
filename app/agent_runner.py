@@ -1108,8 +1108,13 @@ async def run_claude(
     # would be killed by that restart while the agent kept working, releasing
     # the lease on a workspace that is still occupied - which is the exact
     # failure it exists to prevent. See app/worklock.py.
-    leased = worklock.wrap(cmd, lock_dir) is not cmd
-    argv = runlimit.wrap(worklock.wrap(cmd, lock_dir), run_id)
+    #
+    # Wrapped once and the result inspected, rather than asked twice: whether
+    # the lease applied decides how this run's exit code is read, and two calls
+    # are two chances for that to disagree with the argv actually spawned.
+    inner = worklock.wrap(cmd, lock_dir)
+    leased = inner is not cmd
+    argv = runlimit.wrap(inner, run_id)
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
