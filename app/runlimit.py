@@ -214,6 +214,46 @@ def forget_scope(run_id: Optional[int]) -> None:
     _scopes.pop(run_id, None)
 
 
+_UNIT_RE = re.compile(r"^portal-run-(?:x|\d+)-(\d+)-\d+\.scope$")
+
+
+def minted_here(unit: Optional[str]) -> bool:
+    """Was this scope name minted by the process asking? (i.e. is the run one
+    *we* started, rather than one that outlived an earlier portal process?)
+
+    The pid in the name is what makes this answerable at all, and asking it this
+    way beats keeping a registry, because the registry is what keeps being
+    wrong. `worker._reap_adopted` needs "did I start this run", and the obvious
+    stand-in - is its id in `_inflight`? - quietly is not: the daily reflect and
+    the learnings compaction both create a real `runs` row but register under a
+    fixed slot key (REFLECT_SLOT, COMPACT_SLOT) instead of under their run id.
+    A reaper trusting `_inflight` would therefore see a live reflect as somebody
+    else's orphan and settle its row in the seconds between the CLI exiting and
+    the report being written.
+
+    Parsed rather than substring-matched: `f"-{os.getpid()}-" in unit` also
+    matches the run-id segment, so a portal whose pid happened to equal a run id
+    would decline to reap that run forever.
+    """
+    m = _UNIT_RE.match(unit or "")
+    return bool(m) and m.group(1) == str(os.getpid())
+
+
+def unit_of(argv: list[str]) -> Optional[str]:
+    """The scope unit `wrap` put on this argv, or None if it did not wrap.
+
+    Read back out of the argv rather than asked of `scope_name`, because the
+    caller needs to know whether the wrap actually *applied* - `scope_name`
+    happily mints a name for a run that was never scoped, and recording that
+    name as a live handle would have the boot sweep asking systemd about a unit
+    that never existed.
+    """
+    for arg in argv:
+        if arg.startswith("--unit="):
+            return arg[len("--unit="):]
+    return None
+
+
 def wrap(cmd: list[str], run_id: Optional[int]) -> list[str]:
     """`cmd`, wrapped so it runs in its own memory-capped scope - or `cmd`
     unchanged when capping is off or unavailable.
@@ -249,6 +289,98 @@ def wrap(cmd: list[str], run_id: Optional[int]) -> list[str]:
         "--",
         *cmd,
     ]
+
+
+# --- liveness --------------------------------------------------------------
+#
+# A run's scope is a *sibling* of project-portal.service, not a descendant, so
+# restarting the service leaves every run alive and running. That fact is what
+# the 2026-07-29 double-run incident turned on: the boot sweep declared those
+# survivors dead, which unlocked their workspaces and handed each one to a
+# second agent. The two calls below are how a fresh portal process asks systemd
+# what is actually true instead of assuming.
+#
+# The unit name is the whole handle, and it must come from the database: it
+# carries the pid of the portal process that minted it, so a new process can
+# never recompute it.
+
+_IS_ACTIVE_TIMEOUT_S = 10
+
+# `systemctl is-active` prints one of these words. They are read instead of the
+# exit code, and that is not a style choice - the exit code is genuinely wrong
+# here. The documented 3 means "known unit, not active", but every scope this
+# module makes carries `--collect`, so a finished run's unit is UNLOADED rather
+# than inactive, and systemd 259 answers that with **4** while still printing
+# "inactive". Since collection is the normal end of every run, exit-code-only
+# logic got the single most common case wrong, and reported it as "I could not
+# find out" - which is the answer that keeps a project locked forever.
+#
+# `deactivating` counts as alive on purpose: the processes are still in the
+# cgroup, so the workspace is still occupied.
+_ALIVE_STATES = {"active", "activating", "reloading", "deactivating", "refreshing"}
+_GONE_STATES = {"inactive", "failed", "dead"}
+
+
+def scope_is_active(unit: Optional[str]) -> Optional[bool]:
+    """Is this scope unit still running? None means we could not find out.
+
+    Three answers rather than two, because they want different handling and
+    conflating them is how a maybe becomes a fact. A caller deciding whether to
+    unlock a workspace deserves to know the difference between "systemd says it
+    is gone" and "systemd did not answer".
+    """
+    if not unit:
+        return None
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", unit],
+            capture_output=True,
+            timeout=_IS_ACTIVE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.info("Could not ask systemd about %s: %s", unit, exc)
+        return None
+    if proc.returncode == 0:
+        return True
+    state = proc.stdout.decode(errors="replace").strip().splitlines()
+    word = state[-1].strip() if state else ""
+    if word in _ALIVE_STATES:
+        return True
+    if word in _GONE_STATES:
+        return False
+    log.info(
+        "systemctl is-active %s exited %s saying %r (%s); treating as unknown",
+        unit, proc.returncode, word,
+        proc.stderr.decode(errors="replace").strip()[:200] or "no message",
+    )
+    return None
+
+
+def stop_scope(unit: str) -> bool:
+    """Kill everything in a scope this process does not own. True if systemd
+    accepted the stop.
+
+    This is the only way to cancel a run that outlived the portal process which
+    started it: there is no `Popen` to signal, but the cgroup is still there and
+    stopping the unit kills every process in it, tool children included.
+    """
+    if not unit:
+        return False
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "stop", unit],
+            capture_output=True, timeout=_IS_ACTIVE_TIMEOUT_S,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Could not stop scope %s: %s", unit, exc)
+        return False
+    if proc.returncode != 0:
+        log.warning(
+            "systemctl stop %s exited %s (%s)", unit, proc.returncode,
+            proc.stderr.decode(errors="replace").strip()[:200] or "no message",
+        )
+        return False
+    return True
 
 
 # --- observation -----------------------------------------------------------

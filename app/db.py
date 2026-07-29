@@ -461,8 +461,86 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("cache_write_tokens", "INTEGER"),
         ("cache_read_tokens", "INTEGER"),
         ("prompt_bytes", "INTEGER"),
+        # The transient systemd scope this run's `claude` process lives in
+        # (app/runlimit.py). Persisted because it is a handle that OUTLIVES the
+        # portal process which minted it: a run's scope is a sibling of
+        # project-portal.service, so a service restart leaves the run running,
+        # and without the unit name written down a fresh process has no way to
+        # ask whether that is the case. NULL for a run that was never scoped.
+        ("scope_unit", "TEXT"),
     ],
 }
+
+
+ORPHAN_SUMMARY = "Orphaned: the service stopped while this run was in progress."
+
+
+def _reconcile_orphaned_runs(conn: sqlite3.Connection) -> list[tuple[int, Optional[int]]]:
+    """Settle 'running' rows left over from a previous portal process - except
+    the ones whose agent is demonstrably still alive. Returns those survivors as
+    (run_id, project_id), for the caller to journal once the lock is released.
+
+    This used to be one unconditional UPDATE, under a comment asserting that
+    "nothing can still be running at startup". That was true while a run was a
+    child in the service's own cgroup, and it silently stopped being true when
+    `runlimit.wrap` started launching each run in its own transient scope - a
+    SIBLING of project-portal.service, which a service restart does not touch.
+
+    The consequence was not a mislabeled row. `running_project_ids()` reads
+    nothing but this status column, so clearing it is precisely the step that
+    UNLOCKS an occupied workspace: on 2026-07-29 a restart landed on two live
+    runs, this sweep declared both dead, and the next worker tick started a
+    second agent into each of their checkouts. Two `claude` processes then spent
+    seven minutes editing one git tree.
+
+    So a run is only declared dead if systemd says its scope is gone, or if
+    there is no scope to ask about. An adopted run is unsupervised - this
+    process has no handle to signal - but unsupervised is a great deal better
+    than overwritten, and `worker._reap_adopted` settles it once its scope dies.
+    """
+    from app import runlimit
+
+    rows = conn.execute(
+        "SELECT id, project_id, scope_unit FROM runs WHERE status = 'running'"
+    ).fetchall()
+    adopted: list[tuple[int, Optional[int]]] = []
+    dead: list[int] = []
+    for row in rows:
+        unit = row["scope_unit"]
+        # No unit means the run was never scoped (capping off, or no systemd),
+        # in which case it really was a child of the service and really is gone.
+        # `None` from the probe means we could not find out, and that keeps the
+        # long-standing behavior rather than inventing a survivor.
+        if unit and runlimit.scope_is_active(unit) is True:
+            adopted.append((int(row["id"]), row["project_id"]))
+        else:
+            dead.append(int(row["id"]))
+    if dead:
+        conn.executemany(
+            "UPDATE runs SET status = 'error', ended_at = ?, summary = ? WHERE id = ?",
+            [(now(), ORPHAN_SUMMARY, run_id) for run_id in dead],
+        )
+    return adopted
+
+
+def set_run_scope(run_id: int, unit: Optional[str]) -> None:
+    """Record the systemd scope a live run is contained in, so a portal process
+    that did not start it can still find out whether it is alive."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute("UPDATE runs SET scope_unit = ? WHERE id = ?", (unit, run_id))
+        conn.commit()
+
+
+def running_runs_with_scopes() -> list[tuple[int, Optional[int], Optional[str]]]:
+    """Every 'running' row as (run_id, project_id, scope_unit). The worker uses
+    this to find runs it does not own and check whether they are still alive."""
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT id, project_id, scope_unit FROM runs WHERE status = 'running'"
+        ).fetchall()
+    return [(int(r["id"]), r["project_id"], r["scope_unit"]) for r in rows]
 
 
 def init_db() -> None:
@@ -543,16 +621,20 @@ def init_db() -> None:
                 taken.add(slot)
                 conn.execute("UPDATE questions SET slot = ? WHERE id = ?", (slot, row["id"]))
 
-        # Reconcile runs orphaned by a mid-run service stop: nothing can still
-        # be running at startup, and a stuck 'running' row would block the
-        # worker forever via is_run_running().
-        conn.execute(
-            "UPDATE runs SET status = 'error', ended_at = ?, "
-            "summary = 'Orphaned: the service stopped while this run was in progress.' "
-            "WHERE status = 'running'",
-            (now(),),
-        )
+        adopted = _reconcile_orphaned_runs(conn)
         conn.commit()
+
+    for run_id, project_id in adopted:
+        log.info("Run %s survived the restart; adopted rather than orphaned", run_id)
+        if project_id is not None:
+            add_journal(
+                project_id, "system", "status",
+                f"The service restarted while run {run_id} was still working. Its "
+                f"agent survived the restart (each run gets its own systemd scope, "
+                f"which a service restart does not touch), so the run was adopted "
+                f"rather than declared dead - and this project stays locked to it, "
+                f"so no second agent is started into the same workspace.",
+            )
 
     for key, value in config.DEFAULT_SETTINGS.items():
         if get_setting(key) is None:

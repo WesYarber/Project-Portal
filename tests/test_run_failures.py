@@ -230,6 +230,10 @@ def restart_state(monkeypatch):
     monkeypatch.setattr(worker.subprocess, "run", record)
     monkeypatch.setattr(worker, "_pending_restart", None)
     monkeypatch.setattr(worker, "_inflight", {})
+    # `_restarting` is a one-way latch in production - the only thing that
+    # clears it is the process ending - so every test that arms it has to hand
+    # back a module that has not been restarted.
+    monkeypatch.setattr(worker, "_restarting", False)
     return calls
 
 

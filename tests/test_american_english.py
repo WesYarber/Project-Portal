@@ -205,6 +205,7 @@ EXEMPT: tuple[tuple[str, str, str], ...] = (
             "tests/test_cancel.py", "tests/test_breakdown.py", "tests/test_oneoffs.py",
             "tests/test_parallel.py", "tests/test_runlimit.py", "tests/test_telegram.py",
             "tests/test_settings_form.py", "tests/test_ui_polish.py",
+            "tests/test_restart_survivors.py",
         )
     ),
 )

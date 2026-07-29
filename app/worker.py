@@ -368,6 +368,12 @@ async def _daily_model_check() -> None:
 async def _tick() -> None:
     global _pending_restart
     _reap_inflight()
+    if _restarting:
+        # The restart timer is armed and this process is about to be killed.
+        # Anything started now is started to be orphaned, so do nothing at all -
+        # not even the reflect or the compaction, which are runs like any other.
+        return
+    _reap_adopted()
     _daily_audit_prune()
     await _daily_model_check()
     if _pending_restart is not None:
@@ -415,6 +421,11 @@ def scheduled_work_enabled() -> bool:
 
 async def _start_one() -> bool:
     """Try to launch a single run. Returns True if one was started."""
+    if _restarting:
+        # Belt and braces with the check in `_tick`: this is also reached from
+        # the pending-restart branch there, which deliberately lets manual runs
+        # through right up until the timer is armed.
+        return False
     worker_enabled = scheduled_work_enabled()
 
     manual_project_id: Optional[int] = None
@@ -485,6 +496,44 @@ def _reap_inflight() -> None:
             exc = handle.exception() if not handle.cancelled() else None
             if exc is not None:
                 log.error("Run %s crashed: %r", run_id, exc)
+
+
+ADOPTED_SUMMARY = (
+    "Ended after a service restart: this run outlived the portal process that "
+    "started it, so nothing was watching when it finished."
+)
+
+
+def _reap_adopted() -> None:
+    """Settle 'running' rows this process does not own once their scope is gone.
+
+    The other half of `db._reconcile_orphaned_runs`. Adopting a run that
+    survived a restart keeps its workspace locked, which is the point - but the
+    adopting process has no `Popen` to await, so nothing would ever move the row
+    off 'running' and the project would be locked out for good. Here the scope
+    itself is the completion signal: while systemd still has the unit the agent
+    is working, and the moment it does not, the run is over.
+
+    A row with no scope unit is left alone. It cannot be one of these (a run
+    that was never scoped really did die with its parent, and the boot sweep
+    already settled it), and reaping on absence of evidence would settle live
+    runs on any machine where scoping is switched off.
+
+    "Adopted" means *started by a different portal process*, and the scope name
+    is what says so - `_inflight` is not, which is the trap here. The daily
+    reflect and the learnings compaction both create a real `runs` row and then
+    register under a fixed slot key rather than under their run id, so they look
+    exactly like orphans. Their scope also dies a few seconds before their row
+    settles, in the window where the report is being parsed and journaled, which
+    is precisely when this would have marked a healthy reflect as an error.
+    """
+    for run_id, project_id, unit in db.running_runs_with_scopes():
+        if run_id in _inflight or not unit or runlimit.minted_here(unit):
+            continue
+        if runlimit.scope_is_active(unit) is not False:
+            continue
+        log.info("Adopted run %s has ended (scope %s is gone)", run_id, unit)
+        db.finish_run(run_id, "error", summary=ADOPTED_SUMMARY)
 
 
 def spawn_run(project: db.sqlite3.Row, task: str) -> int:
@@ -890,6 +939,25 @@ RESTART_DELAY_SEC = 3
 # which is everything the restart was for.
 _pending_restart: Optional[tuple[int, str]] = None
 
+# Set once the restart timer is armed, and never cleared - the only thing that
+# clears it is the process ending, which is what it is waiting for. Every path
+# that could start a run consults it.
+#
+# This exists because RESTART_DELAY_SEC is a request, not a guarantee. A
+# transient `systemd-run --on-active` timer inherits AccuracySec=1min, and on
+# 2026-07-29 the 3-second timer fired 59 seconds late. `_pending_restart` had
+# already been set to None by then (it is cleared *before* _fire_restart, so it
+# cannot re-fire), so for that whole minute the worker scheduled runs normally
+# into a process that was about to be killed - and two of them were still very
+# much alive when it was. The delay was tightened as well, but the flag is the
+# actual fix: a deadline can always be beaten, and a latch cannot.
+_restarting = False
+
+
+def restart_armed() -> bool:
+    """True once the service restart is scheduled and nothing new may start."""
+    return _restarting
+
 
 def restart_pending() -> bool:
     return _pending_restart is not None
@@ -939,13 +1007,22 @@ def _schedule_self_restart(project_id: int, new_head: str, current_run_id: Optio
 
 def _fire_restart(project_id: int, new_head: str) -> None:
     """Actually schedule the service restart, detached (systemd-run), because
-    this process is the service being restarted."""
+    this process is the service being restarted.
+
+    Two things guard the window between arming the timer and the process dying.
+    `AccuracySec` is pinned, because systemd's one-minute default turned a
+    3-second delay into a 59-second one; and `_restarting` is latched, because
+    no delay short enough to be safe is a delay you can rely on.
+    """
+    global _restarting
     try:
         subprocess.run(
             ["systemd-run", "--user", f"--on-active={RESTART_DELAY_SEC}",
+             "--timer-property=AccuracySec=1ms",
              "systemctl", "--user", "restart", "project-portal.service"],
             check=True, capture_output=True, text=True,
         )
+        _restarting = True
         db.add_journal(
             project_id, "system", "status",
             f"Self-update detected (source now at `{new_head[:7]}`); "
@@ -1588,10 +1665,18 @@ CANCEL_RESULTS = {"cancelled", "orphaned", "not_running", "missing"}
 def cancel_run(run_id: int) -> str:
     """Stop a run on request. Returns one of `CANCEL_RESULTS`.
 
-    `orphaned` means the row said 'running' but no process in this service owns
-    it - a leftover from before a restart. Killing nothing and leaving the row
+    `orphaned` means the row said 'running' but nothing could be found to kill -
+    a leftover from before a restart. Killing nothing and leaving the row
     'running' would block the worker forever via `is_run_running()`, so the row
     is settled here instead.
+
+    "Nothing owns it" and "nothing is running" are different claims, and this
+    used to conflate them: a run adopted across a restart has no entry in
+    `agent_runner._ACTIVE_PROCS`, but its agent is alive in its own systemd
+    scope and pressing cancel would settle the row while leaving the agent
+    editing the workspace - which is the double-run failure with extra steps.
+    So the scope is tried before giving up, and stopping the unit kills every
+    process in it rather than only the one we happen to have a pid for.
     """
     run = db.get_run(run_id)
     if run is None:
@@ -1599,6 +1684,15 @@ def cancel_run(run_id: int) -> str:
     if run["status"] != "running":
         return "not_running"
     if agent_runner.cancel_run(run_id):
+        return "cancelled"
+    unit = run["scope_unit"]
+    if unit and runlimit.scope_is_active(unit) is True and runlimit.stop_scope(unit):
+        db.finish_run(
+            run_id, "cancelled",
+            summary="Canceled: the run had outlived the portal process that "
+                    "started it, and its systemd scope was stopped.",
+        )
+        log.warning("Cancel requested for adopted run %s; scope %s stopped", run_id, unit)
         return "cancelled"
     db.finish_run(
         run_id, "cancelled",

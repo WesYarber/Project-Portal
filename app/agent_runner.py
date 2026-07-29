@@ -933,9 +933,13 @@ async def _emit(on_event: Optional[EventCallback], event: dict, lines: list[str]
 #
 # A run is a `claude` process (plus the tool children it spawns) owned by this
 # process. To stop one on request we need a handle on it, so live runs register
-# themselves here for the lifetime of the subprocess. The registry is in-memory
-# on purpose: after a restart there is no process left to signal, and
-# `init_db()` already reconciles the orphaned row.
+# themselves here for the lifetime of the subprocess.
+#
+# This registry is in-memory, and that is a limitation rather than a design: a
+# run's systemd scope is a sibling of project-portal.service, so after a restart
+# there very often IS a process still running, and this map has forgotten it.
+# `runs.scope_unit` is the handle that survives - `worker.cancel_run` falls
+# through to stopping that unit when nothing here owns the run.
 # --------------------------------------------------------------------------
 
 _ACTIVE_PROCS: dict[int, asyncio.subprocess.Process] = {}
@@ -1110,6 +1114,13 @@ async def run_claude(
 
     if run_id is not None:
         _ACTIVE_PROCS[run_id] = proc
+        # Write the scope name down before anything can go wrong with the run.
+        # The registry above is in-memory and dies with this process; the scope
+        # does not, so this row is the only handle a *later* portal process has
+        # on an agent that outlived the one that started it. Without it the boot
+        # sweep cannot tell a survivor from a corpse, and guessing wrong unlocks
+        # an occupied workspace. See db._reconcile_orphaned_runs.
+        db.set_run_scope(run_id, runlimit.unit_of(argv))
 
     # Started, not awaited, and deliberately so: the prompt is far larger than
     # a pipe buffer (64 KiB on Linux; the busiest projects render past 120 KB),
