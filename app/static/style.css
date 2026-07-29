@@ -2100,6 +2100,52 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   padding: 0 0.3rem;
 }
 
+/* Re-filing a row onto somebody: a quiet "whose?" that swaps for one small
+   button per member. Every control here is `height: auto` and under 1rem of
+   line box on purpose - .todo-del's note above explains why: these share a row
+   with the text, so anything inheriting the 2.3rem shared control height would
+   raise EVERY row and break the 16-row scroll cap's arithmetic. */
+.todo-who { white-space: nowrap; }
+.todo-who-btn {
+  background: none;
+  border: none;
+  color: var(--terminal-dim);
+  cursor: pointer;
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0 0.2rem;
+  height: auto;
+  opacity: 0.32;
+  transition: opacity 0.1s ease;
+}
+.todo-item:hover .todo-who-btn, .todo-who-btn:focus-visible { opacity: 1; }
+.todo-who-menu {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  vertical-align: baseline;
+}
+.todo-who-pick {
+  background: none;
+  border: 1px solid var(--terminal-dim);
+  border-radius: 2px;
+  color: var(--terminal-fg);
+  cursor: pointer;
+  font-size: 0.68rem;
+  line-height: 1;
+  /* Vertical padding buys a tap target without buying row height: the border
+     box stays under the 2.05rem the scroll cap counts on. */
+  padding: 0.2rem 0.35rem;
+  height: auto;
+}
+.todo-who-pick:hover, .todo-who-pick:focus-visible { border-color: var(--ansi-cyan); }
+/* Where it already is. Still a live button - re-picking it is a harmless
+   no-op - but it should not look like the change on offer. */
+.todo-who-pick.is-current {
+  border-style: dashed;
+  color: var(--terminal-dim);
+}
+
 /* Clear-completed and the history link, on one line under the add form. */
 .todo-foot {
   display: flex;

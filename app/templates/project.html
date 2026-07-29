@@ -36,11 +36,12 @@
   created {{ project.created_at|timeago }} &middot; updated {{ project.updated_at|timeago }}
 </p>
 
-{# What happened while you were away: one line per agent run, newest first,
-   ending at the last time you pressed acknowledged. It is the first thing on
-   the page because it is the thing you open a project to find out - and it
-   disappears entirely once read, so it costs nothing on a project you are
-   simply looking at. #}
+{# What happened while you were away: one line per agent run, OLDEST first,
+   ending at the last time you pressed acknowledged - so the stack reads top to
+   bottom in the order it happened and the newest work sits just above the
+   acknowledged button. It is the first thing on the page because it is the
+   thing you open a project to find out - and it disappears entirely once read,
+   so it costs nothing on a project you are simply looking at. #}
 {% if unacked_work %}
 <div class="work-summary" id="work-summary">
   <h2 class="work-summary-head">since you last looked</h2>
@@ -521,7 +522,14 @@
   {# scroll-cap: taller than TODO_VISIBLE_ROWS rows and the list gets its own
      scrollbar instead of pushing the rest of the page down. The row height is
      pinned in CSS so the cap is an exact number of items, not an estimate. #}
-  {% macro todo_list(items, empty) %}
+  {# `refile` is the list of people this item could be handed to, and passing
+     an empty one drops the control entirely. Only the human half passes it,
+     and only when the project has more than one member: with one member the
+     deduction in todos.py already says every unassigned item is theirs, so a
+     picker offering that one name would be a control that changes nothing you
+     can see. Jinja macros do not see outer `{% set %}` variables, hence a
+     parameter rather than a template-level one. #}
+  {% macro todo_list(items, empty, refile=[]) %}
   {% if items %}
   <ul class="todo-list scroll-cap scroll-cap-todo">
     {% for t in items %}
@@ -557,6 +565,36 @@
         </form>
       </span>
       {% endif %}
+      {% if refile and not t.done %}
+      {# Re-file this item onto somebody else. "whose?" spelled out rather
+         than an arrow glyph: at 0.7rem and 32% opacity a &rarr; is a smudge,
+         which a screenshot showed and a DOM test never would.
+         Buttons rather than a <select>:
+         a native select inherits the shared control height and would set the
+         floor for every row (see .todo-del's note in style.css), and on a
+         phone a name you tap is a bigger target than a dropdown. Each choice
+         is its own one-field form, so no JS is needed to submit. #}
+      <span class="todo-who">
+        <button type="button" class="todo-who-btn" data-act="who" data-id="{{ t.id }}"
+                title="re-file this item onto somebody">whose?</button>
+        <span class="todo-who-menu" hidden>
+          {%- for m in refile %}
+          <form method="post" action="/todo/{{ t.id }}/person" class="inline-form">
+            <input type="hidden" name="person" value="{{ m.id }}">
+            <button type="submit" class="todo-who-pick{{ ' is-current' if t.person_id == m.id }}"
+                    aria-label="re-file to {{ m.name }}: {{ t.text }}">{{ m.name }}</button>
+          </form>
+          {%- endfor %}
+          {# Filing it onto nobody is a real answer, not an undo of a mistake:
+             it says "a person has to do this and we cannot yet say which". #}
+          <form method="post" action="/todo/{{ t.id }}/person" class="inline-form">
+            <input type="hidden" name="person" value="">
+            <button type="submit" class="todo-who-pick{{ ' is-current' if not t.person_id }}"
+                    aria-label="re-file to nobody in particular: {{ t.text }}">nobody</button>
+          </form>
+        </span>
+      </span>
+      {% endif %}
       <form method="post" action="/todo/{{ t.id }}/delete" class="inline-form"
             data-confirm="Delete this todo?">
         <button type="submit" class="todo-del" title="delete">&times;</button>
@@ -580,11 +618,12 @@
      install every item resolves to them and this is the one "For you" heading
      it has always been. #}
   {% if user_todo_groups %}
+  {% set refile_to = project_members(project.id) if project_members(project.id)|length > 1 else [] %}
   {% for person, items in user_todo_groups %}
   <h3 class="todo-head">{{ todo_head_for(person) }}
     <span class="muted small">{{ items|rejectattr('done')|list|length }} open</span>
   </h3>
-  {{ todo_list(items, "Nothing waiting on you.") }}
+  {{ todo_list(items, "Nothing waiting on you.", refile=refile_to) }}
   {% endfor %}
   {% else %}
   <h3 class="todo-head">For you</h3>

@@ -479,3 +479,122 @@ def test_the_agent_half_never_grows_a_person(project, wes, karli):
 
     row = db.list_todos(project["id"], owner="agent")[0]
     assert todos.responsible_for(row, wes) is None
+
+
+# --------------------------------------------------------------------------
+# Re-filing an existing item (#420)
+# --------------------------------------------------------------------------
+# Until this existed, changing whose an item was meant deleting it and adding
+# it again, which threw away its tags and its age. Home Hub is the case that
+# wanted it: three human items on a project both of them are on, where the
+# single-member deduction correctly declines to guess.
+
+def test_refiling_moves_an_item_onto_a_person(client, project, wes, karli):
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
+    assert row["person_id"] is None
+
+    client.post(f"/todo/{row['id']}/person", data={"person": str(karli["id"])})
+
+    assert db.get_todo(row["id"])["person_id"] == karli["id"]
+
+
+def test_refiling_keeps_the_item_it_was(client, project, wes, karli):
+    """The whole point of re-filing over delete-and-re-add: nothing else moves."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user", tags=["blocked"])
+    created = db.get_todo(row["id"])["created_at"]
+
+    client.post(f"/todo/{row['id']}/person", data={"person": str(karli["id"])})
+
+    after = db.get_todo(row["id"])
+    assert after["id"] == row["id"]
+    assert after["text"] == "Paste the ntfy topic in"
+    assert db.todo_tags(after) == ["blocked"]
+    assert after["created_at"] == created
+
+
+def test_refiling_to_nobody_clears_the_person(client, project, wes, karli):
+    """"Nobody" is a real answer - a person has to do this, we cannot say which
+    - so it stays on the human half rather than falling back to the agent."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Decide on the icons", "user", person_id=karli["id"])
+
+    client.post(f"/todo/{row['id']}/person", data={"person": ""})
+
+    after = db.get_todo(row["id"])
+    assert after["person_id"] is None
+    assert after["owner"] == "user"
+
+
+def test_refiling_onto_a_non_member_files_it_onto_nobody(client, project, wes, karli):
+    """An item can only be somebody's if they can see the project it is on.
+
+    The UI never offers a non-member, so this needs a hand-made request - but
+    a wrong attribution is worse than a missing one, which is the same call
+    the create route makes for an id that names nobody.
+    """
+    row = db.add_todo(project["id"], "Something", "user")
+    assert not people.is_member(project["id"], karli["id"])
+
+    client.post(f"/todo/{row['id']}/person", data={"person": str(karli["id"])})
+
+    assert db.get_todo(row["id"])["person_id"] is None
+
+
+def test_refiling_an_item_that_does_not_exist_is_a_404(client, project, karli):
+    assert client.post("/todo/98765/person", data={"person": str(karli["id"])}).status_code == 404
+
+
+def test_the_row_offers_the_re_file_control_once_there_are_two_of_you(
+    client, project, wes, karli
+):
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert f'action="/todo/{row["id"]}/person"' in html
+    assert "Karli" in html
+
+
+def test_one_member_gets_no_re_file_control(client, project, wes):
+    """With one member the deduction already says every unassigned item is
+    theirs, so a picker offering that one name changes nothing you can see."""
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert f'action="/todo/{row["id"]}/person"' not in html
+
+
+def test_the_agent_half_gets_no_re_file_control(client, project, wes, karli):
+    """`owner` keeps its own job: an agent item is nobody's in particular, and
+    the macro is shared with the human half, so this is worth pinning."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Wire up the routing", "agent")
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert f'action="/todo/{row["id"]}/person"' not in html
+
+
+def test_the_control_marks_where_the_item_already_is(client, project, wes, karli):
+    people.add_member(project["id"], karli["id"])
+    db.add_todo(project["id"], "Paste the ntfy topic in", "user", person_id=karli["id"])
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert 'class="todo-who-pick is-current"' in html
+
+
+def test_a_re_filed_item_moves_to_the_other_heading(client, project, wes, karli):
+    """The end to end thing Wes would actually see happen on the page."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user", person_id=wes["id"])
+
+    client.post(f"/todo/{row['id']}/person", data={"person": str(karli["id"])})
+
+    grouped = todos.by_person(db.list_todos(project["id"], owner="user"), project["id"])
+    who = [p["name"] for p, items in grouped if any(i["id"] == row["id"] for i in items)]
+    assert who == ["Karli"]

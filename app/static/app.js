@@ -127,6 +127,27 @@ document.addEventListener("click", function (ev) {
     closeTagAdd(form);
   });
 
+  // Same idea for the "whose?" re-file menu: any click outside an open one
+  // closes it. Unlike the tag input there is nothing half-typed to protect, so
+  // it closes unconditionally.
+  var opened = ev.target.closest ? ev.target.closest(".todo-who") : null;
+  document.querySelectorAll(".todo-who-menu:not([hidden])").forEach(function (menu) {
+    if (menu.closest(".todo-who") === opened) return;
+    closeWhoMenu(menu);
+  });
+
+  var whoBtn = ev.target.closest ? ev.target.closest('[data-act="who"]') : null;
+  if (whoBtn) {
+    var menu = whoBtn.parentElement.querySelector(".todo-who-menu");
+    if (menu) {
+      whoBtn.hidden = true;
+      menu.hidden = false;
+      var first = menu.querySelector(".todo-who-pick");
+      if (first) first.focus();
+    }
+    return;
+  }
+
   var btn = ev.target.closest ? ev.target.closest('[data-act="tag-add"]') : null;
   if (!btn) return;
   var form = btn.parentElement.querySelector(".tag-add-form");
@@ -137,9 +158,25 @@ document.addEventListener("click", function (ev) {
   if (input) input.focus();
 });
 
+// The "whose?" menu on a todo row. Same `hidden`-as-JS-owned-state contract as
+// the tag input above, so a live-refresh morph cannot slam it shut mid-choice.
+function closeWhoMenu(menu) {
+  menu.hidden = true;
+  var wrap = menu.closest(".todo-who");
+  var btn = wrap && wrap.querySelector(".todo-who-btn");
+  if (btn) btn.hidden = false;
+}
+
 // Escape clears and closes.
 document.addEventListener("keydown", function (ev) {
   if (ev.key !== "Escape") return;
+  var menu = ev.target.closest ? ev.target.closest(".todo-who-menu") : null;
+  if (menu) {
+    closeWhoMenu(menu);
+    var back = menu.closest(".todo-who").querySelector(".todo-who-btn");
+    if (back) back.focus();
+    return;
+  }
   var form = ev.target.closest ? ev.target.closest(".tag-add-form") : null;
   if (!form) return;
   var input = form.querySelector("input");

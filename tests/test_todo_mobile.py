@@ -172,3 +172,58 @@ def test_the_group_cannot_set_a_floor_wider_than_a_phone():
     css = (STATIC / "style.css").read_text(encoding="utf-8")
     meta = re.search(r"\n\.todo-meta\s*\{(.*?)\}", css, re.S)
     assert re.search(r"min-width:\s*0", meta.group(1)), meta.group(1)
+
+
+def _meta_group(row_inner: str) -> str:
+    """The contents of `.todo-meta`, found by counting `<span>` depth.
+
+    A regex cannot do this once the group has nested spans in it, and getting
+    that wrong is silent: a non-greedy `(.*?)</span>\\s*$` stops at the first
+    close and a greedy one runs to the LAST `</span>` in the row - which, if
+    something has escaped the group and sits after it, is that escapee's own
+    close tag, so the test reports the content as inside the group when it is
+    not. This function was written after that exact false pass.
+    """
+    start = row_inner.index('<span class="todo-meta">')
+    depth = 0
+    for m in re.finditer(r"<span\b[^>]*>|</span>", row_inner[start:]):
+        depth += 1 if m.group(0).startswith("<span") else -1
+        if depth == 0:
+            end = start + m.start()
+            assert not row_inner[start + m.end():].strip(), (
+                "the .todo-meta group must be the last thing in the row"
+            )
+            return row_inner[start:end]
+    raise AssertionError("the .todo-meta group is never closed")
+
+
+def test_the_re_file_control_is_inside_the_group_too(client, project):
+    """#420's "whose?" control shares the row with the text, so it obeys the
+    same rule everything else does: outside `.todo-meta` it would get its own
+    flex item and be back to competing with the text for one line at 390px."""
+    from app import people
+
+    karli = people.get(people.add(name="Karli", gender="female"))
+    people.add_member(project["id"], karli["id"])
+    db.add_todo(project["id"], "A human item", owner="user")
+
+    html = client.get("/project/clicks").text
+    row = re.search(
+        r'<li class="todo-item[^"]*">((?:(?!</li>).)*todo-who(?:(?!</li>).)*)</li>', html, re.S
+    )
+    assert row, "no row carrying the re-file control rendered"
+
+    assert "todo-who" in _meta_group(row.group(1)), (
+        "the re-file control must be inside the .todo-meta group"
+    )
+
+
+def test_the_re_file_controls_do_not_raise_the_row_height(client, project):
+    """The 16-row scroll cap is an exact height (--todo-row-h), so any control
+    sharing a row must be `height: auto` - a shared 2.3rem control height here
+    would raise EVERY row and make the cap show fewer items than it claims."""
+    css = (STATIC / "style.css").read_text()
+    for cls in (".todo-who-btn", ".todo-who-pick"):
+        block = re.search(re.escape(cls) + r"\s*\{([^}]*)\}", css)
+        assert block, f"{cls} has no rule"
+        assert "height: auto" in block.group(1), f"{cls} must not inherit the control height"

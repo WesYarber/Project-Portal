@@ -2710,7 +2710,19 @@ def _summary_bullets(row) -> list[str]:
 
 
 def unacknowledged_work(project_id: int, limit: int = MAX_UNACKED_SHOWN) -> list[dict]:
-    """Runs whose summary Wes has not acknowledged yet, newest first.
+    """Runs whose summary Wes has not acknowledged yet, OLDEST first.
+
+    Reading order, not recency order: the banner is several runs' worth of
+    "here is what happened while you were away", and you read a stack of those
+    the way you read anything else - top to bottom, earliest first - so the
+    most recent work is the last thing you read before the acknowledged
+    button. (Wes, 2026-07-28: "should go from oldest to newest from top to
+    bottom, since that is how they are read".)
+
+    The SELECT deliberately stays newest-first: the cap has to keep the most
+    RECENT `limit` runs and then present them in reverse, which is not the
+    same query as ordering ascending and taking the first `limit` - that one
+    keeps the oldest and silently drops the work you actually came to read.
 
     Keyed on `ended_at` rather than the run id so that acknowledging can never
     swallow a run that finished *after* the button was pressed - with parallel
@@ -2746,6 +2758,7 @@ def unacknowledged_work(project_id: int, limit: int = MAX_UNACKED_SHOWN) -> list
                     "report_summary": " ".join(bullets),
                 }
             )
+    out.reverse()
     return out
 
 

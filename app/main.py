@@ -1977,6 +1977,31 @@ async def tag_todo(todo_id: int, add: str = Form(""), remove: str = Form("")) ->
     return _todo_redirect(project["slug"]) if project else RedirectResponse(url="/", status_code=303)
 
 
+@app.post("/todo/{todo_id}/person")
+async def refile_todo(todo_id: int, person: str = Form("")) -> RedirectResponse:
+    """Hand an existing item to somebody, or to nobody with an empty `person`.
+
+    Until this existed the only way to change whose an item was, was to delete
+    it and add it again - which threw away its tags and its age.
+
+    A person who is not a member of this project files as nobody rather than
+    being accepted: an item can only be somebody's if they can see the project
+    it is on, and this matches the create route, which also prefers an
+    unattributed human item to a wrong attribution. The UI never offers a
+    non-member, so reaching this needs a hand-made request.
+    """
+    todo = db.get_todo(todo_id)
+    if todo is None:
+        raise HTTPException(status_code=404, detail="Todo not found")
+    person_id = None
+    raw = person.strip()
+    if raw.isdigit() and people.is_member(todo["project_id"], int(raw)):
+        person_id = int(raw)
+    db.set_todo_person(todo_id, person_id)
+    project = db.get_project(todo["project_id"])
+    return _todo_redirect(project["slug"]) if project else RedirectResponse(url="/", status_code=303)
+
+
 @app.post("/todo/{todo_id}/delete")
 async def delete_todo(todo_id: int) -> RedirectResponse:
     todo = db.get_todo(todo_id)

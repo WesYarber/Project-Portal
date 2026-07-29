@@ -9,7 +9,9 @@ visually."
 The behaviors that make that true, and which these tests pin down:
 
 - a run's one-line `summary` from report.json is recorded against the run;
-- the project page shows the summaries Wes has not acknowledged, newest first;
+- the project page shows the summaries Wes has not acknowledged, oldest first
+  (Wes, 2026-07-28: "should go from oldest to newest from top to bottom, since
+  that is how they are read"), while still capping to the most RECENT few;
 - pressing acknowledged clears them and the section disappears entirely, giving
   its space back rather than leaving an empty card behind;
 - work finished *after* the button was pressed is not swallowed by it.
@@ -135,11 +137,13 @@ def test_a_hyphen_mid_sentence_is_not_a_bullet_marker(project):
     ]
 
 
-def test_bullets_are_capped_and_deduped(project):
+def test_bullets_are_capped(project):
     _finished_run(project["id"], [f"thing {i}" for i in range(10)])
     bullets = db.unacknowledged_work(project["id"])[0]["bullets"]
     assert len(bullets) == db.MAX_SUMMARY_BULLETS
 
+
+def test_bullets_are_deduped(project):
     _finished_run(project["id"], ["same thing", "same thing", "other thing"])
     assert db.unacknowledged_work(project["id"])[0]["bullets"] == ["same thing", "other thing"]
 
@@ -184,6 +188,21 @@ def test_the_page_renders_each_bullet_as_its_own_item(client, project):
     assert "Done." not in body
 
 
+def test_the_page_stacks_the_runs_oldest_at_the_top(client, project):
+    """Rendered order, not just query order - the template iterates as given."""
+    _finished_run(project["id"], "Landed the first thing")
+    _finished_run(project["id"], "Landed the second thing")
+    _finished_run(project["id"], "Landed the third thing")
+
+    body = client.get(f"/project/{project['slug']}").text
+    banner = body[body.index("since you last looked"):body.index("acknowledged</button>")]
+    assert (
+        banner.index("Landed the first thing")
+        < banner.index("Landed the second thing")
+        < banner.index("Landed the third thing")
+    )
+
+
 def test_the_prompt_demands_concrete_bullets():
     """The real fix is the contract: the plumbing cannot make a bad line good."""
     contract = agent_runner.AGENT_CONTRACT
@@ -193,12 +212,13 @@ def test_the_prompt_demands_concrete_bullets():
 
 # --- what the banner contains ----------------------------------------------
 
-def test_unacknowledged_work_is_newest_first(project):
+def test_unacknowledged_work_is_oldest_first(project):
+    """Reading order: you read a stack of these top to bottom, earliest first."""
     _finished_run(project["id"], "first thing")
     _finished_run(project["id"], "second thing")
 
     rows = db.unacknowledged_work(project["id"])
-    assert [r["report_summary"] for r in rows] == ["second thing", "first thing"]
+    assert [r["report_summary"] for r in rows] == ["first thing", "second thing"]
 
 
 def test_runs_without_a_summary_are_not_in_the_banner(project):
@@ -210,6 +230,24 @@ def test_the_banner_is_capped(project):
     for i in range(db.MAX_UNACKED_SHOWN + 3):
         _finished_run(project["id"], f"run {i}")
     assert len(db.unacknowledged_work(project["id"])) == db.MAX_UNACKED_SHOWN
+
+
+def test_the_cap_keeps_the_newest_runs_even_though_it_shows_them_oldest_first(project):
+    """The trap in reversing the banner.
+
+    Ordering the SELECT ascending and taking the first `limit` reads the same
+    from the outside - a list running oldest to newest - but it keeps the
+    WRONG end: the oldest runs, dropping the work you actually opened the
+    project to read. The query has to stay newest-first and the reversal has
+    to happen after the cap.
+    """
+    for i in range(db.MAX_UNACKED_SHOWN + 3):
+        _finished_run(project["id"], f"run {i}")
+
+    shown = [r["report_summary"] for r in db.unacknowledged_work(project["id"])]
+    newest = [f"run {i}" for i in range(3, db.MAX_UNACKED_SHOWN + 3)]
+    assert shown == newest
+    assert "run 0" not in shown
 
 
 def test_another_projects_work_is_not_shown(project):
