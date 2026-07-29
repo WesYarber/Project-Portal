@@ -15,7 +15,7 @@ from typing import Optional
 from app import (
     agent_runner, config, crashloop, daycycle, db, hookguard, journalfile, limits, memory,
     modelwatch, notify, oneoff, orphans, pacing, people, preview, proof, quickreplies,
-    report_schema, runlimit, runlog, selfreview, subprojects, todos,
+    report_schema, runlimit, runlog, selfreview, subprojects, todos, worklock,
 )
 
 log = logging.getLogger("portal.worker")
@@ -166,6 +166,22 @@ def project_at_daily_cap(project: db.sqlite3.Row) -> bool:
     return db.count_runs_today(project["id"]) >= int(cap)
 
 
+def workspace_leased(slug: str) -> bool:
+    """Is another agent holding this project's workspace right now?
+
+    Only a definite yes counts. `worklock.is_busy` answers None when it could
+    not find out (no such directory yet, a filesystem with no BSD locks), and
+    treating that as busy would stop the board on any machine where leasing does
+    not work - the same fail-open rule the memory caps follow.
+
+    This is a pre-flight check, not the mutual exclusion: it saves burning a run
+    row and a parallel slot on a spawn that would refuse, while the lease the
+    spawn itself takes is what actually makes a collision impossible. Anything
+    that changes between here and the spawn is therefore harmless.
+    """
+    return worklock.is_busy(config.PROJECTS_DIR / slug) is True
+
+
 def _pick_project(manual_project_id: Optional[int]) -> tuple[Optional[db.sqlite3.Row], bool]:
     """Returns (project_row, is_manual). Manual runs deliberately bypass the
     per-project cap - Wes asking for a run is the whole point - but never the
@@ -174,10 +190,16 @@ def _pick_project(manual_project_id: Optional[int]) -> tuple[Optional[db.sqlite3
     busy = db.running_project_ids()
     if manual_project_id is not None:
         proj = db.get_project(manual_project_id)
-        if proj is not None and proj["id"] not in busy:
+        if proj is not None and proj["id"] not in busy and not workspace_leased(proj["slug"]):
             return proj, True
     for candidate in db.list_schedulable_projects():
         if candidate["id"] in busy:
+            continue
+        # The runs table said this project is free. Ask the kernel too: a run
+        # that outlived the portal process which started it holds the lease and
+        # may hold no row at all. This is the check that would have caught the
+        # 2026-07-29 double-run before it started.
+        if workspace_leased(candidate["slug"]):
             continue
         if build_gated(candidate):
             continue
@@ -702,9 +724,22 @@ async def run_project_task(
             on_event=_live_logger(run_id), run_id=run_id,
             json_schema=report_schema.schema_json(),
             settings_json=_guard_settings(run_id, project),
+            # One agent per workspace, enforced by the kernel rather than by the
+            # runs table. See app/worklock.py.
+            lock_dir=workspace,
         )
     finally:
         hookguard.end(run_id)
+
+    if result.lock_conflict:
+        # Nothing ran, so there is nothing to salvage and nothing to warn about:
+        # deliberately no `_note_orphaned_work` here, because an uncommitted-work
+        # warning would point at the *other* agent's live edits and send the next
+        # run to tidy up work that is still being written.
+        log.warning("Run %s refused: %s is leased by another agent", run_id, project["slug"])
+        db.finish_run(run_id, "error", summary=worklock.refused_note(project["slug"]))
+        db.add_journal(project["id"], "system", "status", worklock.refused_note(project["slug"]))
+        return
 
     _note_memory_kill(project, task, result)
 

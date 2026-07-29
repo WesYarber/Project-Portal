@@ -15,6 +15,7 @@ from typing import Awaitable, Callable, Optional
 from app import (
     attachments, config, db, journalfile, limits, memory, notes, orphans, people,
     promptbudget, qdedupe, runlimit, runlog, spawnauth, subprojects, todos,
+    worklock,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -414,6 +415,12 @@ class RunResult:
     # succeeded, and is a fact worth reporting either way.
     oom_killed: bool = False
     peak_memory_bytes: Optional[int] = None
+    # True when this spawn found the workspace already leased by another agent
+    # and refused to start (app/worklock.py). Distinct from an ordinary failure
+    # because nothing ran: no files were touched, no allowance was spent, and
+    # the project is emphatically not broken - so the caller must not report it
+    # as a crash or leave an "uncommitted work" warning behind it.
+    lock_conflict: bool = False
     # The CLI's own accounting for the run, off the result event's `usage`, plus
     # the size of the prompt the portal handed it. Recorded so that "is the
     # prompt too big?" is a question the portal can answer from its own history
@@ -1069,6 +1076,7 @@ async def run_claude(
     resume_session: Optional[str] = None,
     json_schema: Optional[str] = None,
     settings_json: Optional[str] = None,
+    lock_dir: Optional[Path] = None,
 ) -> RunResult:
     """Run the agent, streaming its events to `on_event` as they happen.
 
@@ -1086,11 +1094,22 @@ async def run_claude(
         max_budget_usd=_configured_budget_usd(), json_schema=json_schema,
         settings_json=settings_json,
     )
-    # Each run gets its own memory-capped cgroup scope where the machine
-    # supports it, so a runaway tool inside the run cannot OOM the box - and
-    # therefore cannot take the portal (and every other run) down with it.
+    # Two wrappers, and the nesting is load-bearing.
+    #
+    # Outermost: each run gets its own memory-capped cgroup scope where the
+    # machine supports it, so a runaway tool inside the run cannot OOM the box -
+    # and therefore cannot take the portal (and every other run) down with it.
     # See app/runlimit.py.
-    argv = runlimit.wrap(cmd, run_id)
+    #
+    # Inside it: an exclusive kernel lease on the workspace, held for exactly as
+    # long as the agent lives, so two agents can never share one git checkout.
+    # It must be *inside* the scope. The scope is a sibling of the portal's own
+    # service unit and survives a service restart; a lock holder outside it
+    # would be killed by that restart while the agent kept working, releasing
+    # the lease on a workspace that is still occupied - which is the exact
+    # failure it exists to prevent. See app/worklock.py.
+    leased = worklock.wrap(cmd, lock_dir) is not cmd
+    argv = runlimit.wrap(worklock.wrap(cmd, lock_dir), run_id)
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -1128,7 +1147,7 @@ async def run_claude(
     # first time the CLI emitted an event while we were still filling stdin.
     feeder = asyncio.create_task(_feed_prompt(proc, prompt))
     try:
-        return await _supervise(proc, cwd, run_id, on_event, timeout_min, len(prompt))
+        return await _supervise(proc, cwd, run_id, on_event, timeout_min, len(prompt), leased)
     finally:
         feeder.cancel()
         _forget(run_id)
@@ -1165,6 +1184,7 @@ async def _supervise(
     on_event: Optional[EventCallback],
     timeout_min: int,
     prompt_bytes: int = 0,
+    leased: bool = False,
 ) -> RunResult:
     parsed: dict = {}
     raw_parts: list[str] = []
@@ -1231,6 +1251,13 @@ async def _supervise(
     if not parsed:
         log.warning("No result event in claude stream output")
 
+    # The workspace was already leased, so `flock` refused and the agent never
+    # ran. Both halves of the test matter: the exit code alone would misread an
+    # agent that happened to end on 75 as a refusal, and `--conflict-exit-code`
+    # is only trustworthy on a spawn we actually wrapped. A refusal produces no
+    # stream at all, which is what `not parsed` checks.
+    lock_conflict = leased and proc.returncode == worklock.CONFLICT_RC and not parsed
+
     is_error = bool(parsed.get("is_error"))
     result_text = str(parsed.get("result", "") or "")
     # Only treat as rate-limited on an actual failure; agent output legitimately
@@ -1267,6 +1294,7 @@ async def _supervise(
         is_rate_limited=rate_limited,
         oom_killed=mem.oom_killed,
         peak_memory_bytes=mem.peak_bytes,
+        lock_conflict=lock_conflict,
         subtype=str(parsed.get("subtype")) if parsed.get("subtype") else None,
     )
 

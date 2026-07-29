@@ -131,15 +131,35 @@ def test_recording_usage_never_takes_a_run_down_with_it(monkeypatch):
     agent_runner._record_usage(1, {"input_tokens": 1}, 10)  # must not raise
 
 
-def test_the_prompt_size_reaches_the_supervisor():
+def test_the_prompt_size_reaches_the_supervisor(tmp_path, monkeypatch):
     """`_supervise` is a different function from the one holding the prompt, so
     the byte count has to be handed over explicitly. It was not, at first, and
-    every run raised NameError at the moment it finished."""
+    every run raised NameError at the moment it finished.
+
+    Asserted through a real spawn rather than by matching the call site in the
+    source. The string-match version was pinning the argument list verbatim, so
+    it failed the first time an unrelated argument was added to that call -
+    reporting a broken hand-over that was not broken, while a hand-over that
+    genuinely regressed to `prompt_bytes=0` would have sailed past it.
+    """
+    import asyncio
     import inspect
+    import sys
+
     sig = inspect.signature(agent_runner._supervise)
     assert "prompt_bytes" in sig.parameters
-    src = inspect.getsource(agent_runner.run_claude)
-    assert "_supervise(proc, cwd, run_id, on_event, timeout_min, len(prompt))" in src
+
+    monkeypatch.setattr(
+        agent_runner, "build_cmd",
+        lambda *a, **k: [sys.executable, "-c", "print('{\"type\":\"result\","
+                         "\"subtype\":\"success\",\"result\":\"ok\"}')"],
+    )
+    monkeypatch.setattr(agent_runner.runlimit, "configured_max_bytes", lambda: None)
+    prompt = "x" * 4321
+    result = asyncio.run(agent_runner.run_claude(
+        prompt, tmp_path / "ws", "model", timeout_min=1,
+    ))
+    assert result.prompt_bytes == len(prompt)
 
 
 def test_the_contract_asks_for_a_self_contained_opening_paragraph():
