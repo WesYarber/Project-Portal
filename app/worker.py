@@ -14,7 +14,7 @@ from typing import Optional
 
 from app import (
     agent_runner, config, crashloop, daycycle, db, hookguard, journalfile, limits, memory,
-    modelwatch, notify, oneoff, orphans, pacing, preview, proof, quickreplies,
+    modelwatch, notify, oneoff, orphans, pacing, people, preview, proof, quickreplies,
     report_schema, runlimit, runlog, selfreview, subprojects, todos,
 )
 
@@ -1826,6 +1826,14 @@ async def run_reflect() -> None:
     timeout_min = int(db.get_setting("run_timeout_min") or "30")
     cwd = config.MEMORY_DIR
     cwd.mkdir(parents=True, exist_ok=True)
+    # The per-person files the reflect also maintains live in here. Made ahead
+    # of the run rather than left to the agent's first Write so the directory
+    # is visible in its cwd from the start - an `ls` that shows `people/`
+    # answers "where do these go" without the agent having to trust the prompt.
+    try:
+        people.learned_dir().mkdir(parents=True, exist_ok=True)
+    except OSError:  # pragma: no cover - defensive; the agent can still create it
+        log.exception("Could not create the per-person memory directory")
 
     # The reflect job rewrites profile.md wholesale, which is how Wes's own
     # "about me" text was lost once already. Copy it first.

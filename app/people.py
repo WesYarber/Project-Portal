@@ -65,6 +65,7 @@ import logging
 import re
 import sqlite3
 import time
+from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
 from app import config, db, site
@@ -729,6 +730,143 @@ def tailnet_login_for(ip: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# The learned half of a background
+# ---------------------------------------------------------------------------
+#
+# `background` is what a person typed about themselves, and no agent may ever
+# write it. This is the other half: what working with them has actually shown,
+# grown by the daily reflect job from the notes and answers they wrote.
+#
+# The two halves are stored apart rather than merged into one field, and that
+# separation is the whole design:
+#
+# - Wes's own sentence can never be quietly replaced by a rewrite. That exact
+#   failure is why app/memory.py exists at all ("Wes typed things about himself
+#   into the profile that a later reflect quietly replaced"), and the cheapest
+#   fix is to give the agent somewhere else to write.
+# - The learned half is disposable. If it goes wrong it is one button on
+#   /memory, and what a person said about themselves survives untouched.
+#
+# It lives as a file in MEMORY_DIR because MEMORY_DIR is the *cwd* of the
+# reflect agent: growing it is then an ordinary file write, with no new field
+# on the report schema, no parsing of a model's prose, and no contract text
+# taxing the prompt of every other run.
+LEARNED_DIRNAME = "people"
+
+# What one person's learned file may contribute to a prompt. It is injected
+# into every run of every project they are on, so an unbounded file is an
+# unbounded tax - and a reflect agent that ignores its line limit must degrade
+# to "a bit is dropped", never to "every prompt grows forever".
+LEARNED_PROMPT_CHARS = 1200
+
+# What the reflect agent is asked to stay under. Deliberately well inside the
+# render cap above, so hitting the cap means the agent misbehaved rather than
+# being a routine occurrence nobody notices.
+LEARNED_MAX_LINES = 8
+
+
+def learned_dir() -> Path:
+    """Resolved per call, never bound at import: config's paths are module
+    constants the test fixture repoints at a throwaway directory, and caching
+    them would write into the live data directory from a test run. Same
+    posture as app/memory.py, for the same reason."""
+    return config.MEMORY_DIR / LEARNED_DIRNAME
+
+
+def learned_path(slug: str) -> Optional[Path]:
+    """Where one person's learned file sits, or None for a slug that could
+    escape the directory.
+
+    The slug arrives from a URL on the clear route, so it is shape-checked
+    here rather than at each call site - `slugify` already restricts what a
+    real slug can contain, so anything failing this check is not a person."""
+    slug = (slug or "").strip().lower()
+    if not slug or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        return None
+    return learned_dir() / f"{slug}.md"
+
+
+def read_learned(slug: str) -> str:
+    """What has been learned about this person, or "". Fails soft in every
+    direction - a missing directory, an unreadable file, a bad slug - because
+    this feeds a prompt, and no memory file is worth failing a run over."""
+    path = learned_path(slug)
+    if path is None:
+        return ""
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
+def clear_learned(slug: str) -> bool:
+    """Throw away what has been learned about somebody. Wes-only, a button on
+    /memory: the file is an agent's inference about a person, and this is how
+    it gets overruled. Their hand-written `background` is untouched - it is in
+    the database and was never this file's to lose."""
+    path = learned_path(slug)
+    if path is None:
+        return False
+    try:
+        if not path.is_file():
+            return False
+        path.unlink()
+        return True
+    except OSError:
+        return False
+
+
+def learned_overview() -> list[dict]:
+    """Both halves of every person's background, for /memory.
+
+    Driven off `everyone()` rather than off the directory listing, so a file
+    left behind by a deleted person is never shown. It stays on disk on
+    purpose: deleting somebody should not silently reach into the memory
+    directory, and an orphan there costs nothing but a few hundred bytes.
+
+    People with nothing learned yet are included, because "the reflect has not
+    worked this person out yet" is the answer to the question the page is
+    being asked, and an absence you can see beats a row that is missing."""
+    out: list[dict] = []
+    for person in everyone():
+        slug = str(person["slug"])
+        try:
+            said = (person["background"] or "").strip()
+        except (IndexError, KeyError):  # pragma: no cover - defensive
+            said = ""
+        learned = read_learned(slug)
+        out.append(
+            {
+                "slug": slug,
+                "name": name_of(person),
+                "background": said,
+                "learned": learned,
+                "lines": [ln for ln in learned.splitlines() if ln.strip()],
+            }
+        )
+    return out
+
+
+def _learned_for_prompt(slug: str) -> str:
+    """One person's learned lines, trimmed to the render cap at a line
+    boundary. Trimming mid-sentence would put a half-claim about a person into
+    a prompt, which is worse than dropping the line entirely."""
+    text = read_learned(slug)
+    if not text:
+        return ""
+    if len(text) <= LEARNED_PROMPT_CHARS:
+        return text
+    kept: list[str] = []
+    used = 0
+    for line in text.splitlines():
+        if used + len(line) + 1 > LEARNED_PROMPT_CHARS:
+            break
+        kept.append(line)
+        used += len(line) + 1
+    return "\n".join(kept).strip()
+
+
+# ---------------------------------------------------------------------------
 # What the agent is told
 # ---------------------------------------------------------------------------
 
@@ -746,6 +884,26 @@ def describe(person: sqlite3.Row, role: str = "") -> str:
     line = "".join(bits)
     if background:
         line += f"\n  {background}"
+    learned = ""
+    try:
+        learned = _learned_for_prompt(str(person["slug"]))
+    except (IndexError, KeyError):  # pragma: no cover - a row without a slug
+        pass
+    if learned:
+        # Labeled as observed, not stated. An agent that reads "she knows what
+        # a commit is" has to be able to tell whether she said so or whether a
+        # previous run decided it, because only one of those is worth trusting
+        # against her own words on the line above.
+        # Phrased to avoid conjugating a verb to the pronoun: "what she wrote"
+        # reads correctly for he, she and they alike, where "has written" does
+        # not, and a person's own pronouns are not a place to be sloppy.
+        line += (
+            f"\n  Noticed while working with {them}, not stated by {them} - "
+            f"inferred from what {they} wrote, so treat it as a working guess "
+            f"and let {them} correct it:"
+        )
+        for entry in learned.splitlines():
+            line += "\n  " + entry.rstrip()
     return line
 
 
@@ -787,3 +945,105 @@ def prompt_section(project_id: Optional[int]) -> str:
         "they land for whoever opens the page.",
     ]
     return "\n".join(lines)
+
+
+# How much of one journal entry the reflect job sees as evidence. Long enough
+# for a note to keep its shape, short enough that a dozen of them across every
+# person still leave room for the rest of the reflect prompt.
+EVIDENCE_CHARS = 600
+
+# How many of a person's own entries to show. Newest-first, so a person who has
+# been here a year is judged on this week rather than on their first day.
+EVIDENCE_LIMIT = 25
+
+
+def reflect_section() -> str:
+    """The `## What each person understands` block for the daily reflect.
+
+    Empty on a single-person install, exactly like `prompt_section` and for the
+    same reason: nothing about the reflect changes until there is a second
+    person to tell apart. The owner is included once there is - "what Wes
+    already knows" is as much a thing to pitch at as anybody else's, and
+    leaving him out would make the one file that is never maintained the one
+    belonging to the person who uses the portal most.
+
+    Each person gets three things: what they said about themselves (read-only
+    here), what previous reflects concluded, and the words they actually wrote.
+    The third is the point. Everything else in this prompt is somebody's
+    opinion; this is the evidence, and the guidance tells the agent to write
+    nothing that is not visible in it.
+    """
+    folk = everyone()
+    if len(folk) < 2:
+        return ""
+    lines = [
+        "## What each person understands",
+        "",
+        "You also maintain one short file per person, at "
+        f"`{LEARNED_DIRNAME}/<slug>.md` in your cwd. Every run of every "
+        "project they are on reads it, directly under what that person wrote "
+        "about themselves, so it is how a future agent knows whether to "
+        "explain a concept or just name it.",
+        "",
+        "Rules, in the order they matter:",
+        "",
+        "1. **Write only what the evidence below actually shows.** Each line "
+        "must be traceable to something the person typed. If somebody has "
+        "written nothing new, leave their file exactly as it is - a reflect "
+        "that finds nothing should change nothing.",
+        "2. **Only write what would change how an agent EXPLAINS something to "
+        "them.** \"Now knows what a git commit is, so it can be named rather "
+        "than explained\" earns its place. \"Interested in the portal\" does "
+        "not - it changes no sentence anyone would write.",
+        "3. **Do not touch what they said about themselves.** That is the "
+        "`Says about themselves` line below, it lives in the database, and it "
+        "is theirs. If the evidence contradicts it, say so in the file as a "
+        "line of its own; do not try to overrule it.",
+        f"4. **At most {LEARNED_MAX_LINES} lines each**, one plain sentence "
+        "per line, written as a markdown list. Past that the file is trimmed "
+        "when it reaches a prompt and your last lines are silently lost.",
+        "5. **Drop what has been overtaken.** Once somebody has clearly "
+        "learned a thing, \"new to it\" is no longer true and keeping it "
+        "makes every future agent talk down to them.",
+        "6. Never write anything you would not be comfortable with that "
+        "person reading, because they can - it is on the /memory page with a "
+        "button to throw it away.",
+        "",
+    ]
+    for person in folk:
+        slug = str(person["slug"])
+        lines.append(f"### {name_of(person)} (`{slug}`)")
+        lines.append("")
+        said = ""
+        try:
+            said = (person["background"] or "").strip()
+        except (IndexError, KeyError):
+            pass
+        lines.append(f"Says about themselves: {said or '(nothing)'}")
+        lines.append("")
+        current = read_learned(slug)
+        lines.append(
+            f"Current `{LEARNED_DIRNAME}/{slug}.md`:\n\n"
+            + (current if current else "(the file does not exist yet)")
+        )
+        lines.append("")
+        try:
+            writings = db.list_person_writings(int(person["id"]), EVIDENCE_LIMIT)
+        except Exception:  # pragma: no cover - defensive; evidence is optional
+            log.exception("Could not read what %s has written", slug)
+            writings = []
+        if writings:
+            lines.append(f"What {name_of(person)} has written, newest first:")
+            lines.append("")
+            for row in writings:
+                body = " ".join((row["content_md"] or "").split())[:EVIDENCE_CHARS]
+                where = row["project_title"] or "no project"
+                lines.append(f"- [{row['ts']}] ({where}) {row['kind']}: {body}")
+        else:
+            lines.append(
+                f"{name_of(person)} has written nothing the portal recorded "
+                "against them, so there is no evidence and their file must "
+                "not change."
+            )
+        lines.append("")
+    return "\n".join(lines).rstrip()

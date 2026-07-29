@@ -69,6 +69,27 @@ ours = db.create_project(
 people.set_members(ours["id"], [int(people.owner()["id"]), erin])
 db.add_journal(hers["id"], "user", "note", "How do I get started with this?", person_id=erin)
 
+# The learned half of a background (#357): what the daily reflect has concluded
+# about somebody from the words they actually wrote, as against the sentence
+# they typed about themselves above. Erin has one and the owner does not, so
+# /memory shows both states - a filled-in row with a clear button, and the
+# "nothing learned yet" row that says what will happen next.
+#
+# Written straight to disk rather than through a function, because there is no
+# portal-side writer by design: the reflect agent's ordinary file write is the
+# only thing that ever creates one of these.
+learned = people.learned_dir()
+learned.mkdir(parents=True, exist_ok=True)
+(learned / "erin.md").write_text(
+    "- Now knows what a git commit is and reads a diff before saying yes, so "
+    "it can be named rather than explained.\n"
+    "- Still asks which address to open rather than which port - give her the "
+    "whole URL, never just the number.\n"
+    "- Asked what happens to her data on a restart, so say what survives "
+    "before saying what changes.\n",
+    encoding="utf-8",
+)
+
 # A checklist with something on both halves, so the "whose?" re-file control
 # has both of its cases to photograph: handing a person's item back to the
 # agent, and handing an agent item to a person. The solo project below is the

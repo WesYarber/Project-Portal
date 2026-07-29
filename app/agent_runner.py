@@ -272,7 +272,10 @@ _TASK_GUIDANCE_TEMPLATES = {
         "projects. Keep it concise and factual. You may also report (via the "
         "StructuredOutput tool, per the contract below) with just a "
         "'suggestion' field (and other fields null/empty) if a good new "
-        "project idea emerged from the review."
+        "project idea emerged from the review.\n\n"
+        "If a `## What each person understands` section appears below, you "
+        "have a second job as well as profile.md, and its rules are stated "
+        "there. It only appears once more than one person uses this portal."
     ),
     "compact": (
         "Task: COMPACT THE LEARNINGS. You are running with cwd set to the "
@@ -318,7 +321,10 @@ _TASK_GUIDANCE_TEMPLATES = {
         "project trivia. A distilled line must keep the concrete trigger "
         "condition, not just the moral: \"in CSS, position:fixed inside a "
         "transformed ancestor is not viewport-fixed\" is a learning, \"be "
-        "careful with CSS positioning\" is not. Do not touch profile.md. Report (via the "
+        "careful with CSS positioning\" is not. Do not touch profile.md, and do "
+        "not touch anything in the `people/` directory beside it - that is one "
+        "short file per person saying how to pitch an explanation at them, and "
+        "it is the daily reflect's to maintain, not yours. Report (via the "
         "StructuredOutput tool, per the contract below) with a `summary` "
         "saying what you cut and what you kept, and `journal_entry_md` "
         "likewise; leave every other field null/empty."
@@ -652,6 +658,17 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         parts.append(f"## Recent cross-project journal (last {len(journal)})\n{journal_txt}")
         parts.append(f"## Current profile.md\n{profile}")
         parts.append(f"## Recent learnings.md\n{learnings}")
+        # Below the journal rather than above it: the journal is the general
+        # sweep this job exists for, and the per-person work is a second pass
+        # over evidence this section carries itself. Empty on a single-person
+        # install, so an ordinary reflect prompt is byte-for-byte unchanged.
+        try:
+            folk_txt = people.reflect_section()
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Could not build the per-person section for the reflect")
+            folk_txt = ""
+        if folk_txt:
+            parts.append(folk_txt)
         return "\n\n".join(parts)
 
     assert project is not None

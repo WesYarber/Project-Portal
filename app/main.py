@@ -2107,6 +2107,11 @@ async def memory_page(request: Request) -> HTMLResponse:
             "archived_learnings": memory.archived_learnings(),
             "learnings_freshness": worker.learnings_freshness(),
             "promoted_skills": memory.promoted_skills(),
+            # Only once there are two people to tell apart, which is exactly
+            # when the reflect starts maintaining these - a single-person
+            # install would get a heading over one row that can never fill in.
+            "people_learned": people.learned_overview() if len(people.everyone()) > 1 else [],
+            "people_learned_max": people.LEARNED_MAX_LINES,
         },
     )
 
@@ -2172,6 +2177,20 @@ async def delete_promoted_skill(name: str) -> RedirectResponse:
     removes the skill from every workspace on its next run."""
     if not memory.delete_promoted_skill(name):
         raise HTTPException(status_code=404, detail="No such skill")
+    return RedirectResponse(url="/memory", status_code=303)
+
+
+@app.post("/memory/person/{slug}/clear")
+async def clear_person_learned(slug: str) -> RedirectResponse:
+    """Throw away what the reflect has concluded about one person.
+
+    Deliberately not an edit box. What is in here is an inference from
+    evidence, and a hand-edited inference is neither - if Wes wants to *state*
+    something about somebody, the field for that is their background on the
+    settings page, which no agent may write. This button says "you got this
+    wrong, start again", and the next reflect does."""
+    if not people.clear_learned(slug):
+        raise HTTPException(status_code=404, detail="Nothing learned about that person")
     return RedirectResponse(url="/memory", status_code=303)
 
 

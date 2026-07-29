@@ -111,6 +111,48 @@
   {% endif %}
 </div>
 
+{# The learned half of a person's background (#357). Wes's ask was "it would be
+   good if it could learn what she understands and speak to her at that level",
+   and this is where the answer is visible: what somebody said about themselves
+   sits in settings and no agent may write it, while what working with them
+   showed sits here and is the reflect's to keep. Clearable, not editable - see
+   the route for why. #}
+{% if people_learned %}
+<h2>What we've learned about each person</h2>
+<div class="card">
+  <p class="small muted">The daily reflect grows one short file per person from the
+    notes and answers they actually wrote, and every run of a project they are on reads
+    it right under what they said about themselves. It is how an agent knows whether to
+    explain a concept or just name it. At most {{ people_learned_max }} lines each.</p>
+  <ul class="archive-list scroll-cap scroll-cap-panel">
+    {% for p in people_learned %}
+    <li>
+      <span class="badge">{{ p.name }}</span>
+      {% if p.lines %}
+      <span class="small muted">{{ p.lines|length }} line{{ '' if p.lines|length == 1 else 's' }}</span>
+      <form method="post" action="/memory/person/{{ p.slug }}/clear" class="inline-form"
+            data-confirm="Throw away what we've learned about {{ p.name }}? What {{ p.name }} said about themselves is kept - only the inferred half goes, and the next daily reflect starts it again from scratch.">
+        <button type="submit" class="btn secondary small">clear</button>
+      </form>
+      {% else %}
+      <span class="small muted">nothing learned yet</span>
+      {% endif %}
+      <div class="archive-text">
+        {% if p.background %}<em>Says about themselves:</em> {{ p.background }}<br>{% endif %}
+        {% if p.lines %}
+          {% for line in p.lines %}{{ line }}<br>{% endfor %}
+        {% else %}
+          <span class="muted">The next daily reflect will look at what {{ p.name }} has
+            written and fill this in - or leave it empty, which is the right answer when
+            there is nothing to go on.</span>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 {# The safety net under both of the above. Every write to either file - yours,
    the reflect job's, the compaction agent's - copies the previous version here
    first, because the only reason this section exists is that a rewrite once

@@ -1670,6 +1670,34 @@ def list_journal(
         ).fetchall()
 
 
+def list_person_writings(person_id: int, limit: int = 40) -> list[sqlite3.Row]:
+    """Everything one person actually wrote, newest first.
+
+    This is the evidence the daily reflect grows their learned file from (see
+    people._learned_for_prompt), and what counts as evidence is exactly "words
+    that person typed": their notes, their asks, their answers to the portal's
+    questions. `person_id` is only ever set by a route that knew who was
+    holding the phone, so an agent's report and a system status line - neither
+    of which has a person behind it - are excluded by the column being NULL
+    rather than by a list of kinds this function would have to keep in step.
+
+    NULL is therefore never a match, including for `person_id=0`: rows predate
+    the column, and the portal's rule throughout is that a missing attribution
+    beats an invented one. Guessing here would put somebody else's words under
+    a person's name in the one place we reason about how they think.
+    """
+    if not person_id:
+        return []
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT journal.*, projects.title AS project_title "
+            "FROM journal LEFT JOIN projects ON projects.id = journal.project_id "
+            f"WHERE journal.person_id = ? {_JOURNAL_ORDER} LIMIT ?",
+            (int(person_id), int(limit)),
+        ).fetchall()
+
+
 # The ask side thread: a question Wes asked about the project and the read-only
 # answer it got back. Journalled and shown like anything else, but skipped when
 # a RUN's prompt is built - Wes's 2026-07-25 note asked for an ask to be "asked
