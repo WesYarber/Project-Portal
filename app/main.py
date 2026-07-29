@@ -724,6 +724,8 @@ templates.env.globals["me"] = me
 templates.env.globals["todo_head_for"] = todo_head_for
 templates.env.globals["everyone"] = people.everyone
 templates.env.globals["project_members"] = people.members
+templates.env.globals["refile_choices"] = todos.refile_choices
+templates.env.globals["refile_value"] = todos.refile_value
 templates.env.globals["person_pronouns"] = people.pronouns_of
 templates.env.globals["byline"] = byline
 templates.env.globals["is_side_thread"] = db.is_side_thread
@@ -1979,10 +1981,16 @@ async def tag_todo(todo_id: int, add: str = Form(""), remove: str = Form("")) ->
 
 @app.post("/todo/{todo_id}/person")
 async def refile_todo(todo_id: int, person: str = Form("")) -> RedirectResponse:
-    """Hand an existing item to somebody, or to nobody with an empty `person`.
+    """Hand an existing item to somebody, to nobody with an empty `person`, or
+    back to the agent with `person=agent`.
 
     Until this existed the only way to change whose an item was, was to delete
     it and add it again - which threw away its tags and its age.
+
+    Three destinations, not two, and "nobody" is not the same as "the agent":
+    nobody says a person has to do this and we cannot yet say which, so the
+    item stays on the human half; the agent says a person does not have to do
+    it at all.
 
     A person who is not a member of this project files as nobody rather than
     being accepted: an item can only be somebody's if they can see the project
@@ -1993,11 +2001,14 @@ async def refile_todo(todo_id: int, person: str = Form("")) -> RedirectResponse:
     todo = db.get_todo(todo_id)
     if todo is None:
         raise HTTPException(status_code=404, detail="Todo not found")
-    person_id = None
     raw = person.strip()
-    if raw.isdigit() and people.is_member(todo["project_id"], int(raw)):
-        person_id = int(raw)
-    db.set_todo_person(todo_id, person_id)
+    if raw == todos.AGENT_CHOICE:
+        db.set_todo_agent(todo_id)
+    else:
+        person_id = None
+        if raw.isdigit() and people.is_member(todo["project_id"], int(raw)):
+            person_id = int(raw)
+        db.set_todo_person(todo_id, person_id)
     project = db.get_project(todo["project_id"])
     return _todo_redirect(project["slug"]) if project else RedirectResponse(url="/", status_code=303)
 

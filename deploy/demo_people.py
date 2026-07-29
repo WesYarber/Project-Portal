@@ -69,6 +69,18 @@ ours = db.create_project(
 people.set_members(ours["id"], [int(people.owner()["id"]), erin])
 db.add_journal(hers["id"], "user", "note", "How do I get started with this?", person_id=erin)
 
+# A checklist with something on both halves, so the "whose?" re-file control
+# has both of its cases to photograph: handing a person's item back to the
+# agent, and handing an agent item to a person. The solo project below is the
+# one-member case, where the menu is the agent and one name with no "nobody" -
+# there being nobody to be undecided between.
+db.add_todo(ours["id"], "Work out why the sync stalls after an hour", "agent")
+db.add_todo(ours["id"], "Scope the export format", "agent", tags=["research"])
+db.add_todo(ours["id"], "Pick which of the two layouts to keep", "user", person_id=erin)
+db.add_todo(ours["id"], "Buy the second SSD", "user", tags=["blocked"])
+db.add_todo(hers["id"], "Type in the recipes from the blue folder", "user")
+db.add_todo(hers["id"], "Build the print view", "agent")
+
 import uvicorn  # noqa: E402
 
 from app import main  # noqa: E402

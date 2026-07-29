@@ -2210,8 +2210,12 @@ def add_todo(
 def set_todo_person(todo_id: int, person_id: Optional[int]) -> Optional[sqlite3.Row]:
     """Record which human has to do an item, or clear it with None.
 
-    Setting one moves the item to the human half for the same reason `add_todo`
-    does: an item with somebody's name on it is not on the agent's backlog."""
+    BOTH branches land the item on the human half. Setting a name does it for
+    the reason `add_todo` does: an item with somebody's name on it is not on
+    the agent's backlog. Clearing it does it because "nobody" says *a person
+    has to do this and we cannot yet say which* - a statement about which
+    human, not a hand-back to the agent. Handing it back is `set_todo_agent`,
+    which is a different sentence and so a different function."""
     conn = get_conn()
     with _LOCK:
         if person_id:
@@ -2220,7 +2224,32 @@ def set_todo_person(todo_id: int, person_id: Optional[int]) -> Optional[sqlite3.
                 (int(person_id), todo_id),
             )
         else:
-            conn.execute("UPDATE todos SET person_id = NULL WHERE id = ?", (todo_id,))
+            conn.execute(
+                "UPDATE todos SET person_id = NULL, owner = 'user' WHERE id = ?", (todo_id,)
+            )
+        conn.commit()
+        return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+
+
+def set_todo_agent(todo_id: int) -> Optional[sqlite3.Row]:
+    """Hand an item back to the agent: it stops being anybody's.
+
+    The counterpart to `set_todo_person`, and the reason it is its own function
+    rather than an `owner` argument on that one: "give this to a person" and
+    "give this back to the agent" are different actions, and a single control
+    that did both by inference would be ambiguous at exactly the moment you
+    wanted to be sure.
+
+    `person_id` is cleared with the move, not merely ignored. `responsible_for`
+    already returns None for anything the agent owns, so a leftover id would be
+    invisible - and an invisible attribution is the kind that reappears years
+    later when somebody flips the row back and cannot work out where the name
+    came from."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE todos SET owner = 'agent', person_id = NULL WHERE id = ?", (todo_id,)
+        )
         conn.commit()
         return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
 

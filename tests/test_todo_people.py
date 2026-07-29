@@ -558,25 +558,35 @@ def test_the_row_offers_the_re_file_control_once_there_are_two_of_you(
     assert "Karli" in html
 
 
-def test_one_member_gets_no_re_file_control(client, project, wes):
-    """With one member the deduction already says every unassigned item is
-    theirs, so a picker offering that one name changes nothing you can see."""
+def test_one_member_still_gets_the_control_because_the_agent_is_a_destination(
+    client, project, wes
+):
+    """This used to be the case with NO control at all (#420): with one member,
+    a picker offering that one name changes nothing you can see.
+
+    Adding the agent as a destination (#428) is what earns it back. There are
+    now two places a one-person project's item can be, so the control has
+    something to say - but still no "nobody", because with one member an
+    unattributed human item already resolves to them by deduction, and two
+    buttons for one outcome is the thing the old rule was really objecting to.
+    """
     row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
 
     html = client.get(f"/project/{project['slug']}").text
 
-    assert f'action="/todo/{row["id"]}/person"' not in html
+    assert f'action="/todo/{row["id"]}/person"' in html
+    assert [c["label"] for c in todos.refile_choices(project["id"])] == ["the agent", "Wes"]
 
 
-def test_the_agent_half_gets_no_re_file_control(client, project, wes, karli):
-    """`owner` keeps its own job: an agent item is nobody's in particular, and
-    the macro is shared with the human half, so this is worth pinning."""
+def test_the_agent_half_gets_the_control_too(client, project, wes, karli):
+    """An agent item that turns out to need somebody's hands should move, not
+    be retyped. It had no control at all until #428."""
     people.add_member(project["id"], karli["id"])
     row = db.add_todo(project["id"], "Wire up the routing", "agent")
 
     html = client.get(f"/project/{project['slug']}").text
 
-    assert f'action="/todo/{row["id"]}/person"' not in html
+    assert f'action="/todo/{row["id"]}/person"' in html
 
 
 def test_the_control_marks_where_the_item_already_is(client, project, wes, karli):
@@ -598,3 +608,151 @@ def test_a_re_filed_item_moves_to_the_other_heading(client, project, wes, karli)
     grouped = todos.by_person(db.list_todos(project["id"], owner="user"), project["id"])
     who = [p["name"] for p, items in grouped if any(i["id"] == row["id"] for i in items)]
     assert who == ["Karli"]
+
+
+# --------------------------------------------------------------------------
+# Handing an item back to the agent (#428)
+# --------------------------------------------------------------------------
+# #420 could move an item BETWEEN people; it could never move one across the
+# agent/human line, because `set_todo_person` only ever pushed rows toward the
+# human side. So an agent item that turned out to need somebody's hands - or a
+# human item the agent could do after all - still had to be deleted and typed
+# again, losing its tags and its age, which is the exact thing #420 existed to
+# stop.
+#
+# The load-bearing distinction in everything below: "nobody" and "the agent"
+# are different destinations. Nobody says *a person has to do this and we
+# cannot yet say which*; the agent says *no person has to do this at all*.
+# Collapsing them would make the blank value mean two things and would quietly
+# take work off the human list.
+
+def test_handing_a_human_item_back_to_the_agent(client, project, wes, karli):
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Wire up the routing", "user", person_id=karli["id"])
+
+    client.post(f"/todo/{row['id']}/person", data={"person": "agent"})
+
+    after = db.get_todo(row["id"])
+    assert after["owner"] == "agent"
+    assert after["person_id"] is None
+
+
+def test_handing_an_agent_item_to_a_person(client, project, wes, karli):
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Paste the ntfy topic in", "agent")
+
+    client.post(f"/todo/{row['id']}/person", data={"person": str(karli["id"])})
+
+    after = db.get_todo(row["id"])
+    assert after["owner"] == "user"
+    assert after["person_id"] == karli["id"]
+
+
+def test_handing_an_agent_item_to_nobody_puts_it_on_the_human_half(
+    client, project, wes, karli
+):
+    """"Nobody" is not a synonym for "the agent". Picking it off an agent item
+    says a person has to do this and we cannot say which yet, so the item must
+    cross to the human half with no name on it - not sit where it was."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Decide on the icons", "agent")
+
+    client.post(f"/todo/{row['id']}/person", data={"person": ""})
+
+    after = db.get_todo(row["id"])
+    assert after["owner"] == "user"
+    assert after["person_id"] is None
+
+
+def test_handing_back_keeps_the_item_it_was(client, project, wes, karli):
+    """Same promise as re-filing between people: nothing but the destination
+    changes, which is the whole reason this beats delete-and-re-add."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Wire up the routing", "user", tags=["blocked"])
+    created = db.get_todo(row["id"])["created_at"]
+
+    client.post(f"/todo/{row['id']}/person", data={"person": "agent"})
+
+    after = db.get_todo(row["id"])
+    assert after["id"] == row["id"]
+    assert after["text"] == "Wire up the routing"
+    assert db.todo_tags(after) == ["blocked"]
+    assert after["created_at"] == created
+
+
+def test_a_handed_back_item_moves_to_the_agent_heading(client, project, wes, karli):
+    """The end to end thing Wes would actually see happen on the page: it
+    leaves the human grouping entirely and appears on the agent's list."""
+    people.add_member(project["id"], karli["id"])
+    row = db.add_todo(project["id"], "Wire up the routing", "user", person_id=wes["id"])
+
+    client.post(f"/todo/{row['id']}/person", data={"person": "agent"})
+
+    human = db.list_todos(project["id"], owner="user")
+    assert row["id"] not in [r["id"] for r in human]
+    assert row["id"] in [r["id"] for r in db.list_todos(project["id"], owner="agent")]
+
+
+def test_the_agent_is_the_first_choice_offered(project, wes, karli):
+    """Order is the menu's order. The agent leads because it is the half that
+    exists on every project; people follow; "nobody" is last because it is the
+    answer you give when none of the others is one."""
+    people.add_member(project["id"], karli["id"])
+
+    assert [c["label"] for c in todos.refile_choices(project["id"])] == [
+        "the agent",
+        "Wes",
+        "Karli",
+        "nobody",
+    ]
+
+
+def test_an_archived_person_is_not_a_destination(project, wes, karli):
+    """Retiring somebody is the act of saying they are not doing things any
+    more, so handing them an open task is a destination nobody wants. Same
+    reasoning as `sole_member`, which has skipped archived people all along."""
+    people.add_member(project["id"], karli["id"])
+    people.archive(karli["id"])
+
+    labels = [c["label"] for c in todos.refile_choices(project["id"])]
+    assert "Karli" not in labels
+    # And with one live member left, "nobody" goes with her - there is nobody
+    # left to be undecided between.
+    assert labels == ["the agent", "Wes"]
+
+
+def test_a_project_with_nobody_on_it_gets_no_control(project):
+    """The "a control that changes nothing you can see" rule, which used to be
+    the one-member case and is now this one: with no people, the agent is the
+    only destination there is, and a menu of one is a menu of none."""
+    people.set_members(project["id"], [])
+    db.get_conn().execute(
+        "DELETE FROM project_people WHERE project_id = ?", (project["id"],)
+    )
+    db.get_conn().commit()
+
+    assert todos.refile_choices(project["id"]) == []
+
+
+def test_the_agent_half_marks_the_agent_as_current(client, project, wes, karli):
+    """Each list tells the macro where it already sits, so the current choice
+    is marked on the agent half exactly as it is on a person's."""
+    people.add_member(project["id"], karli["id"])
+    db.add_todo(project["id"], "Wire up the routing", "agent")
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert '<input type="hidden" name="person" value="agent">' in html
+    assert 'class="todo-who-pick is-current"' in html
+
+
+def test_the_unattributed_group_marks_nobody_as_current(client, project, wes, karli):
+    """`refile_value` reads the group heading, not the row - and a heading with
+    no person is the "nobody" choice, whose value is the empty string."""
+    people.add_member(project["id"], karli["id"])
+    db.add_todo(project["id"], "Decide on the icons", "user")
+
+    html = client.get(f"/project/{project['slug']}").text
+
+    assert todos.refile_value(None) == ""
+    assert 'class="todo-who-pick is-current"' in html

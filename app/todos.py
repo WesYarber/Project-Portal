@@ -98,6 +98,52 @@ def by_person(rows, project_id: int) -> list[tuple[Optional[sqlite3.Row], list]]
     return groups
 
 
+# The value the /todo/{id}/person route reads to mean "the agent". Empty string
+# already meant "nobody", and nobody and the agent are genuinely different
+# destinations, so this needed a word of its own rather than a second meaning
+# hung on the blank.
+AGENT_CHOICE = "agent"
+
+
+def refile_choices(project_id: int) -> list[dict[str, str]]:
+    """Every place a checklist item on this project could be moved to.
+
+    One entry per destination, in menu order, each carrying the `person` value
+    the re-file route accepts. The agent comes first because it is the half
+    that exists on every project; then the people who could actually do the
+    work; then "nobody" - but only where there is more than one person to be
+    undecided *between*. On a one-person project an unattributed human item
+    already resolves to that person by deduction, so offering "nobody" beside
+    their name would be two buttons for one outcome.
+
+    Archived people are left out for the same reason `sole_member` skips them:
+    retiring somebody is the act of saying they are not doing things any more,
+    so handing them an open task is a destination nobody wants.
+
+    A list shorter than two entries comes back empty. That is the "a control
+    that changes nothing you can see" rule the one-member case used to be an
+    instance of - it just moved from the caller into here, where it is one
+    check instead of a condition repeated at every call site.
+    """
+    members = [m for m in people.members(project_id) if not m["archived_at"]]
+    choices = [{"value": AGENT_CHOICE, "label": "the agent"}]
+    choices += [{"value": str(int(m["id"])), "label": m["name"]} for m in members]
+    if len(members) > 1:
+        choices.append({"value": "", "label": "nobody"})
+    return choices if len(choices) > 1 else []
+
+
+def refile_value(person: Optional[sqlite3.Row]) -> str:
+    """Which `refile_choices` entry describes a list the page is rendering.
+
+    Taken from the group heading rather than the row: `by_person` has already
+    done the deduction, and every item under one heading is by construction the
+    same person's - so this costs no query, where asking per row would cost a
+    membership lookup per row.
+    """
+    return str(int(person["id"])) if person is not None else ""
+
+
 def prompt_section(project_id: int) -> str:
     """The `## Todo list` block for a run prompt, or '' if the list is empty.
 
