@@ -9,6 +9,7 @@ idempotent" and "I asked it and it answered" - rather than about its output.
 from __future__ import annotations
 
 import importlib.util
+import os
 import socket
 import subprocess
 import sys
@@ -71,6 +72,115 @@ def test_check_mode_never_boots_the_portal():
     at = lines.index(guard[0])
     condition = "\n".join(lines[max(0, at - 4):at])
     assert "args.check" in condition
+
+
+# --- the virtualenv, and the machine that cannot make one -------------------
+#
+# Both tests below exist because running this script on a genuinely fresh clone
+# failed in a way none of the others could see. `python3 -m venv` lays the
+# directory and the interpreter symlink down FIRST and bootstraps pip second,
+# so a box without ensurepip - Debian and Ubuntu, where it is the separate
+# python3-venv package - leaves behind an interpreter that exists and runs and
+# cannot install anything.
+
+
+def _fake_venv(root: Path, *, with_pip: bool) -> Path:
+    """A venv-shaped directory whose python answers `import pip` or does not."""
+    binaries = root / ("Scripts" if os.name == "nt" else "bin")
+    binaries.mkdir(parents=True, exist_ok=True)
+    python = binaries / "python"
+    python.write_text("#!/bin/sh\nexit %d\n" % (0 if with_pip else 1))
+    python.chmod(0o755)
+    return python
+
+
+def test_a_half_bootstrapped_virtualenv_does_not_count_as_one(tmp_path, monkeypatch):
+    """The file test this replaced said "already" on every re-run of a setup
+    that had never worked, then failed further down naming neither cause nor
+    cure."""
+    monkeypatch.setattr(setup, "VENV", tmp_path / "venv")
+    _fake_venv(tmp_path / "venv", with_pip=False)
+    assert setup.venv_usable() is False
+    _fake_venv(tmp_path / "venv", with_pip=True)
+    assert setup.venv_usable() is True
+
+
+def test_a_missing_virtualenv_is_not_usable_either(tmp_path, monkeypatch):
+    monkeypatch.setattr(setup, "VENV", tmp_path / "nothing-here")
+    assert setup.venv_usable() is False
+
+
+def test_the_venv_failure_says_what_the_tool_said_on_stdout(tmp_path, monkeypatch):
+    """The line that was thrown away. `python -m venv` prints its ensurepip
+    failure - the one naming the apt package to install - on STDOUT, so a
+    message built from stderr alone came back as `FAILED  could not create a
+    virtualenv:` and nothing after the colon. On the machine where it matters
+    that is the difference between one apt command and an afternoon."""
+    fake_python = tmp_path / "python-that-cannot"
+    fake_python.write_text(
+        "#!/bin/sh\n"
+        "echo 'ensurepip is not available. apt install python3.14-venv'\n"
+        "exit 1\n"
+    )
+    fake_python.chmod(0o755)
+    monkeypatch.setattr(setup, "VENV", tmp_path / "venv")
+    monkeypatch.setattr(sys, "executable", str(fake_python))
+
+    report = setup.Report()
+    assert setup.make_venv(report, check_only=False) is False
+    assert report.failed
+    assert any("apt install python3.14-venv" in m for m in report.failures), report.failures
+
+
+def test_an_unusable_virtualenv_is_cleared_rather_than_reused(tmp_path, monkeypatch):
+    """Left in place it is indistinguishable from a good one to everything
+    downstream, so a second run of the script could never repair the first."""
+    venv = tmp_path / "venv"
+    _fake_venv(venv, with_pip=False)
+    (venv / "marker").write_text("from the failed attempt")
+
+    maker = tmp_path / "python-that-can"
+    maker.write_text(
+        "#!/bin/sh\n"
+        f"mkdir -p {venv}/bin\n"
+        f"printf '#!/bin/sh\\nexit 0\\n' > {venv}/bin/python\n"
+        f"chmod 755 {venv}/bin/python\n"
+    )
+    maker.chmod(0o755)
+    monkeypatch.setattr(setup, "VENV", venv)
+    monkeypatch.setattr(sys, "executable", str(maker))
+
+    report = setup.Report()
+    assert setup.make_venv(report, check_only=False) is True
+    assert not report.failed
+    assert not (venv / "marker").exists(), "the failed attempt was reused rather than cleared"
+
+
+def test_the_configuration_is_not_reported_from_a_broken_virtualenv(tmp_path, monkeypatch, capsys):
+    """A half-bootstrapped interpreter runs, and `app/config` imports cleanly
+    under it - so this printed a confident "reachable at http://..." line
+    directly beneath the FAILED saying there was no environment. Two lines
+    contradicting each other is worse than either alone."""
+    monkeypatch.setattr(setup, "VENV", tmp_path / "venv")
+    _fake_venv(tmp_path / "venv", with_pip=False)
+
+    report = setup.Report()
+    setup.check_config(report)
+    assert "reachable at" not in capsys.readouterr().out
+    assert not report.failed
+
+
+def test_check_mode_never_deletes_a_virtualenv(tmp_path, monkeypatch):
+    """--check changes nothing, and "nothing" has to include the broken
+    directory it is reporting on."""
+    venv = tmp_path / "venv"
+    _fake_venv(venv, with_pip=False)
+    monkeypatch.setattr(setup, "VENV", venv)
+
+    report = setup.Report()
+    assert setup.make_venv(report, check_only=True) is False
+    assert venv.exists()
+    assert any("unusable" in item for item in report.human)
 
 
 # --- the smoke test, which is the only claim that matters -------------------
