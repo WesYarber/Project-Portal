@@ -88,6 +88,26 @@ def venv_python() -> Path:
     return VENV / ("Scripts" if os.name == "nt" else "bin") / "python"
 
 
+def venv_usable() -> bool:
+    """Whether the virtualenv is one that can actually install anything.
+
+    Not `venv_python().exists()`, which is what this was and which is wrong on
+    the machine it matters on. `python3 -m venv` lays out the directory and the
+    interpreter symlink FIRST and bootstraps pip second, so a box without
+    ensurepip - Debian and Ubuntu, where it is the separate `python3-venv`
+    package - is left with a `venv/bin/python` that exists, runs, and has no
+    pip. The file test called that "already", skipped creation on every re-run,
+    and then failed further down in a way that named neither cause nor cure.
+    """
+    python = venv_python()
+    if not python.exists():
+        return False
+    probe = subprocess.run(
+        [str(python), "-c", "import pip"], capture_output=True, timeout=60
+    )
+    return probe.returncode == 0
+
+
 def free_port() -> int:
     """A port nothing is on, asked of the kernel rather than picked.
 
@@ -145,18 +165,36 @@ def check_claude_cli(report: Report) -> None:
 
 
 def make_venv(report: Report, check_only: bool) -> bool:
-    if venv_python().exists():
+    if venv_usable():
         report.already(f"virtualenv at {VENV}")
         return True
+    half_made = VENV.exists()
     if check_only:
-        report.needs_a_person(f"no virtualenv at {VENV} (run without --check)")
+        report.needs_a_person(
+            f"the virtualenv at {VENV} is unusable (run without --check)"
+            if half_made
+            else f"no virtualenv at {VENV} (run without --check)"
+        )
         return False
+    if half_made:
+        # A previous attempt that died bootstrapping pip. Left in place it is
+        # indistinguishable from a good one to everything downstream, so it is
+        # cleared rather than reused - and said out loud, because deleting a
+        # directory somebody may have put something in should never be silent.
+        report.did(f"removing the unusable virtualenv at {VENV}")
+        shutil.rmtree(VENV, ignore_errors=True)
     made = subprocess.run([sys.executable, "-m", "venv", str(VENV)], capture_output=True, text=True)
-    if made.returncode != 0 or not venv_python().exists():
-        # The message matters: on Debian and Ubuntu this fails because
-        # python3-venv is a separate package, and the raw stderr says so in a
-        # way that is easy to miss under a wall of traceback.
-        report.bad(f"could not create a virtualenv: {made.stderr.strip()[:400]}")
+    if made.returncode != 0 or not venv_usable():
+        # BOTH streams. `python -m venv` prints its ensurepip failure - the one
+        # that names the apt package to install - on STDOUT, so a message built
+        # from stderr alone is empty, which is exactly how this was first
+        # reported on a fresh clone: "FAILED could not create a virtualenv:"
+        # and nothing after the colon.
+        why = (made.stdout.strip() + "\n" + made.stderr.strip()).strip()
+        report.bad(
+            "could not create a working virtualenv"
+            + (f":\n{why[:900]}" if why else " and it said nothing about why")
+        )
         return False
     report.did(f"created a virtualenv at {VENV}")
     return True
@@ -197,7 +235,11 @@ def check_config(report: Report) -> None:
     a thing to print, not a thing to prompt about.
     """
     python = venv_python()
-    if not python.exists():
+    if not venv_usable():
+        # `venv_usable` rather than `python.exists()`: a half-bootstrapped venv
+        # has an interpreter that runs, and app/config imports cleanly under
+        # it, so this printed a confident "reachable at http://..." line
+        # directly beneath the FAILED that said there was no environment.
         return
     shown = subprocess.run(
         [
