@@ -151,13 +151,22 @@ def main() -> int:
     status = git(target, "status", "--porcelain")
     if not status.stdout.strip():
         print("Nothing changed since the last publish.")
-        return 0
-    message = args.message or (INITIAL_COMMIT_MESSAGE if first else "Update from upstream")
-    commit = git(target, "commit", "-q", "-m", message)
-    if commit.returncode != 0:
-        print(commit.stderr, file=sys.stderr)
-        return 1
-    print(f"Committed to {target} ({'initial commit' if first else 'update'}).")
+        # Committing and pushing are separate questions, and answering the
+        # second with the first is how this repo became unpushable: six commits
+        # sat here, none of them on any remote, and `--push` returned 0 here
+        # every time without ever reaching the push. "Up to date with the
+        # source tree" does not imply "up to date with the remote" - the very
+        # first push after a remote is added is exactly the case where nothing
+        # has changed locally.
+        if not args.push:
+            return 0
+    else:
+        message = args.message or (INITIAL_COMMIT_MESSAGE if first else "Update from upstream")
+        commit = git(target, "commit", "-q", "-m", message)
+        if commit.returncode != 0:
+            print(commit.stderr, file=sys.stderr)
+            return 1
+        print(f"Committed to {target} ({'initial commit' if first else 'update'}).")
 
     if args.push:
         pushed = git(target, "push", "origin", "HEAD")

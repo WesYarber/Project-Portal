@@ -26,9 +26,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 LEAK = ROOT / "app" / "leakscan.py"
 SETUP = ROOT / "deploy" / "setup.py"
-TEST_FILES = ["tests/test_leakscan.py", "tests/test_setup.py"]
+PUBLISH = ROOT / "deploy" / "publish.py"
+TEST_FILES = ["tests/test_leakscan.py", "tests/test_setup.py", "tests/test_publish.py"]
 
-ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (LEAK, SETUP)}
+ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (LEAK, SETUP, PUBLISH)}
 
 
 def restore_all() -> None:
@@ -219,6 +220,41 @@ MUTATIONS: list[tuple[str, Path, str, str, str]] = [
         "    if not venv_usable():",
         "    if not python.exists():",
         "test_the_configuration_is_not_reported_from_a_broken_virtualenv",
+    ),
+    (
+        "--push reaches the push even with nothing new to commit",
+        PUBLISH,
+        "        if not args.push:\n            return 0",
+        "        return 0",
+        "test_push_still_happens_when_nothing_changed_since_the_last_publish",
+    ),
+    (
+        "nothing to commit and no --push still returns early",
+        PUBLISH,
+        "    if not status.stdout.strip():",
+        "    if False:",
+        "test_nothing_changed_and_no_push_asked_for_still_returns_early",
+    ),
+    (
+        "a leak refuses the publish",
+        PUBLISH,
+        "    if leaks:",
+        "    if False:",
+        "test_a_leak_refuses_the_publish_and_commits_nothing",
+    ),
+    (
+        "publishing over the source tree is refused",
+        PUBLISH,
+        "    if target == ROOT:",
+        "    if False:",
+        "test_it_refuses_to_publish_over_the_source_tree",
+    ),
+    (
+        "only tracked files are published",
+        PUBLISH,
+        "    stage(target, keep)",
+        "    stage(target, keep + ['secrets/key.txt'])",
+        "test_only_tracked_files_are_published",
     ),
     (
         "a missing Claude CLI is a job for a person, not a failure",
