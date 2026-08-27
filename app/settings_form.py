@@ -16,8 +16,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Callable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from . import config, daycycle, jumpkeys, runlimit, usage
+from . import (
+    config, daycycle, headroom, jumpkeys, quiet, runlimit, sections, usage,
+    verifydepth,
+)
 
 # The hidden input a section form uses to declare the settings it owns.
 FIELDS_INPUT = "_fields"
@@ -121,6 +125,45 @@ def _hour(value: str) -> str:
     return str(number if 0 <= number <= 23 else daycycle.DEFAULT_RESET_HOUR)
 
 
+def _hour_of_day(default: int) -> Callable[[str], str]:
+    """`_hour` with the fallback named rather than assumed.
+
+    `_hour` above pins daycycle's own default, which is right for the one field
+    it validates and wrong for every other hour on the page - a bad quiet-hours
+    value must land back on 23 or 7, not on the day-reset hour.
+    """
+
+    def clean(value: str) -> str:
+        try:
+            number = int((value or "").strip())
+        except (TypeError, ValueError):
+            return str(default)
+        return str(number if 0 <= number <= 23 else default)
+
+    return clean
+
+
+def _timezone(default: str) -> Callable[[str], str]:
+    """An IANA zone name, checked against the system database.
+
+    Validated here rather than trusted, because a typo in this one field is
+    invisible: an unknown zone does not raise anywhere a person can see, it
+    just quietly moves quiet hours to the wrong end of the day.
+    """
+
+    def clean(value: str) -> str:
+        name = (value or "").strip()
+        if not name:
+            return default
+        try:
+            ZoneInfo(name)
+        except (ZoneInfoNotFoundError, ValueError):
+            return default
+        return name
+
+    return clean
+
+
 def _appearance_fields() -> list[Field]:
     """Derived from config so adding a look-and-feel option is a one-line
     change there rather than an edit in three files."""
@@ -139,18 +182,35 @@ def _build_registry() -> dict[str, Field]:
         Field("worker_interval_min", _positive_int("10", low=0, high=1440)),
         Field("max_parallel_runs", _positive_int("2", low=1, high=config.MAX_PARALLEL_LIMIT)),
         Field("max_runs_per_day", _positive_int("8", low=0, high=999)),
+        # 0 is a real value here too: it means "no default per-project cap",
+        # which is how the board behaved before this field existed.
+        Field("project_max_runs_per_day", _positive_int("6", low=0, high=999)),
         Field("run_timeout_min", _positive_int("30", low=1, high=1440)),
         Field("run_max_turns", _positive_int("400", low=10, high=2000)),
+        Field("memory_max_turns", _positive_int("120", low=10, high=2000)),
         Field("run_max_budget_usd", _decimal_or_blank()),
         Field("run_memory_max", _memory_size),
-        Field("learnings_cap_lines", _positive_int("200", low=0, high=5000)),
+        Field("runs_memory_pool", _memory_size),
+        Field("learnings_cap_kb", _positive_int("24", low=0, high=512)),
+        Field("profile_cap_kb", _positive_int("16", low=0, high=512)),
         Field("prompt_learnings_kb", _positive_int("16", low=1, high=512)),
         Field("prompt_journal_kb", _positive_int("24", low=1, high=512)),
+        Field("prompt_answered_kb", _positive_int("6", low=1, high=512)),
         Field("limit_hold_percent", _positive_int("90", low=1, high=100)),
+        # Blank on purpose: blank means "use what the portal has measured", and
+        # the measurement is the point. See app/headroom.py.
+        Field("session_headroom_reserve", _decimal_or_blank(high=headroom.MAX_RESERVE)),
         Field("spend_down_session_hold", _positive_int("70", low=1, high=100)),
         Field("spend_front_load", _ratio("0.75")),
         Field("saturation_max_duty", _positive_int("85", low=0, high=100)),
+        Field(quiet.START_SETTING, _hour_of_day(quiet.DEFAULT_START)),
+        Field(quiet.END_SETTING, _hour_of_day(quiet.DEFAULT_END)),
+        Field(quiet.ZONE_SETTING, _timezone(quiet.DEFAULT_ZONE)),
         Field("require_build_approval", _text, checkbox=True),
+        Field(
+            verifydepth.SETTING_KEY,
+            _choice(set(verifydepth.DEPTH_CHOICES), verifydepth.DEFAULT_DEPTH),
+        ),
         Field("day_reset_hour", _hour),
         Field("cost_units", _choice(usage.COST_UNIT_CHOICES, usage.DEFAULT_COST_UNITS)),
         Field("telegram_enabled", _text, checkbox=True),
@@ -164,13 +224,19 @@ def _build_registry() -> dict[str, Field]:
         Field("hook_guardrails", _text, checkbox=True),
         Field("stop_report_nudge", _text, checkbox=True),
         Field("hook_audit", _text, checkbox=True),
+        Field("mcp_tools", _text, checkbox=True),
         Field("model_watch", _text, checkbox=True),
         Field("research_model", _choice(config.MODEL_VALUES, config.RESEARCH_MODEL)),
         Field("spend_down_model", _choice(config.MODEL_VALUES, config.DEFAULT_MODEL)),
         Field("glados_mode", _text, checkbox=True),
-        Field("show_priority", _text, checkbox=True),
         Field("ntfy_url", _text),
         Field("ntfy_topic", _text),
+        # Where the blocks of a project page sit, for this person. Not a
+        # `_choice`: the value is a permutation rather than one of a fixed set,
+        # so `sections.clean` is both the validator and the normalizer - it
+        # drops names the running code does not know, restores any it does, and
+        # writes the shipped arrangement back as blank.
+        Field(sections.SETTING_KEY, sections.clean),
     ]
     # One field per jumpable section, derived from jumpkeys.ACTIONS. `clean`
     # only ever sees one field at a time, so it can validate the letter but not
@@ -202,7 +268,12 @@ KNOWN_KEYS = tuple(REGISTRY)
 # page - the footer hint prints it, and the letters are the same ones the docs
 # name - whereas a typeface is a fact about the reader. Wes asked for the theme
 # to be hers, not the keys.
-PERSONAL_KEYS: frozenset[str] = frozenset(config.APPEARANCE_CHOICES)
+#
+# The arrangement of the project page joins them, for the same reason and by
+# hand rather than by living in APPEARANCE_CHOICES: an order is a permutation,
+# not one of a fixed list of values, so it cannot be a dropdown - but it is
+# just as much a fact about the reader as the typeface is.
+PERSONAL_KEYS: frozenset[str] = frozenset(config.APPEARANCE_CHOICES) | {sections.SETTING_KEY}
 
 
 def split_personal(values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:

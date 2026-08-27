@@ -36,6 +36,23 @@
   created {{ project.created_at|timeago }} &middot; updated {{ project.updated_at|timeago }}
 </p>
 
+{# You named this project, so no agent renames it - but one has a better name
+   in mind and this is where it gets to say so. Directly under the heading it
+   is about, and gone in one press either way. Turning it down remembers the
+   wording so the same proposal cannot come back next run. #}
+{% if title_suggestion %}
+<div class="slug-suggestion title-suggestion">
+  <p>
+    An agent suggests calling this <strong>{{ title_suggestion }}</strong>
+    instead. Your title stands unless you say otherwise.
+  </p>
+  <form method="post" action="/project/{{ project.slug }}/title-suggestion" class="button-row">
+    <button type="submit" name="action" value="apply" class="go">use that title</button>
+    <button type="submit" name="action" value="dismiss" class="secondary">keep mine</button>
+  </form>
+</div>
+{% endif %}
+
 {# What happened while you were away: one line per agent run, OLDEST first,
    ending at the last time you pressed acknowledged - so the stack reads top to
    bottom in the order it happened and the newest work sits just above the
@@ -43,8 +60,13 @@
    thing you open a project to find out - and it disappears entirely once read,
    so it costs nothing on a project you are simply looking at. #}
 {% if unacked_work %}
+{# Wes, 2026-08-01: "Uppercase 'Since you last looked' on side-bar and make it
+   jump-able with 'S'." The heading is what the rail lists, so the capital is on
+   the heading itself rather than a text-transform in the rail - the page and its
+   chapter say the same words. #}
 <div class="work-summary" id="work-summary">
-  <h2 class="work-summary-head">since you last looked</h2>
+  <h2 class="work-summary-head" data-jump="summary"
+      data-jump-label="Since you last looked">Since you last looked</h2>
   <ul class="work-summary-list">
     {% for run in unacked_work %}
     <li>
@@ -58,54 +80,111 @@
     </li>
     {% endfor %}
   </ul>
-  <form method="post" action="/project/{{ project.slug }}/acknowledge">
+  {# data-inplace: the banner is at the top of the page, so clearing it with a
+     navigation put you back at the top too. Patched in place it just folds
+     away and the page keeps the line you were reading. #}
+  <form method="post" action="/project/{{ project.slug }}/acknowledge" data-inplace>
     <button type="submit" class="btn secondary">acknowledged</button>
   </form>
 </div>
 {% endif %}
 
+{# --- The movable half of the page ------------------------------------------
+
+   Each block below is a macro rather than markup in place, and the loop at the
+   bottom renders them in whatever order this reader has arranged (see
+   app/sections.py). Three blocks are deliberately NOT in here and stay where
+   they are written: the title header and the "Since you last looked" banner
+   above, and the danger zone below.
+
+   Macros, not nine `{% include %}`d partials, for one practical reason: a
+   partial would have to be handed every variable it touches, and these blocks
+   read two dozen between them. A macro sees the template's own context, so
+   wrapping a block is exactly two lines and changes nothing about what it can
+   read.
+
+   The `<!-- section: -->` marker is the only thing added to the output. There
+   is no wrapper element on purpose - a <div> around each block would put a new
+   box between the page and every top-level margin on it, and the arrangement
+   is not worth a pixel of movement on a page nobody has rearranged. With the
+   default order the rendered page is byte-for-byte what it was before this
+   existed, bar the comments. #}
+
+{% macro sec_ask() %}<!-- section: ask -->
 {# A question, not a work request: read-only, no run, no budget. The answer
-   lands in the journal a minute or two later - the page is not held open for
-   it, so nothing is lost by navigating away.
+   lands a minute or two later - the page is not held open for it, so nothing
+   is lost by navigating away.
 
    It sits at the top because asking is the cheapest thing you can do here, but
    it stays folded to a button: it is a thing you reach for, not a box that
-   should be occupying the space above the project every time you open it. #}
+   should be occupying the space above the project every time you open it.
+
+   The conversation lives HERE, above the form, oldest first. Wes, 2026-08-16:
+   "I also want the questions to be asked and answered all up at the 'Ask' area
+   instead of in line in the journal." Both halves are still journalled - they
+   are the record, and `db.ask_thread` reads them back - they are simply no
+   longer scattered through a feed of agent reports between them. `ask.opens`
+   decides whether the box arrives unfolded, which is what puts an answer that
+   landed while he was elsewhere on the page rather than behind a click. #}
 {# data-jump="ask": the A key. Wes, 2026-07-28: "Hitting 'a' should go to the
    'ask question' prompt, activate it, and highlight the text field to begin
    typing." All three verbs are here - the attribute is on the <details> rather
    than on the card inside it, which is what makes "activate" work: jumpTo
    opens every <details> between the page and its target, and `closest` counts
    the element itself, so the box unfolds before the cursor is put in it. #}
-<details class="ask-block" id="ask" data-jump="ask"
-         data-jump-focus=".ask-form textarea[name='question']" {{ 'open' if ask_pending }}>
-  <summary class="btn secondary ask-open">ask project</summary>
+{# data-jump-label because the rail builds its chapter list from these same
+   targets, and this one's own text is the whole ask form rather than a name. #}
+<details class="ask-block" id="ask" data-jump="ask" data-jump-label="Ask"
+         data-jump-focus=".ask-form textarea[name='question']" {{ 'open' if ask_open }}>
+  <summary class="btn secondary ask-open">ask project{% if ask_thread %}<span class="ask-count">{{ ask_thread|length }}</span>{% endif %}</summary>
   <div class="card">
+    {% if ask_thread %}
+    {# Scroll-capped like the journal box: a long conversation must not push the
+       form you came here to type in off the bottom of the screen. Newest at the
+       bottom, next to the box you answer it from. #}
+    <div class="ask-thread scroll-cap scroll-cap-ask" id="ask-thread">
+      {% for a in ask_thread %}
+      <div class="ask-turn from-{{ a.author }}" id="ask-turn-{{ a.id }}">
+        <div class="meta">
+          <span class="badge author-{{ a.author }}">{{ byline(a) if a.author == 'user' else 'answer' }}</span>
+          <span class="small muted">{{ a.ts|timeago }}</span>
+        </div>
+        <div class="content">{{ a.content_md|markdown_media(project.slug)|safe }}</div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     <form method="post" action="/project/{{ project.slug }}/ask" class="ask-form">
       <div class="field">
         <textarea name="question" rows="2" enterkeyhint="enter"
-                  placeholder="Ask about this project without setting anything in motion..."></textarea>
+                  placeholder="{{ 'Ask a follow-up - it can see this whole thread...' if ask_thread else 'Ask about this project without setting anything in motion...' }}"></textarea>
       </div>
       {% if ask_pending %}
-      <p class="small muted" data-ask-pending>thinking... the answer will appear in the journal below.</p>
+      <p class="small muted" data-ask-pending>thinking... the answer will appear here.</p>
       {% else %}
-      <p class="hint">Reads the workspace and answers. It can't change anything, it doesn't use a run, and it stays out of the journal an agent run reads &ndash; highlight text in the journal to ask about a specific passage.</p>
+      <p class="hint">Reads the workspace and answers, with this whole thread for context. It can't change anything, it doesn't use a run, and it stays out of the journal an agent run reads &ndash; highlight text in the journal to ask about a specific passage.</p>
       {% endif %}
       <button type="submit" class="btn secondary" {{ 'disabled' if ask_pending else '' }}>ask</button>
     </form>
   </div>
 </details>
+{% endmacro %}
 
+{% macro sec_project() %}<!-- section: project -->
 {# data-jump="project": the P key scrolls this card's top edge to the top of the
    window. It is the block Wes calls "the project status/settings stuff". #}
-<div class="card" data-jump="project">
+<div class="card" data-jump="project" data-jump-label="Overview">
   {# One row of identically-shaped controls: same width, same label position,
      same height, each submitting on change. The status control is tinted to
      its own color so the project's state reads at a glance.
 
-     No runs/day cap control here: Wes never sets per-project caps, so the
-     surface came off the page. The POST route and the worker's enforcement
-     still exist for a cap set elsewhere (Telegram, the DB). #}
+     The runs/day cap is back in this row. It came off the page on Wes's
+     2026-07-23 note ("I don't use that on projects at all") and he asked for
+     it again on 2026-08-13: "I don't see where I can increase daily limits on
+     runs of single projects." Settings only carries the board-wide DEFAULT, so
+     one project's own number had no surface anywhere. It sits here rather than
+     in Settings because it is a property of this project, like its status and
+     its agent. #}
   <div class="control-bar">
     {% set state = display_state(project) %}
     <form method="post" action="/project/{{ project.slug }}/status" class="control control-status">
@@ -117,16 +196,11 @@
         {% endfor %}
       </select>
     </form>
-    {% if show_priority() %}
-    <form method="post" action="/project/{{ project.slug }}/priority" class="control control-priority">
-      <label for="priority">priority</label>
-      <select id="priority" name="priority" onchange="this.form.submit()">
-        {% for p in range(9, -1, -1) %}
-        <option value="{{ p }}" data-opt-class="prio-{{ 'high' if p >= 7 else ('mid' if p >= 4 else 'low') }}" {{ 'selected' if p == project.priority else '' }}>{{ p }}</option>
-        {% endfor %}
-      </select>
-    </form>
-    {% endif %}
+    {# No priority control, and no priority. Wes, 2026-08-16: "Get rid of the
+       notion of project 'priority' values." The picker came off this page on
+       2026-08-06 and the number, the setting, the sort and the column all
+       followed on 2026-08-16; the board ranks by what was worked on last
+       instead. See config.PROJECT_SORTS. #}
     <form method="post" action="/project/{{ project.slug }}/model" class="control control-model">
       <label for="model">agent</label>
       <select id="model" name="model" onchange="this.form.submit()">
@@ -134,6 +208,26 @@
         {% for value, label in MODEL_CHOICES %}
         <option value="{{ value }}" {{ 'selected' if value == project.model else '' }}>{{ label }}</option>
         {% endfor %}
+      </select>
+    </form>
+    {# Scheduled runs only - "run agent now" ignores every cap, including this
+       one. A number set here beats the board default in BOTH directions, so
+       this is how one project is let off the shared limit; "no cap" (0) takes
+       it off entirely, bounded only by the portal-wide budget. A cap set from
+       somewhere else (Telegram, the DB) that is not one of the presets is
+       added to the list, so the control never misreports what is enforced. #}
+    {% set caps = [1, 2, 3, 5, 8, 12, 20, 40] %}
+    {% if project.max_runs_per_day and project.max_runs_per_day not in caps %}
+    {% set caps = (caps + [project.max_runs_per_day])|sort %}
+    {% endif %}
+    <form method="post" action="/project/{{ project.slug }}/run-cap" class="control control-runs">
+      <label for="max_runs_per_day">runs/day</label>
+      <select id="max_runs_per_day" name="max_runs_per_day" onchange="this.form.submit()">
+        <option value="" {{ 'selected' if project.max_runs_per_day is none else '' }}>default ({{ default_project_cap or 'no cap' }})</option>
+        {% for n in caps %}
+        <option value="{{ n }}" {{ 'selected' if project.max_runs_per_day == n else '' }}>{{ n }}</option>
+        {% endfor %}
+        <option value="0" {{ 'selected' if project.max_runs_per_day == 0 else '' }}>no cap</option>
       </select>
     </form>
     {# Wes, 2026-07-28: "move the GitHub-like usage chart to the project status
@@ -144,8 +238,8 @@
        So it is a link, not a decoration - and it is labeled, because a grid of
        colored squares is not self-evidently clickable and a screen reader gets
        nothing at all from the squares themselves. It is last in the row and
-       pushed right by `margin-left: auto`, so adding or hiding a control (the
-       priority picker is optional) never moves it off the right edge. #}
+       pushed right by `margin-left: auto`, so adding or hiding a control
+       never moves it off the right edge. #}
     <a class="control-heat heatmap-link" href="/activity?project={{ project.slug }}"
        aria-label="usage over time - {{ heatmap.total }} run{{ 's' if heatmap.total != 1 else '' }} in the last {{ heatmap.days }} days">
       {% include "_heatmap.html" %}
@@ -154,7 +248,10 @@
 
   <p class="hint control-hint">
     runs use <strong>{{ effective_model }}</strong> &middot;
-    {{ runs_today }} run{{ 's' if runs_today != 1 }} today on this project &middot;
+    {# The cap the control above is actually enforcing, in the same X/Y shape
+       as the portal-wide count beside it. Without the denominator the number
+       is a fact with nothing to measure it against. #}
+    {{ runs_today }}{% if project_cap %}/{{ project_cap }}{% endif %} run{{ 's' if runs_today != 1 }} today on this project &middot;
     {{ usage.runs_today }}/{{ usage.max_runs }} portal-wide
   </p>
 
@@ -195,18 +292,26 @@
   </form>
   {% endif %}
 
-  {# The description is shown read-only until you open the editor, because it
-     is the thing you read on this page far more often than you edit it. #}
-  <details class="details-editor" {{ 'open' if not project.description else '' }}>
+  {# The description starts folded to one small line. Wes, 2026-08-06: "Have
+     the description of the project be collapsed by default as it takes a lot
+     of space and is rarely read after the project is underway." It used to
+     render whole as this fold's summary; now the summary is the quiet line,
+     the prose is the body, and the editor is a second fold inside it so
+     reading does not also unroll a form. A project with no description still
+     opens straight to the editor - there is nothing to collapse. #}
+  <details class="details-editor quiet-fold" {{ 'open' if not project.description else '' }}>
     <summary>
       {% if project.description %}
-      <div class="content">{{ project.description|markdown|safe }}</div>
+      description
       {% else %}
       <span class="empty-state">No description - click to write one.</span>
       {% endif %}
-      <span class="edit-hint">edit</span>
     </summary>
-
+    {% if project.description %}
+    <div class="content">{{ project.description|markdown|safe }}</div>
+    {% endif %}
+    <details class="details-form quiet-fold" {{ 'open' if not project.description else '' }}>
+    <summary>edit</summary>
     <form method="post" action="/project/{{ project.slug }}/details" class="stack">
       <div class="field">
         <label for="title">title</label>
@@ -249,6 +354,7 @@
       </div>
       <div class="button-row"><button type="submit">save details</button></div>
     </form>
+    </details>
   </details>
 
   {% if project.initial_idea and project.initial_idea != project.description %}
@@ -339,7 +445,9 @@
   </p>
   {% endif %}
 </div>
+{% endmacro %}
 
+{% macro sec_console() %}<!-- section: console -->
 {# data-run-id drives the poller in app.js; when the run is live it appends new
    log bytes by offset, so the box scrolls like a real terminal.
 
@@ -371,16 +479,36 @@
       {% else %}
       <span class="dot"></span><span class="muted">no runs yet</span>
       {% endif %}
+      {# Wes, 2026-08-01: "on the top line where it says 'last run transcript' or
+         whatever it says when active, have an option that compressed down/hides
+         and prints a sort of summary ... Have this option on by default."
+
+         Rendered hidden and unhidden by app.js, because the folding is done in
+         the browser: a control for a thing that only works with scripting on
+         must not be on the page when it does not. #}
+      <button type="button" class="cl-fold-toggle" id="console-fold-toggle" hidden></button>
     </div>
     <pre class="console-out" id="console-out">{{ console_text or '(nothing yet)' }}</pre>
   </div>
 </details>
+{% endmacro %}
 
+{% macro sec_subprojects() %}<!-- section: subprojects -->
 {# Sub-projects. Only ever shown on a top-level project: a child cannot be split
    again, so on a child this whole block is absent rather than present-and-
    disabled, which would read as something that had gone wrong. #}
 {% if can_split %}
-<details class="fold-section" id="subprojects" {{ 'open' if children }}>
+{# Wes, 2026-08-01: click points for "sub projects (only if there are some)".
+   The fold itself renders on every top-level project, because it is also where
+   you CREATE the first child - but a rail chapter is a place on this page worth
+   going to, and an empty splitter is not one. #}
+{# `{% if %}`, not `{{ '...' if ... }}`: an attribute written as a Jinja
+   EXPRESSION is autoescaped, so the quotes come out as &#34; and the browser
+   reads one long attribute name. It renders, it validates, and the opt-out
+   silently does nothing - which is how the empty fold was still listing itself
+   in the rail after this was supposedly fixed. #}
+<details class="fold-section" id="subprojects" {{ 'open' if children }}
+         {% if not children %}data-jump-nav="off"{% endif %}>
   <summary>
     <span class="fold-section-label">Sub-projects</span>
     <span class="muted small">
@@ -399,7 +527,7 @@
       {% if c.description %}<span class="cell-desc">{{ c.description }}</span>{% endif %}
       <span class="cell-foot">
         <span class="badge status-{{ display_state(c) }}">{{ display_state(c)|status_badge }}</span>
-        <span>{{ c.slug }}{% if show_priority() %} &middot; p{{ c.priority }}{% endif %} &middot; {{ c.updated_at|timeago }}</span>
+        <span>{{ c.slug }} &middot; {{ c.updated_at|timeago }}</span>
       </span>
     </a>
     {% endfor %}
@@ -472,10 +600,31 @@
   </div>
 </details>
 {% endif %}
+{% endmacro %}
 
-{% if questions %}
-<h2>Open questions</h2>
+{% macro sec_questions() %}<!-- section: questions -->
+{# Questions: one section, three shelves.
+
+   Wes, 2026-08-01: "make the 'Saved for later' not its own unique section, but
+   put it at the bottom as a sort of sub-header under 'Questions'. Same for
+   deleted questions - move that to Questions."
+
+   So the <h2> is the whole of what the rail lists and the whole of what the
+   page announces, and the two quieter shelves are folds inside it rather than
+   headings level with it. The heading now renders whenever ANY of the three
+   has something in it - a project with nothing open but four saved ones used
+   to draw a fold with no section above it.
+
+   `data-jump="questions"` is a jump target with no key bound to it: the rail's
+   chapter list is built from these, so declaring one is how this section
+   becomes one click away. Nothing in jumpkeys.ACTIONS points at "questions",
+   so no letter jumps here and the footer hint cannot advertise one - which is
+   correct, since the block only exists on a project that has questions. #}
+{% if questions or dismissed_questions or deleted_questions %}
+<h2 data-jump="questions" data-jump-label="Questions">Questions</h2>
 {% for q in questions %}{{ question_card(q, next='') }}{% endfor %}
+{% if not questions %}
+<p class="empty-state">Nothing open right now.</p>
 {% endif %}
 
 {# Saved for later: off the questions page, still here, still answerable in
@@ -484,12 +633,15 @@
 
    And then, the same day: "Make the 'Saved for later' question tab be in a
    collapsed section that sits in the bottom of the questions section rather
-   than having its own static headers." The previous pass gave it an <h2> of
-   its own, level with "Open questions" - which said the two were equals when
-   the whole point of saving one is that you have decided it is not pressing.
-   Folded, and last, it takes one line of the page until you want it. #}
+   than having its own static headers." Folded, and last, it takes one line of
+   the page until you want it.
+
+   data-jump-nav="off" on both folds: they are shelves of the Questions
+   section, and the rail lists sections. A chapter list that offered "Questions"
+   and then "Saved for later" under it would be re-making exactly the equality
+   he asked twice to have removed. #}
 {% if dismissed_questions %}
-<details class="fold-section saved-questions">
+<details class="fold-section saved-questions" data-jump-nav="off">
   <summary>
     <span class="fold-section-label">Saved for later</span>
     <span class="muted small">{{ dismissed_questions|length }} question{{ 's' if dismissed_questions|length != 1 else '' }} taken off the questions page &mdash; still answerable here</span>
@@ -498,12 +650,18 @@
 </details>
 {% endif %}
 
-{# Deleted ones are read-only history. They are kept so it is visible that the
-   agent asked and got a no - and because the same question can never be
-   filed again, which is a thing you want to be able to see. #}
+{# Deleted ones are read-only history: kept so it is visible the agent asked
+   and got a no, and because a deleted question bars the agent from re-asking
+   it (until db.prune_deleted_questions ages the row out after 7 days).
+
+   Wes, 2026-08-06: "the deleted question section should be nested inside the
+   question section, and it should be less prominent than it is now. Just a
+   small gray line of text that can be clicked to expand it." So: not a
+   fold-section peer of "Saved for later" any more, but a quiet-fold - one
+   small dim line, indented under the cards above it. #}
 {% if deleted_questions %}
-<details class="dismissed-questions">
-  <summary>deleted questions ({{ deleted_questions|length }})</summary>
+<details class="quiet-fold deleted-questions" data-jump-nav="off">
+  <summary>{{ deleted_questions|length }} deleted question{{ 's' if deleted_questions|length != 1 else '' }}</summary>
   {% for q in deleted_questions %}
   <div class="card">
     <p>{{ q.question }}</p>
@@ -513,92 +671,89 @@
   {% endfor %}
 </details>
 {% endif %}
+{% endif %}
+{% endmacro %}
 
+{% macro sec_todo() %}<!-- section: todo -->
 {# The working checklist. Split by who has to do the thing, because the two
    halves are read for different reasons: the agent's half is a backlog, and
-   Wes's half is the list of things nothing can proceed without. #}
-<h2 id="todos" data-jump="todo">Todo</h2>
-<div class="card todo-card">
+   Wes's half is the list of things nothing can proceed without.
+
+   Wes, 2026-08-01: "have the todo section be collapsed by default." On a
+   project like this one the list is by far the tallest thing between the
+   questions and the note box, and most visits are not to it.
+
+   `data-fold-remember` is what stops that being infuriating: every tick, tag
+   and refile is a POST that redirects back here, and without it each one would
+   shut the list you were working in. Collapsed is the state a project STARTS
+   in, not a state it is held in - once you open it, it stays open on this
+   browser (see initFoldMemory in app.js). #}
+{% set open_todos = (agent_todos|rejectattr('done')|list|length) + (user_todos|rejectattr('done')|list|length) %}
+<details class="fold-section todo-block" id="todos"
+         data-jump="todo" data-jump-label="Todo" data-fold-remember>
+  <summary>
+    <span class="fold-section-label">Todo</span>
+    <span class="muted small">{{ open_todos }} open</span>
+  </summary>
+{# One list of destinations for the whole card, computed once and carried as
+   data for the right-click menu. Wes, 2026-08-04: "compress the +tag, whose?
+   and x buttons into a right click menu for a todo list item. Also, fold the
+   tags into this menu, aside from the 'blocked' tag. Too many tags can be
+   present and restrict the space available for the todo item itself."
+   So a row is a checkbox, its text, and at most one chip; everything else -
+   the tags, add-tag, re-file and delete - is initTodoMenu in app.js, opened
+   by right-click or a long press. #}
+{% set refile_to = refile_choices(project.id) %}
+{# Single-quoted on purpose: Jinja's `tojson` output is Markup-safe and keeps
+   its double quotes raw (it escapes <, > and ' to unicode escapes instead), so
+   a double-quoted attribute would end at the JSON's first quote. #}
+<div class="card todo-card" data-refile='{{ refile_to|tojson }}'>
   {# scroll-cap: taller than TODO_VISIBLE_ROWS rows and the list gets its own
      scrollbar instead of pushing the rest of the page down. The row height is
      pinned in CSS so the cap is an exact number of items, not an estimate. #}
-  {# `refile` is every destination an item in this list could be moved to - the
-     agent, each person on the project, and "nobody" - and passing an empty one
-     drops the control entirely. `todos.refile_choices` decides what is in it
-     and when it is empty; see its docstring.
-
-     `here` is which of those destinations this whole list already sits at, so
-     the current one can be marked. It comes from the heading rather than from
-     each row because `by_person` has already grouped by exactly that: every
-     item under one heading is the same person's by construction, so this costs
-     no per-row membership query.
+  {# `here` is which refile destination this whole list already sits at, so
+     the menu can mark the current one. It comes from the heading rather than
+     from each row because `by_person` has already grouped by exactly that:
+     every item under one heading is the same person's by construction, so
+     this costs no per-row membership query.
 
      Jinja macros do not see outer `{% set %}` variables, hence parameters
      rather than template-level ones. #}
-  {% macro todo_list(items, empty, refile=[], here='') %}
+  {% macro todo_list(items, empty, here='') %}
   {% if items %}
-  <ul class="todo-list scroll-cap scroll-cap-todo">
+  <ul class="todo-list scroll-cap scroll-cap-todo" data-here="{{ here }}">
     {% for t in items %}
-    <li class="todo-item {{ 'done' if t.done }}">
-      <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle">
+    {# The id is identity for the live-refresh morph (findMatch in app.js), and
+       it is load-bearing now that ticking patches the page instead of
+       reloading it: a ticked item sorts to the bottom of its list, so every row
+       below it moves up one. Without an id the morph pairs rows by POSITION and
+       the checkbox - whose `checked` it deliberately preserves as the user's
+       state - stays behind on whatever row slid into that slot. Ticking item 13
+       drew a tick beside item 14. #}
+    <li class="todo-item {{ 'done' if t.done }}" id="todo-{{ t.id }}"
+        data-todo="{{ t.id }}" data-tags="{{ todo_tags(t)|join(',') }}">
+      {# data-inplace: posted by fetch and patched in place, so ticking an item
+         never reloads the page and therefore never moves the scroll. Wes,
+         2026-08-04: "Checking a todo task jumps to the top of the page, but it
+         shouldn't." #}
+      <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle"
+            data-inplace>
         {# A checkbox that submits on change, with the target state posted
            explicitly so a double-tap can't flip it back. #}
         <input type="hidden" name="done" value="{{ '0' if t.done else '1' }}">
-        <input type="checkbox" {{ 'checked' if t.done }} onchange="this.form.submit()"
+        {# submitForm, not this.form.submit(): the plain one does not fire a
+           submit event, so it would skip the data-inplace handler entirely. #}
+        <input type="checkbox" {{ 'checked' if t.done }} onchange="submitForm(this.form)"
                aria-label="{{ 'reopen' if t.done else 'complete' }} {{ t.text }}">
       </form>
-      {# Chips sit beside the text, not inside it: .done strikes .todo-text
-         with a line-through no descendant could cancel. #}
+      {# The chip sits beside the text, not inside it: .done strikes .todo-text
+         with a line-through no descendant could cancel. `blocked` is the one
+         tag that stays on the row - it is the one that changes what the
+         scheduler does, so it earns the space; the rest are in the menu. #}
       <span class="todo-text">{{ t.text }}</span>
-      {# One group for everything that is not the text, so a phone can give it
-         its own flex line (`flex-basis: 100%`) and the text the full row width.
-         Ungrouped, these competed with the text on one line and - because
-         `overflow-wrap: anywhere` lets the text shrink to a single character -
-         flex crushed it into a 3-character column instead of ever wrapping. #}
-      <span class="todo-meta">
-      {%- for tag in todo_tags(t) %}
-      <span class="todo-tag{{ ' tag-blocked' if tag == 'blocked' }}{{ ' tag-ready' if tag.startswith('ready') }}">{{ tag }}<form method="post" action="/todo/{{ t.id }}/tag" class="inline-form"><input type="hidden" name="remove" value="{{ tag }}"><button type="submit" class="tag-x" title="remove tag '{{ tag }}'">&times;</button></form></span>
-      {%- endfor %}
-      {% if not t.done %}
-      {# The + swaps to a tiny input via app.js; `hidden` is JS-owned, so a
-         live-refresh morph can't slam the input shut mid-type. #}
-      <span class="tag-add">
-        <button type="button" class="tag-add-btn" data-act="tag-add" data-id="{{ t.id }}"
-                title="tag this item">+tag</button>
-        <form method="post" action="/todo/{{ t.id }}/tag" class="inline-form tag-add-form" hidden>
-          <input type="text" name="add" placeholder="tag" maxlength="24" size="9" required
-                 aria-label="new tag for: {{ t.text }}">
-        </form>
-      </span>
+      {% if 'blocked' in todo_tags(t) %}
+      <span class="todo-meta"><span class="todo-tag tag-blocked">blocked</span></span>
       {% endif %}
-      {% if refile and not t.done %}
-      {# Re-file this item. "whose?" spelled out rather than an arrow glyph: at
-         0.7rem and 32% opacity a &rarr; is a smudge, which a screenshot showed
-         and a DOM test never would.
-         Buttons rather than a <select>:
-         a native select inherits the shared control height and would set the
-         floor for every row (see .todo-del's note in style.css), and on a
-         phone a name you tap is a bigger target than a dropdown. Each choice
-         is its own one-field form, so no JS is needed to submit. #}
-      <span class="todo-who">
-        <button type="button" class="todo-who-btn" data-act="who" data-id="{{ t.id }}"
-                title="re-file this item">whose?</button>
-        <span class="todo-who-menu" hidden>
-          {%- for c in refile %}
-          <form method="post" action="/todo/{{ t.id }}/person" class="inline-form">
-            <input type="hidden" name="person" value="{{ c.value }}">
-            <button type="submit" class="todo-who-pick{{ ' is-current' if c.value == here }}"
-                    aria-label="re-file to {{ c.label }}: {{ t.text }}">{{ c.label }}</button>
-          </form>
-          {%- endfor %}
-        </span>
-      </span>
-      {% endif %}
-      <form method="post" action="/todo/{{ t.id }}/delete" class="inline-form"
-            data-confirm="Delete this todo?">
-        <button type="submit" class="todo-del" title="delete">&times;</button>
-      </form>
-      </span>
     </li>
     {% endfor %}
   </ul>
@@ -606,15 +761,10 @@
   <p class="empty-state">{{ empty }}</p>
   {% endif %}
   {% endmacro %}
-
-  {# One list of destinations for the whole card, computed once. Both halves
-     get the control now: an agent item that turns out to need somebody's hands
-     moves without being retyped, and so does the reverse. #}
-  {% set refile_to = refile_choices(project.id) %}
   <h3 class="todo-head">For the agent
     {% if agent_todos %}<span class="muted small">{{ agent_todos|rejectattr('done')|list|length }} open</span>{% endif %}
   </h3>
-  {{ todo_list(agent_todos, "Nothing on the agent's list.", refile=refile_to, here='agent') }}
+  {{ todo_list(agent_todos, "Nothing on the agent's list.", here='agent') }}
 
   {# The human half, grouped by whose it is - the same grouping the run prompt
      uses, so the page and the agent can never disagree. With one person on the
@@ -625,7 +775,7 @@
   <h3 class="todo-head">{{ todo_head_for(person) }}
     <span class="muted small">{{ items|rejectattr('done')|list|length }} open</span>
   </h3>
-  {{ todo_list(items, "Nothing waiting on you.", refile=refile_to, here=refile_value(person)) }}
+  {{ todo_list(items, "Nothing waiting on you.", here=refile_value(person)) }}
   {% endfor %}
   {% else %}
   <h3 class="todo-head">For you</h3>
@@ -654,7 +804,8 @@
      link is the promise that makes a one-click sweep safe. #}
   <div class="todo-foot">
     {% if clearable_todos %}
-    <form method="post" action="/project/{{ project.slug }}/todos/clear-completed" class="inline-form">
+    <form method="post" action="/project/{{ project.slug }}/todos/clear-completed"
+          class="inline-form" data-inplace>
       <button type="submit" class="btn secondary small">clear {{ clearable_todos }} completed</button>
     </form>
     {% endif %}
@@ -668,7 +819,10 @@
     outlives the context window it was asked in. Ticked-off items drop off this
     list after 16 hours, or as soon as you clear them.</p>
 </div>
+</details>
+{% endmacro %}
 
+{% macro sec_note() %}<!-- section: note -->
 {# data-jump-focus puts the cursor straight in the box, so N is "start writing a
    note", not "look at where notes go". #}
 <h2 data-jump="note" data-jump-focus=".note-form textarea[name='note']">Add note</h2>
@@ -696,88 +850,93 @@
         <input type="file" name="files" multiple accept="*/*"
                data-max-bytes="{{ max_upload_bytes }}" data-max-label="{{ max_upload }}">
       </label>
-      <button type="button" class="btn secondary" data-record hidden>record audio</button>
+      {# A microphone glyph (inline SVG, not an emoji - Wes's words) rather
+         than the words "record audio": on a phone the row has to hold three
+         buttons on one line. Drawn as strokes so it inherits the button's own
+         color, including the red while recording. #}
+      <button type="button" class="btn secondary icon-btn" data-record hidden
+              title="record a voice note" aria-label="record a voice note">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+          <path d="M5 11a7 7 0 0 0 14 0"/>
+          <line x1="12" y1="18" x2="12" y2="21.5"/>
+        </svg>
+      </button>
       <span class="small muted" data-attach-status></span>
       {# Which submit was pressed arrives as then=... with the form - no
          JavaScript. Wes's order, right-justified with "add note" on the far
          right: run now / queue quietly / the plain green default. DOM order can
          match the visual order because this form has no single-line text
          input, so there is no Enter-to-submit path that would fire the first
-         button. "add & run now" sets the project building (which is also the
-         build approval) and starts a run in one press; "queue & don't run"
-         stores the note without waking a parked project or starting anything,
-         for when he is stacking thoughts rather than dispatching one. #}
+         button.
+
+         Wes, 2026-08-10: "Make the 'Add note' button automatically run now if
+         the project can be run now." So the green button starts a run whenever
+         one could start (worker.can_run_now), and "add & run now" is shown only
+         when it would NOT - on a backlog/done/abandoned project, or while an
+         agent is already in the workspace - where it is still the override that
+         puts the project on the working shelf (which is also the build
+         approval) and queues a run behind the one in flight. Two buttons doing
+         the same thing side by side is the duplicate control he deletes.
+
+         "queue note" stores the note without waking a parked project or
+         starting anything, for when he is stacking thoughts rather than
+         dispatching one. #}
+      {% if not note_runs_now %}
       <button type="submit" name="then" value="run" class="btn secondary note-actions"
               title="Add this note, switch the project to building, and start an agent run now">
         add &amp; run now
       </button>
-      <button type="submit" name="then" value="queue" class="btn secondary"
+      {% endif %}
+      <button type="submit" name="then" value="queue" class="btn secondary{{ ' note-actions' if note_runs_now }}"
               title="Add this note for the agent's next run - don't wake the project or start a run">
-        queue &amp; don't run
+        queue note
       </button>
-      <button type="submit" class="btn go">add note</button>
+      <button type="submit" class="btn go"
+              title="{{ 'Add this note and start an agent run on it now' if note_runs_now
+                        else 'Add this note for the agent to read on its next run' }}">add note</button>
     </div>
+    {# The live recorder. Hidden until the mic button starts a recording;
+       app.js owns everything inside it - the waveform responding to the mic,
+       the running length, pause/resume, done and discard. The morph preserves
+       `hidden` everywhere and refreshBlocked() gates patches while a recording
+       is live, so a page refresh can never eat a half-taken memo. #}
+    <div class="rec-panel" data-rec-panel hidden>
+      <canvas class="rec-wave" height="36" aria-hidden="true"></canvas>
+      <span class="rec-time" data-rec-time>0:00</span>
+      <button type="button" class="btn secondary small" data-rec-pause>pause</button>
+      <button type="button" class="btn go small" data-rec-done>done</button>
+      <button type="button" class="btn danger small" data-rec-cancel
+              title="throw this recording away">discard</button>
+    </div>
+    {# Finished-but-unsent memos land here as playback rows (client-built;
+       .rec-row is in MORPH_KEEP so a live patch leaves them alone). Each one
+       can be listened to and deleted before the note is submitted. #}
+    <div class="rec-shelf" data-rec-shelf></div>
   </form>
 </div>
+{% endmacro %}
 
-{# Attachments only exist as a section when there are some. Most projects have
-   none, and an empty card here was a permanent reminder of a feature rather
-   than a place anything lived. Dropping a file on the note box above is what
-   creates it. #}
-{% if attachments %}
-{# Folded by default: on a project with a few screenshots the grid is the
-   tallest thing on the page, and it is a store, not a feed. The count is in
-   the summary so it can be checked without opening it. #}
-<details class="fold-section attach-block" id="attachments">
+{% macro sec_files() %}<!-- section: files -->
+{# Files: one section for everything on disk. Wes, 2026-08-01: "combine the
+   workspace and attachments sections into the new files section. Make it jump
+   to with 'F'."
+
+   The two were never really two things. An attachment is written *into* the
+   workspace (`<workspace>/attachments/0007-shot.png`, see attachments.py), so
+   the workspace tree below has always listed every uploaded file already - the
+   separate section existed because an upload carries three facts the tree does
+   not: the name it was uploaded under, when, and a delete button.
+
+   So: one fold, one jump key, two shelves inside it. `#attachments` and
+   `#workspace` stay on the shelves as ids because links to them exist in old
+   journal entries and in Telegram messages already sent. #}
+<details class="fold-section files-block" id="files"
+         data-jump="files" data-jump-label="Files">
   <summary>
-    <span class="fold-section-label">Attachments</span>
-    <span class="muted small">{{ attachments|length }} file{{ 's' if attachments|length != 1 else '' }}</span>
-  </summary>
-<div class="card">
-  <ul class="attach-grid">
-    {% for a in attachments %}
-    {% set kind = media_kind(a.mime) %}
-    <li class="attach-item kind-{{ kind }}">
-      {% if kind == 'image' %}
-      <a href="/attachment/{{ a.id }}" target="_blank" rel="noopener">
-        <img src="/attachment/{{ a.id }}" alt="{{ a.orig_name }}" loading="lazy">
-      </a>
-      {% elif kind == 'audio' %}
-      <audio controls preload="none" src="/attachment/{{ a.id }}"></audio>
-      {% elif kind == 'video' %}
-      <video controls preload="metadata" src="/attachment/{{ a.id }}"></video>
-      {% else %}
-      <a class="attach-blob" href="/attachment/{{ a.id }}">file</a>
-      {% endif %}
-      <div class="attach-meta small">
-        <a href="/attachment/{{ a.id }}">{{ a.orig_name }}</a>
-        <span class="muted">{{ a.size|filesize }} &middot; {{ a.created_at|timeago }}</span>
-        <code class="muted">attachments/{{ a.stored_name }}</code>
-      </div>
-      <form method="post" action="/attachment/{{ a.id }}/delete"
-            data-confirm="Delete {{ a.orig_name }}? The agent will no longer see it.">
-        <button type="submit" class="btn danger small">delete</button>
-      </form>
-    </li>
-    {% endfor %}
-  </ul>
-  <p class="hint">The agent reads these from its working directory by relative path.</p>
-</div>
-</details>
-{% endif %}
-
-{# Foldable like the console and the attachments, with the file count in the
-   summary so it can be read without opening it. A workspace with a hundred
-   files was several screens of list sitting between the note box and the
-   journal.
-
-   Shut by default, like the folders inside it: the file count in the summary
-   is what you check most of the time, and opening it is the deliberate act of
-   going looking for a file. #}
-<details class="fold-section workspace-block" id="workspace">
-  <summary>
-    <span class="fold-section-label">Workspace</span>
-    <span class="muted small">{{ file_count }}{{ '+' if file_count_capped }} file{{ 's' if file_count != 1 else '' }}</span>
+    <span class="fold-section-label">Files</span>
+    <span class="muted small">{{ file_count }}{{ '+' if file_count_capped }} file{{ 's' if file_count != 1 else '' }}{% if attachments %}, {{ attachments|length }} uploaded{% endif %}</span>
   </summary>
 <div class="card">
   {# A web page can't open a terminal for you, so it hands over the line to
@@ -788,6 +947,64 @@
     <code class="ssh-command" id="ssh-command">{{ ssh_command }}</code>
     <button type="button" class="btn secondary small" data-copy="#ssh-command">copy</button>
   </div>
+
+  {% if attachments %}
+  {# Uploads first: they are the files a person put here, and the only ones with
+     a reason to be looked at rather than searched for.
+
+     Every link goes through the workspace file viewer rather than at the raw
+     bytes. Wes: "When opening an attachment file, it should use the file pop up
+     stuff to open it without leaving the page if possible. If not possible, at
+     least open it on a new page with the same file viewer that would be used if
+     opening a file from what used to be the workspace." An image does the
+     first (`journal-media-link data-lightbox` is the in-page viewer app.js
+     already binds, the same one journal images use), everything else does the
+     second. Nothing lands on a bare download any more. #}
+  <h3 class="files-sub" id="attachments">Uploaded</h3>
+  <ul class="attach-grid">
+    {% for a in attachments %}
+    {% set kind = media_kind(a.mime) %}
+    {% set viewer = "/file/" ~ project.slug ~ "/attachments/" ~ a.stored_name %}
+    <li class="attach-item kind-{{ kind }}">
+      {% if kind == 'image' %}
+      {# href is the raw bytes because that is what the lightbox loads and what
+         a cmd-click should open; the click handler keeps you on the page. #}
+      <a class="journal-media-link" data-lightbox href="/attachment/{{ a.id }}">
+        <img src="/attachment/{{ a.id }}" alt="{{ a.orig_name }}" loading="lazy">
+      </a>
+      {% elif kind == 'audio' %}
+      <audio controls preload="none" src="/attachment/{{ a.id }}"></audio>
+      {# The words are what a voice memo is for, so they sit right under the
+         player - and a failure says so in the same spot (app/transcribe.py
+         stores "[transcription failed: ...]" rather than nothing). #}
+      {% if a.transcript %}
+      <p class="attach-transcript small {{ 'error' if a.transcript.startswith('[transcription failed') else 'muted' }}">{{ a.transcript }}</p>
+      {% else %}
+      <p class="attach-transcript small muted pending">transcribing&hellip;</p>
+      {% endif %}
+      {% elif kind == 'video' %}
+      <video controls preload="metadata" src="/attachment/{{ a.id }}"></video>
+      {% else %}
+      <a class="attach-blob" href="{{ viewer }}">file</a>
+      {% endif %}
+      <div class="attach-meta small">
+        <a href="{{ viewer }}">{{ a.orig_name }}</a>
+        <span class="muted">{{ a.size|filesize }} &middot; {{ a.created_at|timeago }}</span>
+        <code class="muted">attachments/{{ a.stored_name }}</code>
+      </div>
+      {# data-inplace, behind the confirm: the Files shelf is a long way down a
+         long page, so deleting the fourth file used to end at the top of it. #}
+      <form method="post" action="/attachment/{{ a.id }}/delete" data-inplace
+            data-confirm="Delete {{ a.orig_name }}? The agent will no longer see it.">
+        <button type="submit" class="btn danger small">delete</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="hint">The agent reads these from its working directory by relative path.</p>
+  {% endif %}
+
+  <h3 class="files-sub" id="workspace">Workspace</h3>
   {% if tree_entries %}
   {# The scroll cap sits on the wrapper, not on the list, so it stays a
      ten-row window as folders are opened inside it - putting it on the <ul>
@@ -800,7 +1017,9 @@
   {% endif %}
 </div>
 </details>
+{% endmacro %}
 
+{% macro sec_journal() %}<!-- section: journal -->
 {# J lands on the scroll box below, not on this heading. Wes, 2026-07-28:
    "hitting J for journal should not go to the top of the journal subsection and
    show the 'Journal' header but rather put the scrollable journal section to
@@ -823,11 +1042,17 @@
    journal is the thing you came to read, so its box is most of a screen tall
    rather than a ten-line window onto it. #}
 {% if journal %}
-<div class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box">
+{# data-jump-nav="off": the J key needs both this box and the heading above it
+   (an empty project renders no box), but they are one place to go, and the rail
+   would otherwise list "Journal" twice. #}
+<div class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box"
+     data-jump-nav="off">
   {% for j in journal %}
   {% set pending = note_pending(j) %}
-  {% set aside = is_side_thread(j.author, j.kind) %}
-  <div class="journal-entry from-{{ j.author }}{{ ' note-unsent' if pending }}{{ ' journal-aside' if aside }}">
+  {# No side-thread rows here to badge any more: asks and their answers are
+     read back by db.ask_thread and drawn in the ask box at the top of the page
+     (Wes, 2026-08-16), and this feed excludes them in SQL. #}
+  <div class="journal-entry from-{{ j.author }}{{ ' note-unsent' if pending }}">
     <div class="meta">
       {# The name, not "user", once more than one person writes here - otherwise
          two people's notes are indistinguishable in the same timeline. The
@@ -836,11 +1061,6 @@
       <span class="badge">{{ j.kind }}</span>
       <span class="small muted">{{ j.ts|timeago }}</span>
       {% if pending %}<span class="badge badge-unsent" title="No agent has read this yet, so you can still change it">not sent yet</span>{% endif %}
-      {# An ask runs in parallel and read-only, and is left out of the journal
-         tail a run reads (db.SIDE_THREAD) - so say so on the row, or the two
-         kinds of writing here look identical and a question reads as an
-         instruction. #}
-      {% if aside %}<span class="badge badge-aside" title="Asks are a side thread: read-only, and left out of the journal an agent run reads">side thread</span>{% endif %}
     </div>
     <div class="content">{{ j.content_md|markdown_media(project.slug)|safe }}</div>
     {# Only offered while `delivered_at` is NULL. The moment this note goes into
@@ -876,6 +1096,23 @@
         {% else %}
         <a href="/attachment/{{ a.id }}">{{ a.orig_name }}</a>
         {% endif %}
+        {# Removing a file lives on the file, in the same window as editing the
+           note that carried it. Wes, 2026-08-17: "Add a way of removing note
+           file attachments before the prompt is sent." The only remove control
+           before this was in the Files fold, which lists every upload the
+           project has ever had with no sign of which note each belongs to -
+           so taking back the screenshot you had just dropped meant hunting.
+
+           Gone the moment the note goes into a prompt, exactly like the edit
+           and delete controls above: from then on the file is part of what an
+           agent was told. The Files shelf still deletes it after that; what it
+           will not do is rewrite the sentence that was already sent. #}
+        {% if pending %}
+        <form method="post" action="/attachment/{{ a.id }}/delete" data-inplace
+              data-confirm="Remove {{ a.orig_name }}? It will not be sent with this note.">
+          <button type="submit" class="btn danger small">remove</button>
+        </form>
+        {% endif %}
       </li>
       {% endfor %}
     </ul>
@@ -886,6 +1123,17 @@
 {% else %}
 <p class="empty-state">No journal entries yet.</p>
 {% endif %}
+{% endmacro %}
+
+{# The arrangement itself. `section_order()` always returns every name exactly
+   once whatever is stored, so there is no guard here and no way for a bad
+   preference to leave a block off the page. #}
+{%- set MOVABLE = {
+      'ask': sec_ask, 'project': sec_project, 'console': sec_console,
+      'subprojects': sec_subprojects, 'questions': sec_questions,
+      'todo': sec_todo, 'note': sec_note, 'files': sec_files,
+      'journal': sec_journal } -%}
+{% for name in section_order() %}{{ MOVABLE[name]() }}{% endfor %}
 
 {# Last on the page, below the journal, and the WHOLE section folds - heading
    included. Wes asked three times: collapsible, collapsed by default, at the

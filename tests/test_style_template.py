@@ -145,7 +145,7 @@ def test_the_skill_exists_and_reaches_prompts():
     assert "terminal-theme.css" in text
     # And the URLs it hands out are ones the owner can open from any device -
     # never localhost (his 04:56 note). Since #254 the skill carries the
-    # placeholder rather than a hostname, and worker._localise_skill fills it
+    # placeholder rather than a hostname, and worker._localize_skill fills it
     # in as the file is copied into a workspace - so assert both halves, or a
     # skill that ships an unsubstituted "$BASE_URL/style" would pass.
     assert "$BASE_URL/style" in text

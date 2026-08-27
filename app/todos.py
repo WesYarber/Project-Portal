@@ -13,6 +13,7 @@ eventually" from a context-window gamble into a row in a table.
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from typing import Any, Optional
 
@@ -22,7 +23,14 @@ log = logging.getLogger("portal.todos")
 
 # Anything past this and the prompt section starts crowding out the journal.
 # Open items are never dropped; only the completed tail is trimmed.
-MAX_DONE_SHOWN = 15
+#
+# A BYTE budget since 2026-07-29, not a count. The count was 15 items per half,
+# which sounds small until you notice that a portal todo runs to 500 characters
+# - so the cap admitted 15 KB of work that is already finished, and measured on
+# this project's own prompt it was letting through more bytes than the whole
+# open list. A count is a proxy for size that any one verbose entry breaks; the
+# journal and learnings budgets moved off counts for exactly this reason.
+DONE_TAIL_BYTES = 2048
 
 
 def _line(row) -> str:
@@ -161,9 +169,19 @@ def prompt_section(project_id: int) -> str:
         if not items:
             return f"{heading}\n{empty}"
         open_items = [r for r in items if not r["done"]]
-        done_items = [r for r in items if r["done"]][-MAX_DONE_SHOWN:]
-        lines = [_line(r) for r in open_items] + [_line(r) for r in done_items]
-        return f"{heading}\n" + "\n".join(lines)
+        done_lines, dropped = _done_tail([r for r in items if r["done"]])
+        lines = [_line(r) for r in open_items] + done_lines
+        text = f"{heading}\n" + "\n".join(lines)
+        if dropped:
+            # Said rather than silently done. An agent reading a list that
+            # stops at some arbitrary point has no way to tell whether the
+            # older work was never done or merely not shown, and the first
+            # reading is the one that makes it redo something.
+            text += (
+                f"\n({dropped} older completed item(s) not shown - the whole "
+                "list is on the project page.)"
+            )
+        return text
 
     parts = [
         "## Todo list for this project",
@@ -178,19 +196,68 @@ def prompt_section(project_id: int) -> str:
     groups = by_person(theirs, project_id) or [(sole_member(project_id), [])]
     for person, items in groups:
         parts += ["", block(items, _human_heading(person, project_id), "(nothing outstanding)")]
+    # The principal, not unconditionally the install owner: on a project only
+    # Karli is on, "what truly waits on Wes" told the agent to route her own
+    # project's blockers through him. See people.principal.
+    principal_name = people.name_of(people.principal(project_id))
     parts += [
         "",
-        f"Report `todo_updates` to change it: `add` anything {config.SITE.owner} has asked for "
+        f"Report `todo_updates` to change it: `add` anything {principal_name} has asked for "
         "that you are not finishing this run (so it survives into the next "
         "prompt), and `done` the ids you actually completed. Do not tick "
-        "something off you have not verified. The bracketed words on an item "
-        "are its tags; retag with `\"tags\": {\"<id>\": [...]}` (the list "
-        "replaces the item's tags). The tag `blocked` has teeth: the scheduler "
-        "does not count a blocked item as workable, so tag what truly waits on "
-        f"{config.SITE.owner} - and clear the tag the moment it no longer does."
-        + _who_clause(),
+        "something off you have not verified. Keep this list SHORT and each "
+        "item to ONE sentence - it is a checklist, not a journal; put the "
+        "background in your journal entry and let the item name the action. "
+        "Close items aggressively: an item you opened that no longer matters "
+        "is yours to `done` or delete, and a stale 'watch/verify' note is "
+        "noise, not memory. Open an item only when a CONCRETE action would "
+        "otherwise be forgotten - never to log what you already did, and "
+        "never to ask a person to go admire or verify a feature; say that "
+        "in the summary instead. An item for a person is only for something "
+        "that genuinely needs their hands (a purchase, a credential, a "
+        "click). The bracketed words on an item are its tags - never write "
+        "tags into the text itself; retag with `\"tags\": {\"<id>\": [...]}` "
+        "(the list replaces the item's tags). The tag `blocked` has teeth: "
+        "the scheduler does not count a blocked item as workable, so tag "
+        f"what truly waits on {principal_name} - and clear the tag the moment it no "
+        "longer does." + _who_clause(),
     ]
     return "\n".join(parts)
+
+
+def _done_tail(done_items: list, budget: Optional[int] = None) -> tuple[list[str], int]:
+    """The most recently completed items that fit in `budget` bytes.
+
+    Newest first while filling, then reversed back into completion order,
+    because the list reads oldest-to-newest everywhere else and a tail that
+    ran backwards would be the only part of the prompt that did.
+
+    At least one item always survives, however long it is. A section that
+    admits nothing would tell an agent the half is empty, which is a different
+    and worse claim than "here is the last thing you finished".
+
+    `budget` is a parameter rather than a straight read of `DONE_TAIL_BYTES` so
+    that a test can state its own size instead of scaling its fixture off the
+    module constant. That is not tidiness: a test building `"x" * (
+    DONE_TAIL_BYTES * 3)` allocates 3 GB the moment a delete-the-fix mutation
+    raises the constant, so pytest is killed inside the run's memory cgroup
+    before it can emit a single failure - and the sweep reads a crashed run as
+    "this mutation was uncaught". A fixture must never take its size from the
+    constant it is testing.
+    """
+    if budget is None:
+        budget = DONE_TAIL_BYTES
+    kept: list[str] = []
+    used = 0
+    for row in reversed(done_items):
+        line = _line(row)
+        cost = len(line) + 1
+        if used + cost > budget and kept:
+            break
+        kept.append(line)
+        used += cost
+    kept.reverse()
+    return kept, len(done_items) - len(kept)
 
 
 def _human_heading(person: Optional[sqlite3.Row], project_id: int) -> str:
@@ -267,8 +334,11 @@ def apply_updates(project_id: int, updates: Any) -> dict[str, int]:
                 person_id = _person_ref(owner)
         else:
             continue
+        text, embedded = _split_embedded_tags(text or "")
+        if embedded:
+            tags = list(dict.fromkeys([*(tags or []), *embedded]))
         before = db.count_open_todos(project_id)
-        row = db.add_todo(project_id, text or "", owner, tags=tags, person_id=person_id)
+        row = db.add_todo(project_id, text, owner, tags=tags, person_id=person_id)
         # add_todo is idempotent on text, so "added" counts real new rows only.
         if row is not None and db.count_open_todos(project_id) > before:
             counts["added"] += 1
@@ -288,6 +358,30 @@ def apply_updates(project_id: int, updates: Any) -> dict[str, int]:
             counts["tagged"] += 1
 
     return counts
+
+
+def _split_embedded_tags(text: str) -> tuple[str, list[str]]:
+    """Leading `[tag]` tokens an agent wrote into an item's text, split off.
+
+    The prompt shows an item's tags as bracketed chips in front of its text, so
+    a model restating an item writes them back into `text` sooner or later.
+    Wes, 2026-08-04: "The tags often show up in the body of the todo item as
+    [tag] [tag2], and they should not." They become real tags instead of words.
+
+    Deliberately narrow: only tag-shaped tokens (short, kebab-ish) at the very
+    front of the text. "[RESEARCH.md §1]" mid-sentence, a markdown checkbox, a
+    literal bracketed clause - none of those match, because eating a word
+    somebody meant is worse than leaving a chip in the text.
+    """
+    tags: list[str] = []
+    rest = (text or "").lstrip()
+    while True:
+        m = re.match(r"\[([A-Za-z0-9][A-Za-z0-9_-]{0,23})\]\s*", rest)
+        if not m:
+            break
+        tags.append(m.group(1).lower())
+        rest = rest[m.end():]
+    return (rest if rest else (text or "")), tags
 
 
 def _person_ref(value: Any) -> Optional[int]:

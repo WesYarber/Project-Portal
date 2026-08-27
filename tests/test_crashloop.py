@@ -147,12 +147,55 @@ class FakeRun(dict):
         return super().__getitem__(key)
 
 
-def run(status="error", events=0, started_at="2026-07-27T05:00:00+00:00"):
-    return FakeRun(status=status, events=events, started_at=started_at)
+def run(status="error", events=0, started_at="2026-07-27T05:00:00+00:00", **cols):
+    return FakeRun(status=status, events=events, started_at=started_at, **cols)
 
 
 def test_a_run_with_no_events_is_a_dead_start():
     assert crashloop.is_dead_start(run(status="error", events=0))
+
+
+def test_the_auth_outage_shape_is_a_dead_start():
+    """The 2026-08-06 incident: an expired OAuth session had the CLI boot,
+    print one error and quit - 3 events (session start, the error, the failure
+    result), zero cost, zero output. The zero-events test missed it and the
+    scheduler retried once a minute for twenty runs straight."""
+    assert crashloop.is_dead_start(
+        run(status="error", events=3, cost_usd=0.0, output_tokens=0)
+    )
+
+
+def test_a_short_run_that_billed_something_is_not_a_dead_start():
+    """Few events but real usage means the model was reached - an ordinary
+    (if brief) bad run, not a starting-line crash."""
+    assert not crashloop.is_dead_start(
+        run(status="error", events=3, cost_usd=0.31, output_tokens=0)
+    )
+    assert not crashloop.is_dead_start(
+        run(status="error", events=3, cost_usd=0.0, output_tokens=812)
+    )
+
+
+def test_a_few_event_run_with_unknown_billing_is_not_a_dead_start():
+    """NULL usage is 'unknown', not 'zero' - an old row or an unparsed result.
+    Only explicit zeros, which the CLI writes when it dies at the starting
+    line, may condemn a run that emitted events."""
+    assert not crashloop.is_dead_start(
+        run(status="error", events=3, cost_usd=None, output_tokens=None)
+    )
+
+
+def test_a_few_event_run_missing_usage_columns_is_not_a_dead_start():
+    """A row from before the usage columns existed has no verdict to give."""
+    assert not crashloop.is_dead_start(run(status="error", events=3))
+
+
+def test_zeroed_billing_does_not_condemn_a_run_with_many_events():
+    """Run 704 recorded 770 events with zeroed token columns. The event count
+    proves work happened, so it must win over what the billing says."""
+    assert not crashloop.is_dead_start(
+        run(status="error", events=770, cost_usd=0.0, output_tokens=0)
+    )
 
 
 def test_a_failed_run_that_did_work_is_not_a_dead_start():
@@ -301,6 +344,36 @@ def test_the_257_run_flood_would_have_been_stopped(monkeypatch):
     assert attempts <= 10, f"still a flood: {attempts} attempts"
 
 
+def test_the_auth_outage_flood_would_have_been_stopped():
+    """2026-08-06, replayed: twenty auth failures at one a minute, each with
+    the CLI's 3 boot-and-die events. The zero-events breaker let every one of
+    them through; with billing considered, the fourth attempt is 40 minutes
+    out and the twenty-minute outage costs three runs."""
+    start = datetime(2026, 8, 6, 16, 10, tzinfo=timezone.utc)
+    rows: list[FakeRun] = []
+    attempts = 0
+    now = start
+    for _ in range(20):
+        streak = 0
+        for r in rows:
+            if not crashloop.is_dead_start(r):
+                break
+            streak += 1
+        if rows:
+            last = datetime.fromisoformat(rows[0]["started_at"])
+            if now < last + timedelta(minutes=crashloop.delay_min(streak)):
+                now += timedelta(minutes=1)
+                continue
+        rows.insert(
+            0,
+            run(started_at=now.isoformat(), events=3, cost_usd=0.0, output_tokens=0),
+        )
+        attempts += 1
+        now += timedelta(minutes=1)
+
+    assert attempts <= 4, f"still a flood: {attempts} attempts"
+
+
 def test_the_first_dead_start_is_not_announced():
     """One is noise - a spawn racing a service restart does this."""
     assert not crashloop.should_announce(1, 0)
@@ -346,6 +419,32 @@ def _die(project_id: int, n: int) -> None:
     for _ in range(n):
         run_id = real_db.create_run(project_id, "build", "opus")
         real_db.finish_run(run_id, "error", summary="Run crashed; see the service log.")
+
+
+def _die_at_auth(project_id: int, n: int) -> None:
+    """`n` runs shaped exactly like the 2026-08-06 auth failures: the CLI
+    booted, emitted 3 events, billed nothing and died."""
+    from app import db as real_db
+
+    for _ in range(n):
+        run_id = real_db.create_run(project_id, "build", "opus")
+        real_db.update_run_activity(run_id, "session start", 3)
+        real_db.record_run_usage(
+            run_id, input_tokens=0, output_tokens=0,
+            cache_write_tokens=0, cache_read_tokens=0,
+        )
+        real_db.finish_run(run_id, "error", cost_usd=0.0, num_turns=1,
+                           summary="Failed to authenticate")
+
+
+def test_an_auth_looping_project_is_passed_over_for_a_healthy_one(projects):
+    """The 2026-08-06 shape, against the real scheduler: rows written the way
+    agent_runner writes them must trip the breaker."""
+    from app import worker
+
+    _die_at_auth(projects[0]["id"], 3)
+    picked, _ = worker._pick_project(None)
+    assert picked["slug"] == "beta"
 
 
 def test_a_looping_project_is_passed_over_for_a_healthy_one(projects):

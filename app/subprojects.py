@@ -45,7 +45,7 @@ import logging
 import sqlite3
 from typing import Any, Iterable, Optional
 
-from app import config, db
+from app import config, db, people
 
 log = logging.getLogger(__name__)
 
@@ -112,17 +112,26 @@ def create_child(
     # not commit him to working on every piece of it: nothing runs on a child
     # until he (or a note) activates it, exactly like any other idea.
     #
-    # Priority steps down one from the parent so a family cannot crowd the run
-    # rotation out from under everything else on the dashboard.
+    # A child used to be created one priority step below its parent, so a
+    # family could not crowd the run rotation out from under the rest of the
+    # board. Priority is gone (Wes, 2026-08-16), and the rotation is a plain
+    # least-recently-touched round robin now, which spreads a family across the
+    # board by construction rather than by a ranking nobody maintained.
     child = db.create_project(
         title=title,
         description=(description or "").strip(),
         kind=kind,
         stage="backlog",
-        priority=max(0, (parent["priority"] or 0) - 1),
         slug=child_slug(parent, title),
         parent_id=parent["id"],
     )
+
+    # Membership is inherited whole: a child split out of Karli's project goes
+    # on Karli's board, and everyone who could see the parent can see the
+    # piece. create_project's owner fallback would instead hand her split to
+    # the owner - the same wrong default Wes reported on the idea form.
+    people.set_members(int(child["id"]), people.member_ids(int(parent["id"])))
+    child = db.get_project(child["id"])
 
     # Build approval is inherited. Wes approving "board games for my site" was
     # approval to write the games; making him press the button again once per

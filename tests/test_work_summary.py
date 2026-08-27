@@ -1,4 +1,4 @@
-"""The "since you last looked" banner at the top of a project.
+"""The "Since you last looked" banner at the top of a project.
 
 From Wes's note: "Add to each project a summary of the previous work done to
 it. This summary should be brief and live at the top of the project page. There
@@ -195,7 +195,7 @@ def test_the_page_stacks_the_runs_oldest_at_the_top(client, project):
     _finished_run(project["id"], "Landed the third thing")
 
     body = client.get(f"/project/{project['slug']}").text
-    banner = body[body.index("since you last looked"):body.index("acknowledged</button>")]
+    banner = body[body.index("Since you last looked"):body.index("acknowledged</button>")]
     assert (
         banner.index("Landed the first thing")
         < banner.index("Landed the second thing")
@@ -282,15 +282,15 @@ def test_the_project_page_shows_the_summary_at_the_top(client, project):
     _finished_run(project["id"], "Built the todo list")
 
     body = client.get(f"/project/{project['slug']}").text
-    assert "since you last looked" in body
+    assert "Since you last looked" in body
     assert "Built the todo list" in body
     # Above the ask button, which is itself above everything else on the page.
-    assert body.index("since you last looked") < body.index("ask project")
+    assert body.index("Since you last looked") < body.index("ask project")
 
 
 def test_the_section_is_absent_with_nothing_to_report(client, project):
     body = client.get(f"/project/{project['slug']}").text
-    assert "since you last looked" not in body
+    assert "Since you last looked" not in body
     assert "work-summary" not in body
 
 
@@ -302,7 +302,7 @@ def test_pressing_acknowledged_gives_the_space_back(client, project):
     assert r.headers["location"] == f"/project/{project['slug']}"
 
     body = client.get(f"/project/{project['slug']}").text
-    assert "since you last looked" not in body
+    assert "Since you last looked" not in body
     assert "Built the todo list" not in body
 
 

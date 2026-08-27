@@ -214,12 +214,14 @@ def test_the_project_page_always_links_to_the_history(client, project):
     assert "/project/fridge/todos/history" in client.get("/project/fridge").text
 
 
-def test_the_delete_cross_is_not_hover_only():
-    """A phone has no hover: hover-only meant mobile could never delete one,
-    and a tap left the cross stuck lit afterwards."""
+def test_deleting_lives_in_the_row_menu_now():
+    """The per-row delete cross is gone (Wes, 2026-08-04: "compress the +tag,
+    whose? and x buttons into a right click menu for a todo list item") - so
+    the stylesheet must not still carry it, and the menu must offer it."""
     from pathlib import Path
 
-    css = (Path(__file__).resolve().parent.parent / "app" / "static" / "style.css").read_text()
-    block = css[css.index(".todo-del {"):css.index(".todo-foot {")]
-    assert "opacity: 0;" not in block  # never fully hidden
-    assert ":focus-visible" in block   # a click does not leave it lit
+    root = Path(__file__).resolve().parent.parent
+    assert ".todo-del" not in (root / "app" / "static" / "style.css").read_text()
+    js = (root / "app" / "static" / "app.js").read_text()
+    assert "function initTodoMenu" in js
+    assert '"/delete"' in js or "/delete" in js

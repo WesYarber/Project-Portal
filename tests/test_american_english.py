@@ -97,6 +97,12 @@ RULES: tuple[tuple[str, str], ...] = (
     # `-ing` in the lookahead is what separates the verb from the noun:
     # `analysing` takes it, `analysis` does not. A bare `[ei]` matches both and
     # would demand the noun be spelled `analyzis`.
+    # Added 2026-08-04, same lesson as the 2026-07-28 batch above: both of
+    # these were sitting in the tree while this suite reported it clean.
+    # `capitalisation` was in a comment in app/static/app.js and in
+    # tests/test_workspace_access.py, `capitalised` four times in
+    # app/qdedupe.py, and `dialling` in the settings page's own help text.
+    ("capitalis(?=[eai])", "capitaliz"),
     ("emphasis(?=e|ing)", "emphasiz"),    # not the noun `emphasis`
     ("analys(?=e|ing)", "analyz"),        # not the noun `analysis`
     ("practis(?=e|ing)", "practic"),
@@ -116,10 +122,21 @@ RULES: tuple[tuple[str, str], ...] = (
     ("signall(?=[ei])", "signal"),
     ("counsell(?=[ei])", "counsel"),
     ("cancell(?=[ei])", "cancel"),
+    ("diall(?=[ei])", "dial"),
     ("marvellous", "marvelous"),
     # ...and the reverse: British singles an `l` that American doubles.
     ("fulfil(?!l)", "fulfill"),
     ("enrol(?!l)", "enroll"),
+    # Added 2026-07-29: `distil` sat in the /memory compact button's own confirm
+    # text and in main.py's docstring for the route behind it, and this suite
+    # reported the tree clean. Same family as the two above - British singles an
+    # `l` that American doubles - so the rest of that family came with it.
+    ("distil(?!l)", "distill"),
+    ("instil(?!l)", "instill"),
+    ("skilful", "skillful"),
+    ("wilful", "willful"),
+    ("enthral(?!l)", "enthrall"),
+    ("instalment", "installment"),
     ("catalogue", "catalog"),
     ("licence", "license"),
     ("defence", "defense"),
@@ -152,6 +169,8 @@ def americanize(word: str) -> str:
 FOREIGN_NAMES = r"""
       \bCancelledError\b        # asyncio's own exception
     | \.cancelled\(\)           # asyncio Future.cancelled()
+    | \bcreateAnalyser\(\)      # the Web Audio API's own spelling
+    | \bAnalyserNode\b          # ...and the class that method returns
 """
 
 # `cancelled` as a value or a name rather than as a word. The status string is
@@ -205,7 +224,7 @@ EXEMPT: tuple[tuple[str, str, str], ...] = (
             "tests/test_cancel.py", "tests/test_breakdown.py", "tests/test_oneoffs.py",
             "tests/test_parallel.py", "tests/test_runlimit.py", "tests/test_telegram.py",
             "tests/test_settings_form.py", "tests/test_ui_polish.py",
-            "tests/test_restart_survivors.py",
+            "tests/test_restart_survivors.py", "tests/test_stranded_runs.py",
         )
     ),
 )

@@ -214,10 +214,15 @@ def test_reactivation_is_not_an_approval(client):
     assert db.get_project(p["id"])["build_approved"] == 0
 
 
-def test_a_note_on_an_active_project_changes_nothing(client):
+def test_a_note_on_an_active_project_leaves_the_stage_alone_and_runs(client):
+    """Wes, 2026-08-10: "Make the 'Add note' button automatically run now if the
+    project can be run now." It used to change nothing at all - the note sat
+    until the scheduler came round. The STAGE is still untouched; what changed
+    is that writing the note is now the request. See tests/test_note_runs_now.py."""
     p = db.create_project("Fridge", slug="fridge", stage="active")
     _note(client, "fridge")
-    assert worker.manual_queue.qsize() == 0
+    assert db.get_project(p["id"])["stage"] == "active"
+    assert worker.manual_queue.qsize() == 1
 
 
 def test_a_note_on_a_backlog_or_done_project_stays_parked(client):

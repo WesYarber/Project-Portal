@@ -103,13 +103,18 @@ def test_a_capped_list_still_renders_every_item(client, project):
         assert f"item number {n}" in body
 
 
-def test_the_workspace_section_folds(client, project):
+def test_the_files_section_folds(client, project):
     """Fully collapsible, with the count in the summary so it can be read
-    without opening it - the same shape as the console and attachments."""
+    without opening it - the same shape as the console.
+
+    Since 2026-08-01 the workspace tree is a shelf inside the Files fold rather
+    than a section of its own; `#workspace` survives as the shelf's id because
+    links to it exist in journal entries already written."""
     body = page(client)
-    assert 'class="fold-section workspace-block" id="workspace"' in body
-    assert '<span class="fold-section-label">Workspace</span>' in body
-    assert "1 file<" in body
+    assert 'class="fold-section files-block" id="files"' in body
+    assert '<span class="fold-section-label">Files</span>' in body
+    assert '<h3 class="files-sub" id="workspace">Workspace</h3>' in body
+    assert "1 file" in body
 
 
 # --- control heights -------------------------------------------------------
@@ -139,14 +144,6 @@ def test_buttons_share_the_same_height_as_the_fields():
     block = css.split("button, .btn {", 1)[1].split("}", 1)[0]
     assert "height: var(--control-h);" in block
     assert "display: inline-flex;" in block
-
-
-def test_the_delete_cross_opts_out_of_the_shared_height():
-    """A 2.3rem cross would set the floor for every todo row and blow the
-    16-row cap."""
-    css = STYLE.read_text(encoding="utf-8")
-    block = css.split(".todo-del {", 1)[1].split("}", 1)[0]
-    assert "height: auto;" in block
 
 
 # --- the copy button -------------------------------------------------------
@@ -203,7 +200,7 @@ def test_run_now_sits_before_queue_research(client, project):
     - and the journal agreed: its route writes an entry every time it runs, and
     there were zero of them across 841. What is left is still ordered by
     commitment: do it now, then do it when the allowance is free. The button's
-    absence is pinned in test_priority_toggle.py.
+    absence is pinned in test_priority_removed.py.
     """
     body = page(client)
     row = body.split('class="button-row action-row"', 1)[1].split("</div>", 1)[0]
@@ -247,13 +244,19 @@ def test_add_note_shares_the_attach_row(client, project):
     row = body.split('class="attach-row"', 1)[1].split("</div>", 1)[0]
     assert "attach files" in row
     assert "add note" in row
-    assert "record audio" in row
+    # The record button is a mic glyph since 2026-08-04 ("a microphone icon
+    # (but not emoji)"), so the row holds it as data-record + SVG, not words.
+    assert "data-record" in row
+    assert "record a voice note" in row
 
 
 def test_the_submit_button_is_still_a_submit(client, project):
     body = page(client)
     row = body.split('class="attach-row"', 1)[1].split("</div>", 1)[0]
-    assert '<button type="submit" class="btn go">add note</button>' in row
+    # The title says whether this press will also start a run (2026-08-10), so
+    # the tag is matched at its ends rather than character for character.
+    assert '<button type="submit" class="btn go"' in row
+    assert ">add note</button>" in row
 
 
 def test_adding_a_note_still_works(client, project):

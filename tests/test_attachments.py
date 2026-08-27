@@ -77,10 +77,16 @@ def test_media_kind():
 
 # --- storage ---------------------------------------------------------------
 
-def test_store_writes_into_the_workspace(project):
+def test_store_stages_the_file_outside_the_workspace(project):
+    """An upload waits in config.INCOMING_DIR until a run is ready for it, so
+    it cannot appear under an agent that is already working (Wes, 2026-08-16).
+    `reveal` is what puts it in the workspace; see test_attachment_reveal.py."""
     row = attachments.store(project["id"], project["slug"], "shot.png", PNG, "image/png")
-    path = config.PROJECTS_DIR / project["slug"] / "attachments" / row["stored_name"]
-    assert path.read_bytes() == PNG
+    staged = config.INCOMING_DIR / project["slug"] / row["stored_name"]
+    workspace = config.PROJECTS_DIR / project["slug"] / "attachments" / row["stored_name"]
+
+    assert staged.read_bytes() == PNG
+    assert not workspace.exists()
     assert row["mime"] == "image/png"
     assert row["size"] == len(PNG)
     # The id is baked into the stored name, which is what makes collisions
@@ -272,6 +278,9 @@ def test_workspace_listing_excludes_the_attachments_dir(client, project):
     from app import filetree
 
     attachments.store(project["id"], project["slug"], "shot.png", PNG, "image/png")
+    # Revealed, because the directory this test is about only exists in the
+    # workspace once a run has been given a file to put in it.
+    attachments.reveal(project["id"], project["slug"])
     workspace = config.PROJECTS_DIR / project["slug"]
     (workspace / "README.md").write_text("hi", encoding="utf-8")
     (workspace / "sub" / "attachments").mkdir(parents=True)
@@ -307,6 +316,7 @@ def test_prompt_truncates_a_long_note(project):
     attachments.store(
         project["id"], project["slug"], "a.png", PNG, "image/png", note="x" * 500
     )
+    attachments.reveal(project["id"], project["slug"])
     section = attachments.prompt_section(project["id"])
     assert "..." in section
     assert "x" * 200 not in section

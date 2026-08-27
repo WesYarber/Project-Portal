@@ -36,6 +36,18 @@ channels, until somebody has explicitly been given their own.** Once she has a
 topic, her projects stop landing on his phone - and that is a consequence of a
 field somebody filled in, not of a default nobody chose.
 
+## Web push is the default channel
+
+An enrolled device is a channel of one's own (Wes, 2026-08-06: web push "should
+be the default notification method for this project portal"). A person who has
+enrolled their phone is already reached directly, so they no longer drag the
+install's ntfy topic and Telegram chat into every send as a fallback - enrolling
+is the "field somebody filled in". A typed-in topic or chat id is still honored
+alongside push (explicit beats default, and somebody who configured both wants
+both); only the *fallback* is suppressed. The no-quiet-failure guarantee holds:
+every recipient is still reached somewhere, it is just their own lock screen
+rather than somebody else's topic.
+
 ## What this means on a one-person install
 
 Exactly nothing. One person, no personal channels, so every route resolves to
@@ -79,9 +91,19 @@ def _dedupe(values: Iterable[str]) -> list[str]:
 
 
 def _channel(
-    rows: Sequence[sqlite3.Row], column: str, install_default: str
+    rows: Sequence[sqlite3.Row],
+    column: str,
+    install_default: str,
+    covered: frozenset[int] | set[int] = frozenset(),
 ) -> list[str]:
-    """Each recipient's own channel, falling back to the install's."""
+    """Each recipient's own channel, falling back to the install's.
+
+    `covered` is the people already reached on a personal channel elsewhere
+    (an enrolled push device - see `push_covered`): they keep an explicitly
+    typed-in value here but contribute no install fallback, which is what
+    makes web push the default method rather than one more copy alongside
+    the shared topic.
+    """
     if not rows:
         # No people at all should be impossible (people.ensure_owner runs at
         # boot), but a notification is not the place to find that out.
@@ -94,16 +116,48 @@ def _channel(
             # A portal.db that has not been through init_db yet - the column is
             # added there. Fall back rather than raise: this is a notification.
             own = ""
-        out.append((own or "").strip() or install_default)
+        own = (own or "").strip()
+        if own:
+            out.append(own)
+        elif int(row["id"]) not in covered:
+            out.append(install_default)
     return _dedupe(out)
 
 
-def ntfy_topics(rows: Sequence[sqlite3.Row], install_topic: str) -> list[str]:
-    return _channel(rows, "ntfy_topic", install_topic)
+def push_covered(
+    rows: Sequence[sqlite3.Row], subs: Sequence[sqlite3.Row]
+) -> set[int]:
+    """The recipients who have an enrolled push device of their own.
+
+    Only subscriptions carrying a `person_id` count: an unattributed device
+    (enrolled before the column existed) tells us nothing about *whose* lock
+    screen it is, so it covers nobody and the fallback stands.
+    """
+    owned: set[int] = set()
+    for sub in subs:
+        try:
+            person_id = sub["person_id"]
+        except (IndexError, KeyError):
+            person_id = None
+        if person_id is not None:
+            owned.add(int(person_id))
+    return {int(row["id"]) for row in rows} & owned
 
 
-def telegram_chats(rows: Sequence[sqlite3.Row], install_chat_id: str) -> list[str]:
-    return _channel(rows, "telegram_chat_id", install_chat_id)
+def ntfy_topics(
+    rows: Sequence[sqlite3.Row],
+    install_topic: str,
+    covered: frozenset[int] | set[int] = frozenset(),
+) -> list[str]:
+    return _channel(rows, "ntfy_topic", install_topic, covered)
+
+
+def telegram_chats(
+    rows: Sequence[sqlite3.Row],
+    install_chat_id: str,
+    covered: frozenset[int] | set[int] = frozenset(),
+) -> list[str]:
+    return _channel(rows, "telegram_chat_id", install_chat_id, covered)
 
 
 def push_subscriptions(

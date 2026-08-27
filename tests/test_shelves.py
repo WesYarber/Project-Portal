@@ -3,9 +3,14 @@ redesigned state model (docs/state-model.md, approved by Wes 2026-07-22).
 
 One user-owned `stage` (backlog | active | review | done | abandoned), an
 orthogonal `paused` timestamp only Wes sets, and agent facts (`build_requested`,
-`blocked_on`) beside it. Shelving is arithmetic: paused, blocked, awaiting a
-build OK or holding an open question folds an active project to the Paused
-shelf; everything else sits on its stage's own shelf.
+`blocked_on`) beside it. Shelving is arithmetic: paused, awaiting a build OK or
+holding an open question folds an active project to the Paused shelf; everything
+else sits on its stage's own shelf.
+
+`blocked_on` used to fold too. It stopped on Wes's note of 2026-07-30 -
+"Projects that are active, but blocked should stay in the active category on the
+dashboard" - because a run on a blocked project still works everything that does
+not depend on him, so it is work in flight wearing a `blocked` badge.
 """
 from __future__ import annotations
 
@@ -56,15 +61,15 @@ def test_the_old_status_vocabulary_still_works_on_the_route(client):
 
 def test_an_agent_blocked_on_wes_is_not_a_pause():
     """The old model's `waiting_user` overload, split: an agent blocked on Wes
-    records `blocked_on`, which folds the card away on the dashboard but keeps
-    its questions loud."""
+    records `blocked_on`, which is a badge on a live card - not a pause, and
+    since 2026-07-30 not a shelving either."""
     p = _project("Fridge", "fridge")
     db.update_project(p["id"], blocked_on="a credential only the owner has")
 
     row = db.get_project(p["id"])
     assert row["stage"] == "active"
     assert not db.is_paused(row)
-    assert db.project_shelf(row) == "paused"
+    assert db.project_shelf(row) == "active"
     assert row["id"] not in db.shelved_project_ids()
 
 
@@ -91,7 +96,7 @@ def test_an_agent_stage_move_leaves_the_pause_alone():
 def test_a_non_stage_update_leaves_the_pause_alone():
     p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
-    db.update_project(p["id"], priority=9)
+    db.update_project(p["id"], kind="hardware")
     assert db.is_paused(db.get_project(p["id"]))
 
 
@@ -110,18 +115,14 @@ def test_every_state_lands_on_its_shelf():
         assert db.project_shelf(db.get_project(p["id"])) == shelf, stage
 
 
-def test_anything_waiting_on_wes_folds_to_the_paused_shelf():
+def test_anything_that_stops_the_whole_project_folds_to_the_paused_shelf():
     """"Even if they need user input or something, I don't care - I want them
-    in the paused/backlog section!" An active project waiting on Wes for any
-    reason - his pause, a block, an unanswered build request, an open question -
-    is folded away."""
+    in the paused/backlog section!" An active project that cannot proceed at all
+    without Wes - his pause, an unanswered build request, an open question - is
+    folded away."""
     p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
     assert db.project_shelf(db.get_project(p["id"])) == "paused"
-
-    p2 = _project("Blocked", "blocked")
-    db.update_project(p2["id"], blocked_on="an SSH key")
-    assert db.project_shelf(db.get_project(p2["id"])) == "paused"
 
     p3 = _project("Gated", "gated", build_approved=False)
     db.update_project(p3["id"], build_requested=1)
@@ -129,6 +130,37 @@ def test_anything_waiting_on_wes_folds_to_the_paused_shelf():
 
     p4 = _project("Asking", "asking")
     assert db.project_shelf(db.get_project(p4["id"]), open_questions=1) == "paused"
+
+
+def test_a_blocked_project_stays_on_the_active_shelf():
+    """Wes, 2026-07-30: "Projects that are active, but blocked should stay in
+    the active category on the dashboard."
+
+    `blocked_on` names one thing only he can do, not a stop on the project: the
+    agent contract tells every run to work whatever does not depend on him, and
+    the scheduler keeps scheduling it. So the card stays up top and the
+    `blocked` badge carries the news.
+    """
+    p = _project("Blocked", "blocked")
+    db.update_project(p["id"], blocked_on="an SSH key")
+    assert db.project_shelf(db.get_project(p["id"])) == "active"
+
+
+def test_a_blocked_project_that_is_also_asking_still_folds():
+    """The two facts are independent, and the question is the stronger one: an
+    unanswered question is his turn whatever else is true."""
+    p = _project("Blocked", "blocked")
+    db.update_project(p["id"], blocked_on="an SSH key")
+    assert db.project_shelf(db.get_project(p["id"]), open_questions=1) == "paused"
+
+
+def test_a_blocked_project_he_paused_is_still_paused():
+    """His own pause outranks everything - it is the one shelving nothing an
+    agent reports may undo."""
+    p = _project("Blocked", "blocked")
+    db.update_project(p["id"], blocked_on="an SSH key")
+    db.pause_project(p["id"])
+    assert db.project_shelf(db.get_project(p["id"])) == "paused"
 
 
 def test_a_review_project_with_a_question_stays_on_review():
@@ -175,11 +207,16 @@ def test_the_dashboard_splits_into_state_sections(client):
     assert "1 waiting or put down" in html
     assert "1 not started" in html
     # Everything is still on the page - folded, not dropped - in section order.
+    # Read past the side rail: it is chrome that lists the same projects most
+    # recently worked on first (Settings > appearance > rail project list), so
+    # its order is deliberately not the board's and indexing the whole document
+    # would be asserting against the wrong list.
+    board = html.split("</aside>", 1)[1]
     assert (
-        html.index("Live One")
-        < html.index("Read Me")
-        < html.index("Put Down")
-        < html.index("Not Started")
+        board.index("Live One")
+        < board.index("Read Me")
+        < board.index("Put Down")
+        < board.index("Not Started")
     )
 
 
@@ -191,25 +228,43 @@ def test_a_review_project_sits_in_the_review_section_not_active(client):
     assert "Read Me" in html[html.index("<h2>Review</h2>"):]
 
 
-def test_blocked_and_asking_projects_sit_in_the_paused_shelf(client):
+def test_asking_and_gated_projects_sit_in_the_paused_shelf(client):
     """His 06:02 note, after seeing them at the top twice: "All of these paused
     tasks are still in the top section with the building stuff. Even if they
     need user input or something, I don't care - I want them in the
-    paused/backlog section!" Nobody-running + waiting = folded away."""
+    paused/backlog section!" Nobody-running + nothing-can-proceed = folded."""
     _project("Live One", "live")
-    blocked = _project("Parked", "parked")
-    db.update_project(blocked["id"], blocked_on="waiting on a part")
+    gated = _project("Gated", "gated", build_approved=False)
+    db.update_project(gated["id"], build_requested=1)
     asking = _project("Asking", "asking")
     db.create_question(asking["id"], "Which color?")
 
     html = client.get("/").text
     active = html[html.index("<h2>Active</h2>"):html.index("<h2>Review</h2>")]
-    assert "Parked" not in active
+    assert "Gated" not in active
     assert "Asking" not in active
     shelf = html[html.index('id="paused"'):html.index('id="backlog"')]
-    assert "Parked" in shelf
+    assert "Gated" in shelf
     assert "Asking" in shelf
     assert "2 waiting or put down" in shelf
+
+
+def test_a_blocked_project_is_rendered_on_the_active_shelf(client):
+    """Wes, 2026-07-30, looking at the real dashboard: "Projects that are
+    active, but blocked should stay in the active category on the dashboard."
+    The badge still says blocked; the card no longer hides inside a shut
+    <details> he has to open to find work that is genuinely under way."""
+    _project("Live One", "live")
+    blocked = _project("Parked", "parked")
+    db.update_project(blocked["id"], blocked_on="waiting on a part")
+
+    html = client.get("/").text
+    active = html[html.index("<h2>Active</h2>"):html.index("<h2>Review</h2>")]
+    assert "Parked" in active
+    shelf = html[html.index('id="paused"'):html.index('id="backlog"')]
+    assert "Parked" not in shelf
+    # And it wears the badge that says why, right there on the live shelf.
+    assert ">blocked</span>" in active
 
 
 def test_a_blocked_card_wears_a_blocked_badge(client):

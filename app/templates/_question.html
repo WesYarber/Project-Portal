@@ -8,7 +8,13 @@
    put it back on the questions page. #}
 {% macro question_card(q, next, show_project=false, saved=false) %}
 {% set options = question_options(q) %}
-<div class="card question-card{{ ' question-saved' if saved else '' }}">
+{# The id is identity for the live-refresh morph, and it is load-bearing now
+   that answering patches the page: the answered card leaves the list, so every
+   card below it moves up one. Without an id the morph pairs cards by POSITION,
+   and it deliberately preserves a textarea's value as the reader's own state -
+   so an answer half-typed into the third question would be left sitting on the
+   card that slid into that slot, and the words you wrote would be gone. #}
+<div class="card question-card{{ ' question-saved' if saved else '' }}" id="question-{{ q.id }}">
   <div class="row">
     {# The number is the handle you type back at the Telegram bot, so it is
        shown only when there is a bot to type it at (db.telegram_enabled).
@@ -18,10 +24,24 @@
     {% if question_numbers() and q.slot is not none %}<span class="badge">Q{{ q.slot }}</span>{% endif %}
     {% if saved %}<span class="badge muted">saved for later</span>{% endif %}
     {% if show_project %}<a href="/project/{{ q.project_slug }}">{{ q.project_title }}</a>{% endif %}
+    {# An agent asked this mid-run and is holding still for the answer right
+       now (app/portalmcp.py). Worth saying, because it changes what answering
+       is worth: reply in the next minute or two and the run acts on it, reply
+       later and it waits for the next run like any other question. Live state,
+       so the live-refresh morph takes it off the card by itself when the run
+       gives up waiting. #}
+    {% set waiting = question_waiting(q.id) %}
+    {% if waiting %}<a class="badge waiting-run" href="/run/{{ waiting }}">a run is waiting on this</a>{% endif %}
   </div>
   <p class="question-text">{{ q.question }}</p>
   {% if q.context %}<p class="small muted">{{ q.context }}</p>{% endif %}
-  <form method="post" action="/questions/{{ q.id }}/answer" class="question-form">
+  {# data-inplace: posted by fetch and patched in place, so answering the third
+     question down does not throw you back to the header - which is fine once
+     and miserable when you are working through a batch. Every button here
+     posts through it, including the three `formaction`s below: the handler in
+     app.js reads the submitter, so each one still reaches its own route and a
+     tapped option still carries its `choice`. #}
+  <form method="post" action="/questions/{{ q.id }}/answer" class="question-form" data-inplace>
     <input type="hidden" name="next" value="{{ next }}">
     {% if options %}
     {# Real submit buttons, not JavaScript. One tap answers, which is the

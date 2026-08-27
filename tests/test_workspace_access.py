@@ -103,7 +103,10 @@ def test_a_renamed_project_gets_the_new_path(client, project):
 
 def test_the_add_note_button_is_the_green_affirmative_one(client, project):
     body = client.get("/project/dice-tower").text
-    assert '<button type="submit" class="btn go">add note</button>' in body
+    # The tag carries a title since 2026-08-10 ("...and start an agent run on it
+    # now"), so this pins the class that makes it green, not the whole tag.
+    assert '<button type="submit" class="btn go"' in body
+    assert ">add note</button>" in body
     css = (config.BASE_DIR / "app" / "static" / "style.css").read_text(encoding="utf-8")
     assert "button.go, .btn.go" in css
     assert "--ansi-green" in css.split("button.go, .btn.go")[1][:200]
@@ -127,7 +130,7 @@ def test_the_oversize_message_names_the_limit(temp_data_dir):
 
 
 def test_enter_only_submits_with_a_hardware_keyboard(temp_data_dir):
-    """iOS turns its own shift key on for auto-capitalisation, so Return on a
+    """iOS turns its own shift key on for auto-capitalization, so Return on a
     phone arrived as shiftKey=true and submitted the note mid-sentence."""
     js = (config.BASE_DIR / "app" / "static" / "app.js").read_text(encoding="utf-8")
     assert "(pointer: fine)" in js

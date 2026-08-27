@@ -310,12 +310,21 @@ def test_the_machinery_is_indented_and_the_agents_words_are_not():
     assert thought["color"] == "var(--terminal-fg)"
 
 
-def test_a_failure_is_not_dimmed_along_with_the_rest_of_the_machinery():
-    """"Nothing fails quietly" - an error indents with the tool stream it
-    belongs to, but it keeps a color that stops the eye."""
+def test_a_failure_is_only_slightly_red():
+    """Wes, 2026-08-06: "make them less offensive to look at like something
+    has gone wrong ... just slightly red." The 2026-08-06 triage showed 82% of
+    error lines are the agent's own try/fail/adjust loop, so the full alarm
+    red came off: the color is the machinery's dim gray with red mixed in,
+    with the plain dim gray declared first as the no-color-mix fallback."""
     error = _declarations(".cl-error")
     assert error["padding-left"] == "2ch"
-    assert error["color"] == "var(--ansi-red)"
+    # Duplicate `color` keys collapse to the last declaration, which must be
+    # the mix; the fallback's presence is asserted on the raw rule text.
+    assert error["color"].startswith("color-mix(")
+    assert "var(--ansi-red)" in error["color"]
+    assert "var(--terminal-dim)" in error["color"]
+    rule = STYLE_CSS.read_text(encoding="utf-8").split(".cl-error {")[1].split("}")[0]
+    assert rule.count("color:") == 2, "the plain dim fallback must stay"
 
 
 def test_a_transcript_line_is_a_block():
@@ -326,3 +335,243 @@ def test_a_transcript_line_is_a_block():
     exactly the ragged look the indentation is meant to fix.
     """
     assert _declarations(".cl")["display"] == "block"
+
+
+# --------------------------------------------------------------------------
+# Folding the machinery
+#
+# Wes, 2026-08-01: "For the Agent console, on the top line where it says 'last
+# run transcript' or whatever it says when active, have an option that
+# compressed down/hides and prints a sort of summary (but not using AI to
+# summarize) of what commands have been run and whatnot in between the white
+# text it sends. It could say something like '10 tools called' or '5 commands
+# run' or whatever it is that happens. Have this option on by default where
+# these are compressed down."
+#
+# "Not using AI to summarize" is the design constraint and it is met by
+# construction: the fold COUNTS lines it has already classified, so it can
+# never claim something the transcript does not say.
+# --------------------------------------------------------------------------
+
+def test_a_run_of_tool_calls_collapses_to_one_line_that_counts_them(drawn):
+    rows = drawn["foldedTranscript"]
+
+    assert [r["kind"] for r in rows] == ["say", "fold", "say"]
+    # Two Bash calls and one Read, with their three results, in one line.
+    assert rows[1]["text"] == "2 commands run · 1 tool called"
+    assert rows[1]["hidden"] is True
+    assert len(rows[1]["lines"]) == 6
+
+
+def test_the_prose_around_a_fold_is_untouched(drawn):
+    rows = drawn["foldedTranscript"]
+    assert rows[0]["text"] == "Let me look at the settings page."
+    assert rows[2]["text"] == "Three tests fail."
+
+
+def test_an_error_folds_with_the_calls_around_it(drawn):
+    """Wes, 2026-08-06: "hide these errored lines then from the agent inside
+    the tool call collapsed sections". The reversal of the old never-fold rule:
+    an error rides the same group as the calls beside it, and the group's head
+    counts it, so a collapsed run still admits a failure happened."""
+    rows = drawn["neverFolded"]
+    kinds = [r["kind"] for r in rows]
+
+    assert kinds == ["status", "fold", "think"]
+    assert rows[1]["text"] == "1 command run · 1 tool called · 1 error"
+    assert rows[1]["hidden"] is True
+    assert "! error: pytest: command not found" in rows[1]["lines"]
+
+
+def test_a_fold_holding_only_an_error_says_so(drawn):
+    """A failure with no calls beside it must not be relabeled "1 line of
+    tool output" - the head is the error count alone."""
+    rows = drawn["errorOnlyFold"]
+    assert [r["kind"] for r in rows] == ["say", "fold", "say"]
+    assert rows[1]["text"] == "1 error"
+    assert rows[1]["lines"] == ["! error: the workspace fence refused the write"]
+
+
+def test_status_and_thinking_stay_in_the_clear(drawn):
+    """A status line is four a run (session start, run complete) and each is a
+    fact about the run rather than machinery; thinking is prose."""
+    rows = drawn["neverFolded"]
+    assert rows[0]["text"].startswith("* session start")
+    assert rows[-1]["text"] == "that is not right"
+
+
+def test_a_line_split_across_two_polls_is_counted_once(drawn):
+    """The partial line is drawn (the console must not lag its own run) and
+    then taken back off and redrawn whole. Counted twice, "1 command run" would
+    become "2 commands run" for a command that ran once."""
+    assert drawn["foldMidSplit"][0]["text"] == "1 command run"
+    after = drawn["foldAfterSplit"][0]
+    assert after["text"] == "1 command run"
+    assert after["lines"] == ["> Bash(pytest -q)", "< ok (3 lines)"]
+
+
+def test_a_fold_emptied_by_a_redraw_goes_with_its_last_line(drawn):
+    """Otherwise the console carries an empty heading counting nothing."""
+    after = drawn["foldEmptied"]["after"]
+    assert drawn["foldEmptied"]["midCount"] == 2
+    assert [r["kind"] for r in after] == ["say", "fold"]
+    assert after[1]["text"] == "1 command run"
+
+
+@pytest.mark.parametrize(
+    "index,expected",
+    [
+        (0, "5 commands run"),
+        (1, "10 tools called"),
+        # Singulars, because "1 commands run" is the tell that a count was
+        # printed rather than written.
+        (2, "1 command run · 1 tool called"),
+        (3, "3 commands run · 7 tools called"),
+        # Results with no call in front of them - the first poll of a run that
+        # was already going when the page opened.
+        (4, "4 lines of tool output"),
+        # Errors are counted by the head painter's own span, not the label -
+        # the label only keeps them out of the tool-output arithmetic.
+        (5, "3 lines of tool output"),
+        (6, ""),
+    ],
+)
+def test_the_label_says_what_happened(drawn, index, expected):
+    assert drawn["labels"][index] == expected
+
+
+def test_the_folded_transcript_can_be_read_back_out_whole(drawn):
+    """How the toggle redraws without re-fetching: the hidden lines come back
+    and the headings, which are not in the log, do not."""
+    assert drawn["foldedTextBack"] == "hello\n> Bash(x)\n< ok (1 line)\nbye\n"
+
+
+def test_folding_is_on_by_default():
+    """"Have this option on by default where these are compressed down." A
+    browser that refuses localStorage entirely gets the same default rather
+    than an unfolded console."""
+    src = APP_JS.read_text(encoding="utf-8")
+    fn = src.split("function consoleFolded()")[1].split("\n}")[0]
+
+    assert 'getItem(CONSOLE_FOLD_KEY) !== "0"' in fn
+    assert "return true;" in fn
+
+
+def test_the_toggle_is_on_the_consoles_own_top_line():
+    """Wes named the line: "on the top line where it says 'last run
+    transcript'". Both pages that draw a transcript carry it, because it is the
+    same transcript in the same reader."""
+    for name in ("project.html", "run.html"):
+        html = (ROOT / "app" / "templates" / name).read_text(encoding="utf-8")
+        head = html.split('class="console-head"')[1].split("</div>")[0]
+        assert 'id="console-fold-toggle"' in head, name
+        # Hidden until app.js unhides it: the folding happens in the browser, so
+        # with scripting off this would be a button that does nothing.
+        assert "hidden" in head, name
+
+
+def test_a_fold_left_with_nothing_in_it_is_removed(drawn):
+    """The case scenario 10 cannot reach, and the delete-the-fix sweep of
+    2026-08-01 proved it: there, the redraw put another tool line straight back
+    into the same group, so leaving the empty wrapper in the DOM produced an
+    identical result and deleting the removal broke no test.
+
+    Here the completed line is prose, so the fold it opened has to go with it
+    rather than sit there heading nothing."""
+    mid = drawn["foldEmptiedByProse"]["mid"]
+    after = drawn["foldEmptiedByProse"]["after"]
+
+    assert [r["kind"] for r in mid] == ["say", "fold"]
+    # And the count is the count: one line is "1 line", not "2 lines". `lines`
+    # is the total, and it used to double as the bucket for anything that was
+    # not a tool call, so a result incremented it twice.
+    assert mid[1]["text"] == "1 line of tool output"
+    assert [r["kind"] for r in after] == ["say", "say"]
+
+
+def test_reading_back_a_thought_keeps_its_marker(drawn):
+    """A thinking line is DRAWN without its "~ " (one marker per source line
+    would draw a column of tildes down the page), so the drawn text is not the
+    log's text. Read back off the drawing - which is what the show/hide toggle
+    does - a paragraph of reasoning would come home as prose and be redrawn as
+    something the agent said out loud."""
+    assert drawn["thinkingTextBack"] == "~ let me check the tests\n> Bash(x)\nhello\n"
+
+
+# --------------------------------------------------------------------------
+# Inline markdown in the agent's prose
+#
+# Wes, 2026-08-04: "These are some lines from the agent console that just
+# render in plain text and not in the sort of markdown that is intended" -
+# pasting a summary whose "**bold**" lead and backticked file names were
+# showing as their raw source. Only the agent's own words are rendered;
+# machinery and errors are quoted verbatim, and block markdown (lists, fences)
+# stays as source because the console draws line by line.
+# --------------------------------------------------------------------------
+
+def test_bold_and_code_render_in_prose(drawn):
+    lead = drawn["markdown"][0]
+    assert lead["kind"] == "cl cl-say"
+    assert [k.get("cls") for k in lead["kids"]] == ["cl-md-b", None, "cl-md-c", None]
+    assert lead["kids"][0]["t"] == "My own 540→550 change was wrong."
+    assert lead["kids"][2]["t"] == "terminal-theme.css"
+    # The drawn text is the text without the markers - nothing lost, nothing added.
+    assert lead["text"] == "My own 540→550 change was wrong. terminal-theme.css is reusable."
+
+
+def test_a_heading_line_loses_its_hashes_and_gains_their_weight(drawn):
+    head = drawn["markdown"][1]
+    assert head["kind"] == "cl cl-say cl-md-h"
+    assert head["text"] == "The fix"
+
+
+def test_bold_inside_a_numbered_item_and_an_escaped_bullet(drawn):
+    numbered = drawn["markdown"][2]
+    assert numbered["kids"][1] == {"cls": "cl-md-b", "t": "Two gaps", "kids": [{"t": "Two gaps"}]}
+    bullet = drawn["markdown"][3]
+    # runlog.escape_prose's leading space survives: the bullet stays a bullet.
+    assert bullet["kids"][0]["t"] == " * a bullet with "
+    assert bullet["kids"][1]["cls"] == "cl-md-b"
+
+
+def test_spaced_asterisks_are_not_bold(drawn):
+    """"a ** b ** c" is arithmetic or emphasis nobody wrote - CommonMark's own
+    rule is that ** followed by whitespace opens nothing."""
+    assert drawn["markdown"][4]["kids"] == [{"t": "a ** b that is not bold ** c"}]
+
+
+def test_code_nests_inside_bold_one_level(drawn):
+    bold = drawn["markdown"][5]["kids"][0]
+    assert bold["cls"] == "cl-md-b"
+    assert bold["kids"][0] == {"cls": "cl-md-c", "t": "style.css:199", "kids": []}
+
+
+def test_machinery_is_never_markdown(drawn):
+    """A tool line quoting "**x**" is quoting it. Rendering the machinery would
+    redraw the agent's actual command as something it never typed."""
+    tool = drawn["markdown"][6]
+    assert tool["kind"] == "cl cl-tool"
+    assert tool["kids"] == []
+    assert tool["text"] == "> Bash(echo **not markdown**)"
+
+
+def test_the_markdown_styles_exist():
+    assert _declarations(".cl-md-h")["font-weight"] == "700"
+    assert _declarations(".cl-md-b")["font-weight"] == "700"
+    code = _declarations(".cl-md-c")
+    assert "background" in code and "color" in code
+
+
+def test_the_fold_head_hover_is_subtle():
+    """Wes, 2026-08-04: "Hovering over the '+ 2 commands run' sections makes
+    the whole section turn blue where you can't read the text under it anymore."
+
+    The cause is the generic `button:hover` slab (`background: var(--ansi-blue)`
+    at specificity 0,1,1): the fold head is a full-width button, and its own
+    hover rule only overrode `color`. The fix overrides every property the
+    generic rule sets, so this pins all of them.
+    """
+    hover = _declarations(".cl-fold-head:hover")
+    assert "background" in hover and "var(--ansi-blue)" not in hover["background"]
+    assert hover["box-shadow"] == "none"
+    assert "var(--ansi-blue)" not in hover.get("color", "")

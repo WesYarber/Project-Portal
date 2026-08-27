@@ -94,10 +94,11 @@ def test_the_memory_editors_are_still_editable(client, temp_data_dir):
 # --------------------------------------------------------------------------
 
 def test_controls_are_content_sized_not_row_filling():
-    """Wes twice over: priority (one digit) had a quarter of the row, and the
-    status box does not need a sentence's width. Fixed widths, no stretching."""
+    """The status box does not need a sentence's width. Fixed widths, no
+    stretching - and no priority rule at all, since the picker came off the
+    page (Wes, 2026-08-06)."""
     sheet = css()
-    assert ".control-bar > .control-priority { width: 5rem; }" in sheet
+    assert ".control-priority" not in sheet
     assert ".control-bar > .control-status { width: 9.5rem; }" in sheet
     assert "grid-template-columns" not in sheet.split(".control-bar {")[1].split("}")[0]
 
@@ -149,10 +150,12 @@ def test_the_status_options_carry_their_color(client, project):
     assert 'data-opt-class="status-review"' in body
 
 
-def test_the_priority_options_carry_a_color_band(client, project):
+def test_the_priority_picker_is_gone(client, project):
+    """Wes, 2026-08-06: "Hide the priority value picker for the projects."
+    The color-banded options went with it - prio-* classes have no emitter."""
     body = client.get(f"/project/{project['slug']}").text
-    assert 'data-opt-class="prio-high"' in body
-    assert 'data-opt-class="prio-low"' in body
+    assert 'data-opt-class="prio-' not in body
+    assert ".prio-high" not in css()
 
 
 def test_the_option_rows_are_colored_like_the_closed_control():

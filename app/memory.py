@@ -302,6 +302,121 @@ def archived_learnings(limit: int = 200) -> list[ArchivedLearning]:
     return out[:limit]
 
 
+# --- What a compaction dropped ------------------------------------------------
+#
+# The write gate above archives a learning it supersedes or explicitly deletes,
+# but the compaction job never goes through that gate: it rewrites the whole
+# file in one pass, so until now nothing it cut was archived at all. The cut is
+# the big one - the 2026-08-07 compaction took 171 bullets to 46 - and its only
+# other copy is a whole-file revision that ages out of the 60-deep history.
+#
+# "Archive the bullets that vanished" is the obvious rule and it is wrong. Not
+# one of those 171 survived verbatim, because a compaction rewrites every line
+# it keeps as well as dropping the rest; applied literally the rule archives all
+# 171 and reproduces the before-file, which is the 200-line diff this archive
+# exists to spare somebody reading.
+#
+# So a bullet counts as dropped when little of it survives ANYWHERE in the new
+# file, measured as the share of its meaningful words that appear in the single
+# new bullet matching it best. Measured on that real compaction: five
+# near-duplicate `pkill -f` warnings merged into one sharper line score
+# 0.42-0.55 and are correctly kept out of the archive, while the Waveshare
+# IT8951 pinout and the Jinja `tojson` escaping trap score under 0.10 and go in.
+#
+# The threshold errs low deliberately, in both directions. Over-archiving costs
+# a line in a file no prompt ever reads, and under-archiving loses a fact for
+# good - but archiving *everything* is not the safe extreme either, because a
+# trail that restates the whole previous file is a second copy nobody can read
+# rather than a record of what went.
+DROPPED_THRESHOLD = 0.30
+
+_BULLET_RE = re.compile(r"^\s*[-*]\s+(.*\S)\s*$")
+_WORD_RE = re.compile(r"[a-z0-9_./-]+")
+
+# Words carrying no signal about which fact a line states. Short tokens are
+# dropped by length below, so this only needs the common long ones.
+_COMMON_WORDS = frozenset(
+    """and are but for from had has have her him his its not our out she that the
+    their them then there these they this those was were what when which who will with
+    would you your""".split()
+)
+
+
+def _significant_words(text: str) -> set[str]:
+    return {
+        w for w in _WORD_RE.findall((text or "").lower())
+        if len(w) > 2 and w not in _COMMON_WORDS
+    }
+
+
+def _bullet_texts(text: str) -> list[str]:
+    """Every top-level bullet's text, without its marker. Prose paragraphs and
+    headings are ignored: the file's facts live in its bullets, and the `# `
+    title and the paragraph under it are boilerplate the compaction is told to
+    keep."""
+    out: list[str] = []
+    for line in (text or "").splitlines():
+        m = _BULLET_RE.match(line)
+        if m:
+            out.append(m.group(1))
+    return out
+
+
+def _archive_key(text: str) -> str:
+    """The identity two wordings of the same archived line share. Punctuation
+    and case are stripped because a compaction re-runs against a file the last
+    one already rewrote, and the same dropped fact must not stack up."""
+    return re.sub(r"\W+", " ", (text or "").lower()).strip()
+
+
+def dropped_bullets(
+    before: str, after: str, threshold: float = DROPPED_THRESHOLD
+) -> list[str]:
+    """The bullets in `before` that `after` keeps no real trace of, in file
+    order. See the block comment above for why this is a similarity test and
+    not a set difference."""
+    new_words = [_significant_words(b) for b in _bullet_texts(after)]
+    new_words = [w for w in new_words if w]
+    out: list[str] = []
+    for text in _bullet_texts(before):
+        words = _significant_words(text)
+        if not words:
+            continue
+        best = max((len(words & n) / len(words) for n in new_words), default=0.0)
+        if best < threshold:
+            out.append(text)
+    return out
+
+
+def archive_compaction_losses(
+    before: str, after: str, *, when: Optional[datetime] = None
+) -> int:
+    """Append what a compaction dropped to the retired-learnings archive, and
+    return how many lines went in.
+
+    Skips anything already archived under the same words, so a second
+    compaction over a file the first one rewrote does not stack duplicates, and
+    so this can be run over a compaction that has already happened.
+
+    Never raises, for the same reason `archive_learning` does not: the live
+    file has already been rewritten by the time this is called, and losing the
+    trail must not also turn a good compaction into a failed run.
+    """
+    try:
+        seen = {_archive_key(a.text) for a in archived_learnings(limit=1_000_000)}
+        n = 0
+        for text in dropped_bullets(before, after):
+            key = _archive_key(text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            archive_learning(text, "compacted", when=when)
+            n += 1
+        return n
+    except Exception:  # noqa: BLE001 - see docstring
+        return 0
+
+
 # --- Live-learning freshness sidecar ------------------------------------------
 #
 # learnings.md deliberately carries no inline dates: Wes asked for its lines to
@@ -326,6 +441,57 @@ def archived_learnings(limit: int = 200) -> list[ArchivedLearning]:
 # wording and orphan a key, so the gate garbage-collects keys no longer present
 # in the live file on every write, and an untracked live line simply shows as
 # undated. Losing this file loses only the age hints, never a learning.
+
+
+def learnings_cap_kb() -> int:
+    """The size past which learnings.md auto-compacts, in KB. 0 disables it.
+
+    This was a LINE count until 2026-08-07, and the unit was the whole bug. A
+    prompt spends bytes: `promptbudget.learnings_for_prompt` fills a 16 KB
+    budget from the top of the file and names what it could not fit. The
+    trigger counted lines. So on the live file - 189 lines against a 200-line
+    cap - the trigger read "comfortably under" and stayed asleep for ten days
+    while the file reached 58 KB, of which a prompt carried 16 KB: 127 of its
+    171 learnings, and the whole of its last section, had never once appeared
+    in a prompt. A cap in the wrong unit is not a loose cap, it is no cap.
+
+    24 KB rather than the 16 KB prompt budget itself, so the trigger has
+    hysteresis: a compaction is *told* to finish under the prompt budget
+    (`learnings_target_kb`), which leaves it 8 KB of headroom to grow back into
+    before it is asked again. Firing at exactly the budget would re-fire the
+    next day over one bullet.
+    """
+    from app import db  # deferred: db imports config, and this module is config-only
+
+    try:
+        return max(0, int(db.get_setting("learnings_cap_kb") or "24"))
+    except (TypeError, ValueError):
+        return 24
+
+
+def learnings_target_kb() -> int:
+    """What a compaction should finish under: the budget a prompt actually
+    carries. Read from the same setting the prompt builder reads, because two
+    ceilings for one decision drift apart."""
+    from app import db
+
+    try:
+        return max(1, int(db.get_setting("prompt_learnings_kb") or "16"))
+    except (TypeError, ValueError):
+        return 16
+
+
+def learnings_reach():
+    """How much of learnings.md reaches a prompt today, as a
+    `promptbudget.Reach`. Never raises - a missing or unreadable file reads as
+    an empty one, which reports as fitting."""
+    from app import promptbudget
+
+    try:
+        text = config.LEARNINGS_MD.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    return promptbudget.reach(text, learnings_target_kb() * 1024)
 
 
 def learnings_meta_path() -> Path:
@@ -437,7 +603,7 @@ def skill_description(skill_md: Path) -> str:
     on purpose - the only field that matters is a flat string, not worth a yaml
     dependency (same call agent_runner's prompt index makes). Never raises.
 
-    Substituted for this installation, like the copy worker._localise_skill
+    Substituted for this installation, like the copy worker._localize_skill
     ships into a workspace: a shipped skill carries `$OWNER`/`$HOST` rather
     than a name and a hostname (#254), and this description is read straight
     out of the *source* file - so without this the prompt index and /memory

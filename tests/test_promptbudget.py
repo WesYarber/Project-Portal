@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import promptbudget as pb
+from app import agent_runner, db, promptbudget as pb
 
 
 FILE = """# Learnings about Wes
@@ -267,3 +267,213 @@ def test_the_recorded_cache_experiment_says_reordering_is_worthless():
     # And so the only lever left on prompt cost is the prompt's size, which is
     # what every other test in this file is about.
     assert pb.learnings_for_prompt(FILE, 300, "/m") != FILE
+
+
+# --- The answered-questions log ----------------------------------------------
+#
+# Measured on the live database 2026-07-29: Project Portal's prompt carried 25
+# answered questions, 11.8 KB, of which TEN were the same question about
+# spending down a Claude window - and Wes's answer to the seventh of them was
+# "You asked me way too many times here. I just want to be asked once."
+#
+# The block had no bound of any kind. Every question ever answered on a project
+# was in every prompt that project would ever build.
+
+
+def _spend_down(minutes: int) -> pb.Answered:
+    return pb.Answered(
+        question=(
+            f"Your weekly Claude window resets in 7h {minutes:02d}m with 47% of it "
+            "unused - that headroom does not roll over, it just disappears at the "
+            "reset. Want me to spend it down? Say yes and I will lift the portal's "
+            "own run budget and pacing until then and work through the backlog; say "
+            "no and I will leave it alone."
+        ),
+        answer="yes",
+    )
+
+
+# Genuinely unrelated questions, because "Distinct question number 3?" is NOT
+# distinct to `qdedupe` - only a digit varies, and a digit is not a topic. That
+# was found by writing the lazy fixture first and watching forty "different"
+# questions collapse into one, which is the dedupe working correctly.
+_TOPICS = [
+    "which license the public repository should carry",
+    "whether the fridge dashboard should redraw hourly or twice a day",
+    "what the drum click preset ought to sound like",
+    "whether chores expire at midnight or at the day-boundary hour",
+    "how a proxy card should print its mana symbols",
+    "whether backups belong on the NAS or off-site",
+    "what happens to a deck import that names an unknown card",
+    "whether the tunnel should serve games on a path or a subdomain",
+    "how long a frozen milk bag stays good for",
+    "whether a scanned mesh gets decimated before it reaches Fusion",
+    "what the e-ink refresh should do on a low battery",
+    "whether the bass tab editor writes MIDI or MusicXML",
+]
+
+
+def _varied(n: int) -> list[pb.Answered]:
+    return [
+        pb.Answered(
+            f"A decision about {_TOPICS[i % len(_TOPICS)]}, number {i}?",
+            f"answer {i} " + "x" * 400,
+        )
+        for i in range(n)
+    ]
+
+
+def test_ten_askings_of_one_question_collapse_to_one():
+    pairs = [_spend_down(m) for m in (59, 56, 46, 36, 31, 21, 16, 6, 3, 1)]
+    collapsed = pb.collapse_repeats(pairs)
+    assert len(collapsed) == 1
+    assert collapsed[0][1] == 9
+
+
+def test_the_newest_asking_is_the_one_that_survives():
+    """A later answer supersedes an earlier one - that is what answering again
+    means - so the survivor is the newest whether or not the answers agree."""
+    pairs = [
+        pb.Answered("Shall I use SQLite or Postgres for this?", "SQLite"),
+        pb.Answered("Shall I use Postgres or SQLite for this?", "Postgres, actually"),
+    ]
+    collapsed = pb.collapse_repeats(pairs)
+    assert len(collapsed) == 1
+    assert collapsed[0][0].answer == "Postgres, actually"
+
+
+def test_two_genuinely_different_questions_never_collapse():
+    pairs = [
+        pb.Answered("Which license should the public repo carry?", "AGPL-3.0"),
+        pb.Answered("Should the settings page group fields into sub-tabs?", "yes"),
+    ]
+    assert len(pb.collapse_repeats(pairs)) == 2
+
+
+def test_the_order_out_is_the_order_in():
+    """Wes reads oldest-to-newest. The block is FILLED newest-first, so this is
+    the assertion that the two directions have not been confused."""
+    pairs = [
+        pb.Answered("First question ever asked?", "first answer"),
+        pb.Answered("A completely unrelated second matter?", "second answer"),
+    ]
+    text = pb.answered_for_prompt(pairs, 10_000)
+    assert text.index("first answer") < text.index("second answer")
+
+
+def test_the_repeat_count_is_shown_rather_than_hidden():
+    """An agent that can see a question was asked ten times learns something
+    true about how it behaved. Hiding it is the portal covering for itself."""
+    text = pb.answered_for_prompt([_spend_down(m) for m in (59, 46, 31)], 10_000)
+    assert "asked 3 times" in text
+    assert "near-identical" in text
+
+
+def test_a_question_asked_once_carries_no_repeat_note():
+    text = pb.answered_for_prompt([pb.Answered("Just the once?", "yes")], 10_000)
+    assert "asked" not in text
+    assert text == "- Q: Just the once?\n  A: yes"
+
+
+def test_the_block_is_bounded_by_bytes():
+    pairs = _varied(12)
+    text = pb.answered_for_prompt(pairs, 4096)
+    # The notice about what was left out rides on top of the budget; the Q&A
+    # lines themselves are what it bounds.
+    body = text.split("\n\n(")[0]
+    assert len(body) <= 4096
+
+
+def test_the_newest_decisions_are_the_ones_kept():
+    """A decision made this week is likelier to still bind than one from three
+    weeks ago."""
+    pairs = _varied(12)
+    text = pb.answered_for_prompt(pairs, 4096)
+    assert "answer 11 " in text
+    assert "answer 0 " not in text
+
+
+def test_a_trimmed_block_says_what_was_left_out_and_where_it_is():
+    pairs = _varied(12)
+    text = pb.answered_for_prompt(pairs, 4096)
+    assert "older answered question(s) are left out" in text
+    assert "project page" in text
+
+
+def test_an_unbudgeted_block_carries_no_notice():
+    pairs = [pb.Answered("A?", "1"), pb.Answered("Something else entirely, B?", "2")]
+    text = pb.answered_for_prompt(pairs, 10_000)
+    assert "(" not in text
+
+
+def test_repeats_collapse_before_the_budget_is_spent():
+    """The ordering is the whole point: a project that asked one question ten
+    times must not lose nine real decisions paying for nine copies of one."""
+    pairs = [_spend_down(m) for m in (59, 56, 46, 36, 31, 21, 16, 6, 3, 1)]
+    pairs += _varied(5)
+    text = pb.answered_for_prompt(pairs, 4096)
+    for i in range(5):
+        assert f"answer {i} " in text
+
+
+def test_no_questions_at_all_reads_as_none():
+    assert pb.answered_for_prompt([], 4096) == "(none)"
+
+
+def test_one_answer_survives_a_budget_too_small_for_it():
+    """Same rule as the completed todo tail: a block that admits nothing claims
+    nothing was ever decided."""
+    text = pb.answered_for_prompt([pb.Answered("Q?", "x" * 5000)], 100)
+    assert "x" * 5000 in text
+
+
+def test_the_person_who_answered_is_named_when_there_is_one():
+    text = pb.answered_for_prompt([pb.Answered("Q?", "yes", who="Karli")], 4096)
+    assert "A (Karli): yes" in text
+
+
+def test_nobody_is_named_on_a_one_person_install():
+    text = pb.answered_for_prompt([pb.Answered("Q?", "yes")], 4096)
+    assert "A: yes" in text
+
+
+# --- the wiring into an actual run prompt ------------------------------------
+#
+# The functions above are pure and easy to test; what the delete-the-fix sweep
+# found on 2026-07-29 is that NOTHING owned the line joining them to a real
+# prompt. Replacing the budget with a billion at the call site broke no test.
+
+
+def _answer(project_id, question, answer):
+    row = db.create_question(project_id, question)
+    db.answer_question(row["id"], answer)
+    return row
+
+
+def test_the_answered_block_in_a_real_prompt_honors_its_budget(temp_data_dir):
+    project = db.create_project("Budgeted", stage="active", build_approved=True,
+                                slug="budgeted")
+    db.set_setting("prompt_answered_kb", "1")
+    for topic in _TOPICS:
+        _answer(project["id"], f"A decision about {topic}?", "y" * 400)
+
+    prompt = agent_runner.build_prompt("build", db.get_project(project["id"]))
+    assert "## Answered questions" in prompt
+    assert "older answered question(s) are left out" in prompt
+
+
+def test_raising_the_setting_puts_the_older_answers_back(temp_data_dir):
+    project = db.create_project("Budgeted", stage="active", build_approved=True,
+                                slug="budgeted")
+    for topic in _TOPICS:
+        _answer(project["id"], f"A decision about {topic}?", "y" * 400)
+
+    db.set_setting("prompt_answered_kb", "128")
+    prompt = agent_runner.build_prompt("build", db.get_project(project["id"]))
+    assert "left out" not in prompt
+
+
+def test_a_project_with_no_answered_questions_still_gets_the_heading(temp_data_dir):
+    project = db.create_project("Fresh", stage="active", build_approved=True, slug="fresh")
+    prompt = agent_runner.build_prompt("build", db.get_project(project["id"]))
+    assert "## Answered questions\n(none)" in prompt

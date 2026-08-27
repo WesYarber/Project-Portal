@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from app import db, notify, persona, telegram_bot, worker
+from app import db, notify, people, persona, telegram_bot, worker
 
 CHAT = "12345"
 
@@ -159,6 +159,28 @@ async def test_low_confidence_cancel_becomes_an_idea_not_a_kill(sent, cancels):
         {"intent": "cancel", "project_slug": None, "confidence": 0.1}, "stop??", CHAT
     )
     assert calls == []
+
+
+# --- ideas ----------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_an_idea_from_a_claimed_chat_is_that_persons_project(sent):
+    # Same rule as the web form (Wes, 2026-08-06): the idea goes on the board
+    # of whoever sent it, not the owner's.
+    karli = people.add(name="Karli", gender="female")
+    people.update(karli, telegram_chat_id=CHAT)
+
+    await telegram_bot._create_idea("A recipe box", CHAT)
+
+    created = next(p for p in db.list_projects() if p["title"] == "A recipe box")
+    assert people.member_ids(created["id"]) == {karli}
+
+
+@pytest.mark.asyncio
+async def test_an_idea_from_an_unclaimed_chat_is_the_owners(sent):
+    await telegram_bot._create_idea("A recipe box", CHAT)
+    created = next(p for p in db.list_projects() if p["title"] == "A recipe box")
+    assert people.member_ids(created["id"]) == {int(people.owner()["id"])}
 
 
 # --- status ---------------------------------------------------------------

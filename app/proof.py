@@ -22,6 +22,14 @@ between the run's starting commit and its finishing commit, so a run that
 touched only backend code, docs or tests is silent. A nag that fires on almost
 every run stops being read - the exact failure this is meant to prevent on the
 reporting side (see EXCLUDE_PATHSPEC's story in orphans.py).
+
+Conservative in a second way since 2026-08-16, when this fired on a run whose
+whole front-end diff was the word "pronouns" corrected to "gender" inside two
+CSS *comments*. Nothing on screen could have differed, so the note was false and
+the screenshot it asked for would have shown nothing. A modified file now has to
+change something a browser could actually render before it counts - see
+inert.py, which makes that call and answers "assume it renders" whenever it is
+unsure.
 """
 from __future__ import annotations
 
@@ -30,7 +38,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from app import config, memory, orphans
+from app import config, inert, memory, orphans
 
 log = logging.getLogger("portal.proof")
 
@@ -93,13 +101,52 @@ def head_sha(repo: Optional[Path]) -> Optional[str]:
     return sha or None
 
 
+def _blob(repo: Path, sha: str, path: str) -> Optional[str]:
+    """A file's text at one revision, or None if git will not hand it over.
+
+    None is not the same as an empty file: it means the read failed, and the one
+    caller reads that as "no verdict, assume it renders".
+    """
+    return orphans._git(repo, "show", f"{sha}:{path}", quiet=True)
+
+
+def _renders_differently(repo: Path, before_sha: str, after_sha: str, path: str) -> bool:
+    """Did modifying `path` across this range change what a browser draws?
+
+    True whenever either revision cannot be read, so a git failure keeps the
+    nudge rather than silencing it (inert.py, rule 1).
+
+    That makes this the second net under the same fall: `changed_ui_files` only
+    calls it for a plain modification, so an added or deleted path - whose blob
+    is missing at one end by definition - never gets here anyway. Both are kept
+    deliberately. Each is cheap, and either one alone is enough to stop a new
+    stylesheet dropping off the note, so a later edit to one of them cannot
+    quietly do it. They hide each other from a mutation sweep, which is why the
+    tests pin them separately rather than through one path.
+    """
+    before = _blob(repo, before_sha, path)
+    if before is None:
+        return True
+    after = _blob(repo, after_sha, path)
+    if after is None:
+        return True
+    return inert.changes_the_look(before, after, path)
+
+
 def changed_ui_files(repo: Optional[Path], before_sha: Optional[str]) -> list[str]:
-    """Front-end files committed between `before_sha` and HEAD, sorted.
+    """Front-end files committed between `before_sha` and HEAD that changed how
+    something looks, sorted.
 
     Empty when there is no baseline, no repo, the diff fails, or nothing
     front-end changed. Only *committed* work is seen: a run that left its edits
     uncommitted is handled by orphans.py, not nagged here - it has a bigger
     problem than a missing screenshot.
+
+    A file that was added, deleted or renamed always counts: a stylesheet
+    appearing or vanishing changes what the browser is served regardless of what
+    is inside it, and the similarity score behind a rename is not worth reading.
+    Only a plain modification is put to inert.py, and only a modification can be
+    dismissed as comment- or whitespace-only.
     """
     if repo is None or not before_sha:
         return []
@@ -109,7 +156,7 @@ def changed_ui_files(repo: Optional[Path], before_sha: Optional[str]) -> list[st
     out = orphans._git(
         repo,
         "diff",
-        "--name-only",
+        "--name-status",
         f"{before_sha}..{after_sha}",
         "--",
         *orphans.EXCLUDE_PATHSPEC,
@@ -117,8 +164,21 @@ def changed_ui_files(repo: Optional[Path], before_sha: Optional[str]) -> list[st
     )
     if not out:
         return []
-    names = {line.strip() for line in out.splitlines() if line.strip()}
-    return sorted(name for name in names if _is_ui_path(name))
+    names: set[str] = set()
+    for line in out.splitlines():
+        fields = line.rstrip("\n").split("\t")
+        if len(fields) < 2:
+            continue
+        status = fields[0].strip()
+        # A rename prints `R100\told\tnew`; the file that exists afterwards - and
+        # so the one worth naming and reading - is always the last field.
+        path = fields[-1].strip()
+        if not path or not _is_ui_path(path):
+            continue
+        if status == "M" and not _renders_differently(repo, before_sha, after_sha, path):
+            continue
+        names.add(path)
+    return sorted(names)
 
 
 def report_has_proof(report: Optional[dict]) -> bool:

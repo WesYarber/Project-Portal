@@ -240,17 +240,19 @@ def test_tagging_an_unknown_todo_is_a_404(client):
     assert resp.status_code == 404
 
 
-def test_the_page_wears_the_chips(client, project):
+def test_the_page_wears_the_blocked_chip_and_folds_the_rest_into_the_menu(client, project):
+    """Wes, 2026-08-04: "fold the tags into this menu, aside from the 'blocked'
+    tag." The row shows blocked only; every tag rides data-tags for the
+    right-click menu (initTodoMenu in app.js), and none sits in the text."""
     db.add_todo(project["id"], "Wire the sensor", "agent", tags=["blocked", "ready-to-build"])
     html = client.get("/project/fridge").text
     assert "todo-tag tag-blocked" in html
-    assert "todo-tag tag-ready" in html
-    assert 'data-act="tag-add"' in html
+    assert "tag-ready" not in html
+    assert 'data-tags="blocked,ready-to-build"' in html
 
 
-def test_a_done_item_keeps_its_chips_but_loses_the_add_button(client, project):
+def test_a_done_item_keeps_its_blocked_chip(client, project):
     row = db.add_todo(project["id"], "Wire the sensor", "agent", tags=["blocked"])
     db.set_todo_done(row["id"], True)
     html = client.get("/project/fridge").text
     assert "todo-tag tag-blocked" in html
-    assert 'data-act="tag-add"' not in html

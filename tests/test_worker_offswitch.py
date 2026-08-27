@@ -36,9 +36,11 @@ def _quiet_and_due(monkeypatch) -> None:
 
 
 def _write_learnings(lines: int) -> None:
+    """Wide bullets, because the cap counts bytes rather than lines - see
+    tests/test_learnings_cap.py for why the unit is the whole point."""
     worker.config.MEMORY_DIR.mkdir(parents=True, exist_ok=True)
     worker.config.LEARNINGS_MD.write_text(
-        "\n".join(f"- fact {i}" for i in range(lines)), encoding="utf-8"
+        "\n".join(f"- fact {i} " + "x" * 200 for i in range(lines)), encoding="utf-8"
     )
 
 
@@ -101,7 +103,7 @@ def test_the_reflect_still_runs_with_the_worker_on(temp_data_dir, monkeypatch):
 
 def test_the_compaction_does_not_run_with_the_worker_off(temp_data_dir, monkeypatch):
     _quiet_and_due(monkeypatch)
-    db.set_setting("learnings_cap_lines", "10")
+    db.set_setting("learnings_cap_kb", "2")
     _write_learnings(30)
     db.set_setting("worker_enabled", "0")
     kicked = []
@@ -117,7 +119,7 @@ def test_the_compaction_does_not_run_with_the_worker_off(temp_data_dir, monkeypa
 
 def test_the_compaction_still_runs_with_the_worker_on(temp_data_dir, monkeypatch):
     _quiet_and_due(monkeypatch)
-    db.set_setting("learnings_cap_lines", "10")
+    db.set_setting("learnings_cap_kb", "2")
     _write_learnings(30)
     db.set_setting("worker_enabled", "1")
     kicked = []

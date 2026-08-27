@@ -61,14 +61,50 @@ CGROUP_ROOT = Path("/sys/fs/cgroup")
 MEMINFO = Path("/proc/meminfo")
 
 # Fraction of the machine's RAM a single run may hold when nothing is
-# configured. Two runs in parallel is the shipped default (`max_parallel_runs`),
-# so 40% each leaves a fifth of the box for the portal itself and for whatever
-# else the machine is running - which on Wes's server is a docker stack.
-DEFAULT_FRACTION = 0.40
+# configured.
+#
+# Raised from 40% to 60% on 2026-08-07. Wes: "I'm not sure whether the set
+# memory limit is a good value... let's increase the limit for projects to 16GB
+# for now, unless you think that is too much." The 16 was conditional on the box
+# having 32 GB and it has 18.8, where a 16 GiB per-run cap is not a cap: the
+# global OOM killer - the exact failure this module exists to prevent - fires
+# first, and it picks whatever it likes, including docker and the portal.
+#
+# What made 40% defensible was that it was also, by accident, the only thing
+# bounding N runs at once. It is not any more: the pool below does that job
+# explicitly, which is what lets ONE run be generous. 60% of this box is
+# 11.3 GiB, comfortably over the 7.4 GB the Claude CLI's own bundled grep has
+# been measured asking for (todo #290, where a killed grep returns EMPTY output
+# and reads to an agent as "no matches").
+DEFAULT_FRACTION = 0.60
 # ...but never squeeze a run below this. A build that compiles something, or a
 # browser harness, legitimately wants a couple of gigabytes, and a cap that
 # fires on ordinary work would be read as the portal being broken.
 MIN_BYTES = 2 * 1024**3
+
+# --- the pool ---------------------------------------------------------------
+#
+# Every run scope is created inside one slice, and the slice carries a ceiling
+# of its own. The per-run cap answers "one tool went mad"; the pool answers "six
+# ordinary runs added up", which nothing did before - with `max_parallel_runs`
+# lifted to 6, six runs at the per-run cap is 68 GiB of theoretical headroom on
+# an 18.8 GiB machine, so the per-run number was never the binding one.
+#
+# The trade this makes, stated plainly because it is real: when the POOL fills,
+# the kernel picks a victim inside it, and that victim need not be the run that
+# grew last. A run can therefore be killed for somebody else's appetite. That is
+# strictly better than the alternative, which is the global OOM killer picking
+# from the whole machine and taking docker, cloudflared or the portal itself -
+# which is what actually happened seven times on 2026-07-26.
+#
+# systemd's dash-hierarchy naming puts this under `portal.slice` on its own, so
+# a `systemd-cgls` of the box shows every run in one place.
+RUNS_SLICE = "portal-runs.slice"
+# 75% of 18.8 GiB is 14.1, leaving ~4.7 GiB for the portal, the docker stack and
+# the kernel. Measured on 2026-08-07 with runs in flight: everything on the box
+# that is not a run holds ~3.5 GiB of anonymous memory, the rest of what `free`
+# shows being reclaimable page cache.
+POOL_FRACTION = 0.75
 
 
 class Sample(NamedTuple):
@@ -141,6 +177,38 @@ def configured_max_bytes() -> Optional[int]:
     return parsed
 
 
+def default_pool_bytes() -> Optional[int]:
+    """The ceiling on all runs together when the setting is blank.
+
+    Never below the per-run cap: a pool smaller than one run would kill the
+    first run to reach its own limit, which reads as the per-run number being a
+    lie.
+    """
+    total = total_memory_bytes()
+    if not total:
+        return None
+    per_run = default_max_bytes() or MIN_BYTES
+    return max(per_run, int(total * POOL_FRACTION))
+
+
+def configured_pool_bytes() -> Optional[int]:
+    """The ceiling on all runs together, or None for "do not pool".
+
+    Same three-way shape as `configured_max_bytes`: blank is the derived
+    default, "0"/"off"/"none" turns it off, anything else is a size.
+    """
+    raw = (db.get_setting("runs_memory_pool") or "").strip()
+    if not raw:
+        return default_pool_bytes()
+    if raw.lower() in {"0", "off", "none", "no", "unlimited"}:
+        return None
+    parsed = parse_size(raw)
+    if parsed is None or parsed <= 0:
+        log.warning("runs_memory_pool=%r is not a size; using the default", raw)
+        return default_pool_bytes()
+    return parsed
+
+
 def human(nbytes: Optional[int]) -> str:
     if not nbytes:
         return "unlimited"
@@ -185,6 +253,98 @@ def available(refresh: bool = False) -> bool:
     return _available
 
 
+_slice_ok: Optional[bool] = None
+# The pool size last written onto the slice, so a spawn does not shell out to
+# systemctl every time. None means "not written yet this process".
+_pool_applied: Optional[int] = None
+
+
+def pool_available(refresh: bool = False) -> bool:
+    """Can we create a scope *inside* a slice here? Probed once, then cached.
+
+    Probed separately from `available()` on purpose. If `--slice` is what a
+    systemd refuses, the answer must be "cap each run and skip the pool", not
+    "give up and run everything uncapped" - so the two capabilities cannot
+    share one flag.
+    """
+    global _slice_ok
+    if _slice_ok is not None and not refresh:
+        return _slice_ok
+    # Called without the keyword on the common path: `available` is a natural
+    # thing for a test to stub, and a stub written for a no-argument call should
+    # not start failing because this one grew a flag.
+    if not (available(refresh=True) if refresh else available()):
+        _slice_ok = False
+        return False
+    try:
+        proc = subprocess.run(
+            ["systemd-run", "--user", "--scope", "--quiet", "--collect",
+             f"--slice={RUNS_SLICE}", "--", "true"],
+            capture_output=True,
+            timeout=10,
+        )
+        _slice_ok = proc.returncode == 0
+        if not _slice_ok:
+            log.info(
+                "Run memory pool unavailable: systemd-run --slice exited %s (%s)",
+                proc.returncode,
+                proc.stderr.decode(errors="replace").strip()[:200] or "no message",
+            )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.info("Run memory pool unavailable: %s", exc)
+        _slice_ok = False
+    return _slice_ok
+
+
+def apply_pool(limit: Optional[int]) -> bool:
+    """Put `limit` on the runs slice. True if the slice now carries it.
+
+    `--runtime` deliberately: the property lives in /run and is gone on reboot,
+    which is what we want. The number is derived from a setting and from this
+    machine's RAM, so the portal should be the only thing that decides it, every
+    boot, rather than leaving a drop-in on disk that outlives the reason for it.
+
+    Fails open like everything else here - a portal that cannot set a slice
+    property still spawns runs, each with its own cap.
+    """
+    global _pool_applied
+    if limit is None or not pool_available():
+        return False
+    if _pool_applied == limit:
+        return True
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "set-property", "--runtime", RUNS_SLICE,
+             f"MemoryMax={limit}", "MemorySwapMax=0"],
+            capture_output=True,
+            timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log.warning("Could not set the run memory pool: %s", exc)
+        return False
+    if proc.returncode != 0:
+        log.warning(
+            "Could not set the run memory pool: systemctl exited %s (%s)",
+            proc.returncode,
+            proc.stderr.decode(errors="replace").strip()[:200] or "no message",
+        )
+        return False
+    _pool_applied = limit
+    log.info("Run memory pool set to %s on %s", human(limit), RUNS_SLICE)
+    return True
+
+
+def pool_in_use() -> bool:
+    """Is a pool ceiling actually in force right now?
+
+    What the settings page reports, and it has to be the *effective* answer -
+    a configured number that systemd refused is not a pool, and a page saying
+    otherwise would be the quiet failure Wes hates most.
+    """
+    limit = configured_pool_bytes()
+    return limit is not None and apply_pool(limit)
+
+
 _seq = itertools.count(1)
 # scope name -> the run_id it was minted for, so sample() can check it is
 # reading the right cgroup without the name having to be recomputable.
@@ -214,6 +374,19 @@ def forget_scope(run_id: Optional[int]) -> None:
     _scopes.pop(run_id, None)
 
 
+def known_scopes() -> set[str]:
+    """Every scope name this process has minted and not yet forgotten.
+
+    Which is to say: the runs it currently has in flight, since `forget_scope`
+    is called as each one ends. `app.strays` needs this to build the set of
+    scopes it must not touch, and the database alone cannot supply it - there is
+    a window between spawning a run and `set_run_scope` recording its name in
+    which a live run has no scope name on its row at all. Sweeping in that
+    window would move the agent out of the cgroup containing it.
+    """
+    return set(_scopes.values())
+
+
 _UNIT_RE = re.compile(r"^portal-run-(?:x|\d+)-(\d+)-\d+\.scope$")
 
 
@@ -237,6 +410,18 @@ def minted_here(unit: Optional[str]) -> bool:
     """
     m = _UNIT_RE.match(unit or "")
     return bool(m) and m.group(1) == str(os.getpid())
+
+
+def minting_pid(unit: Optional[str]) -> Optional[int]:
+    """The pid of the process that minted this scope name, or None if the name
+    is not one of ours at all.
+
+    The same parse `minted_here` does, exposed as the number rather than as a
+    yes/no, because `strays` needs a third answer: not "was it me" but "is
+    whoever it was still alive". See `strays._minted_by_a_live_stranger`.
+    """
+    m = _UNIT_RE.match(unit or "")
+    return int(m.group(1)) if m else None
 
 
 def unit_of(argv: list[str]) -> Optional[str]:
@@ -267,6 +452,11 @@ def wrap(cmd: list[str], run_id: Optional[int]) -> list[str]:
     limit = configured_max_bytes()
     if limit is None or not available():
         return cmd
+    # The pool is applied here rather than at boot because the number can change
+    # without a restart (the settings page), and because a slice property set
+    # before the slice has ever existed is not something systemd keeps.
+    pool = configured_pool_bytes()
+    slice_args = ["--slice=" + RUNS_SLICE] if apply_pool(pool) else []
     return [
         "systemd-run",
         "--user",
@@ -274,6 +464,7 @@ def wrap(cmd: list[str], run_id: Optional[int]) -> list[str]:
         "--quiet",
         "--collect",
         f"--unit={scope_name(run_id)}",
+        *slice_args,
         "-p",
         f"MemoryMax={limit}",
         # No swap for the run either. Without this a runaway does not hit the
@@ -453,12 +644,39 @@ def sample(pid: int, run_id: Optional[int]) -> Optional[Sample]:
     return None if cg is None else read_sample(cg)
 
 
-def kill_note(limit: Optional[int] = None) -> str:
-    """The sentence shown when a run's scope OOM-killed something."""
-    cap = human(limit if limit is not None else configured_max_bytes())
+def kill_note(limit: Optional[int] = None, peak: Optional[int] = None) -> str:
+    """The sentence shown when a run's scope OOM-killed something.
+
+    `peak` is what tells the two ceilings apart. A kill inside the scope
+    increments the scope's counter whichever ceiling caused it, so with a pool
+    in force the old wording - "raise `run_memory_max`" - would be advice that
+    changes nothing, on a run that never came near its own cap. If the run
+    peaked below four fifths of its per-run cap and a pool is in force, the pool
+    is what filled, and the pool is the number to argue with.
+    """
+    cap_bytes = limit if limit is not None else configured_max_bytes()
+    cap = human(cap_bytes)
+    tail = (
+        f"The run was not stopped - only the process that asked for too much."
+    )
+    pool_bytes = configured_pool_bytes()
+    if (
+        peak
+        and cap_bytes
+        and peak < cap_bytes * 0.8
+        and pool_bytes
+        and pool_available()
+    ):
+        return (
+            f"a command in this run was killed to keep every run in flight "
+            f"inside the {human(pool_bytes)} shared memory pool - it peaked at "
+            f"{human(peak)}, well under its own {cap} cap, so this was the "
+            f"runs on this box adding up rather than this one being greedy. "
+            f"{tail} Raise `runs_memory_pool` on the settings page, or run "
+            f"fewer at once."
+        )
     return (
         f"a command in this run was killed for exceeding the {cap} per-run "
-        f"memory cap. The run was not stopped - only the process that asked "
-        f"for too much. Raise or clear `run_memory_max` on the settings page "
-        f"if the work genuinely needs more."
+        f"memory cap. {tail} Raise or clear `run_memory_max` on the settings "
+        f"page if the work genuinely needs more."
     )

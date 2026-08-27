@@ -273,6 +273,102 @@ def window(snapshot: dict, key: str) -> Optional[dict]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# The compact reading the side rail draws
+# ---------------------------------------------------------------------------
+
+# How long each window actually runs. The endpoint says when a window comes
+# back but never how long it is, and without the length "resets in 1h" cannot
+# become "four fifths of the way through" - which is the number Wes asked to
+# see. These are facts about the plan, so they are stated here rather than
+# inferred from a reading: inferring would need two readings either side of a
+# reset, and the first page load after a restart has one.
+WINDOW_SECONDS: dict[str, int] = {
+    "five_hour": 5 * 3600,
+    "seven_day": 7 * 86400,
+    "seven_day_opus": 7 * 86400,
+}
+
+# Short enough for a 15rem rail, and for the 13rem one the narrow placement
+# leaves. "week opus" was the first try and it ellipsized to "week op..." at
+# 1450px, which spends the width and delivers none of the meaning; "opus" is
+# unambiguous under a CLAUDE heading beside a row called "week", and the row
+# carries the endpoint's own full label as its title for anyone who wants it.
+# The long labels stay on the dashboard chips, which have a whole line.
+SHORT_LABELS: dict[str, str] = {
+    "five_hour": "5h",
+    "seven_day": "week",
+    "seven_day_opus": "opus",
+}
+
+# Where a window stops being background information and starts being the thing
+# that will end the day early. Published because the dashboard's limit chips
+# mark the same threshold, and two numbers for one judgment is how they drift.
+HOT_PERCENT = 80.0
+
+
+def elapsed_percent(key: str, resets_in_sec: Optional[int]) -> Optional[float]:
+    """How far through its window we are, 0-100, or None if unknowable.
+
+    This is deliberately NOT the same question as `percent`, which is how much
+    of the allowance is spent. Reading the two together is the whole point of
+    putting them side by side: 25% spent with the window nearly over is
+    headroom about to expire unused, and 90% spent with the window barely
+    started is a limit that will bite long before it resets.
+
+    Clamped, because a clock skew or a reset that has just gone by would
+    otherwise draw a pie past full or before empty.
+    """
+    length = WINDOW_SECONDS.get(key)
+    if resets_in_sec is None or not length:
+        return None
+    done = (length - resets_in_sec) / length
+    return round(max(0.0, min(1.0, done)) * 100.0, 1)
+
+
+def compact_windows(snapshot: Optional[dict] = None) -> list[dict]:
+    """The account's own windows, small enough to live in the side rail.
+
+    Wes, 2026-08-16: "It would be cool to see a very brief visualization or
+    writeup of current usage vs 5hr limit and current usage vs week limit +
+    when they reset / how close we are to when they reset on the side nav-bar."
+
+    Account-wide windows only. The per-model scoped ones (`snapshot["scoped"]`)
+    are real and are on the dashboard, but five rows of percentages down the
+    side of every page is a status bar rather than a glance - and the two he
+    named are the two that stop a run.
+
+    Returns [] rather than a placeholder whenever there is nothing trustworthy
+    to say - no snapshot yet, an API-key install, a failed fetch - so the rail
+    draws no group at all instead of a heading over an apology.
+    """
+    snapshot = cached() if snapshot is None else snapshot
+    if not snapshot.get("ok"):
+        return []
+    rows: list[dict] = []
+    for entry in snapshot.get("windows") or []:
+        key = str(entry.get("key") or "")
+        percent = float(entry.get("percent") or 0.0)
+        rows.append(
+            {
+                "key": key,
+                "label": SHORT_LABELS.get(key, entry.get("label") or key),
+                # What the account calls this window, for the row's title -
+                # the abbreviation above is for the eye, this is for the
+                # reader who wants to be sure which window they are looking at.
+                "full": entry.get("label") or key,
+                "percent": percent,
+                # Rounded to a whole number for display: a rail row is not the
+                # place for a decimal, and the tenth is still on the dashboard.
+                "used": int(round(percent)),
+                "elapsed": elapsed_percent(key, entry.get("resets_in_sec")),
+                "resets_in": entry.get("resets_in") or "",
+                "hot": percent >= HOT_PERCENT,
+            }
+        )
+    return rows
+
+
 def reset_for(snapshot: dict, key: str) -> Optional[datetime]:
     """When `key`'s window comes back, as a datetime, or None if unknown."""
     entry = window(snapshot, key)
@@ -332,6 +428,15 @@ def model_fallback(model: str, snapshot: Optional[dict] = None) -> tuple[str, st
     return fallback, f"{entry['label']} window at {entry['percent']:g}%{tail}"
 
 
+# The longest a usage limit is ever allowed to hold the scheduler. If the
+# *weekly* window is what is full, waiting for its real reset would idle the
+# portal for days; coming back periodically and letting the next attempt find
+# out is strictly better. Published because `worker._rate_limit_backoff` applies
+# the same ceiling to the reset it reads off a 429 header, and two different
+# ceilings for the same decision is how they drift apart.
+MAX_BACKOFF = timedelta(hours=6)
+
+
 def backoff_until(snapshot: dict, now: Optional[datetime] = None, fallback_min: int = 60) -> datetime:
     """When to try again after a run reported a usage limit.
 
@@ -339,12 +444,10 @@ def backoff_until(snapshot: dict, now: Optional[datetime] = None, fallback_min: 
     a flat hour only when there is no usable snapshot - which is the old
     behavior, kept as the floor rather than as the rule.
 
-    A cap of six hours applies: if the *weekly* window is what is full, waiting
-    for it would idle the portal for days, and the useful thing to do instead
-    is come back periodically and let the next attempt find out.
+    `MAX_BACKOFF` caps the answer; see its comment.
     """
     now = now or datetime.now(timezone.utc)
-    ceiling = now + timedelta(hours=6)
+    ceiling = now + MAX_BACKOFF
     candidates = []
     for entry in snapshot.get("windows") or []:
         # 95% rather than 100: the endpoint rounds, and a window reported at 99

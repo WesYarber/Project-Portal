@@ -50,6 +50,29 @@ height, `.panel`, `.banner-alert`, `.scroll-cap` for anything that can grow
 without bound, `.dot.ok/.warn/.err` indicators, `.nav-tabs`, and an optional
 `scan-all` body class for CRT scanlines.
 
-Two rules of the house style worth keeping even if you diverge: no
-hover-only controls (the reader is often on a phone), and cap any panel that can
-grow without bound rather than letting it push the page down.
+Three rules of the house style worth keeping even if you diverge: no
+hover-only controls (the reader is often on a phone), cap any panel that can
+grow without bound rather than letting it push the page down, and **never make
+a hover state a solid fill with an inverted label**.
+
+That last one has bitten twice, both times reported by $OWNER rather than caught
+by a test. "Solid background plus flipped label" is a pair, and any rule with
+more specificity that sets a hover *color* and no *background* splits it: the
+control keeps its own label color and drops it onto the fill, so the word
+disappears. A tab, a foldable heading, any large custom target shaped like a
+button. The theme's own `button:hover` therefore deepens the control's existing
+tint and lights up its border instead - the label never moves, and a
+translucent wash over the dark body cannot swallow it whatever color it is. If
+you add a control with its own `:hover`, answer *every* property the generic
+rule sets, not just the one that looks wrong.
+
+Hover rules live inside `@media (hover: hover)`, because iOS leaves `:hover`
+stuck on whatever was tapped until you tap elsewhere. Feedback for a finger is
+`:active`. Two consequences when you go to verify it: headless chromium reports
+`(hover: none)` and so does any touch-emulated page, so a hover check silently
+measures rest state and passes having tested nothing. Launch chromium with
+`--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`,
+turn touch emulation off and *reload* (the media state is latched at document
+load), and assert `matchMedia('(hover: hover)').matches` before trusting a
+single measurement. `Emulation.setEmulatedMedia` cannot fake hover whatever its
+`features` list says - measured, not assumed.

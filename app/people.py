@@ -68,7 +68,7 @@ import time
 from pathlib import Path
 from typing import Iterable, Mapping, Optional, Sequence
 
-from app import config, db, site
+from app import config, db, sections, site
 
 log = logging.getLogger(__name__)
 
@@ -456,6 +456,18 @@ def _valid_appearance(values: Mapping[str, str]) -> dict[str, str]:
         value = str(values[key] or "")
         if value in {v for v, _ in choices}:
             out[key] = value
+    # The one personal preference that is not a dropdown: the order of the
+    # blocks on a project page. It rides in the same blob because it is the
+    # same kind of thing - a fact about the reader, kept per person - but it is
+    # a permutation rather than a value from a list, so it validates through
+    # `sections.clean` instead of against `choices`. Named explicitly here
+    # because the loop above drops every key it does not recognize, which is
+    # what makes a bad byte harmless; a key it silently dropped instead would
+    # be a setting that appears to save and reverts on the next load.
+    if sections.SETTING_KEY in values:
+        arranged = sections.clean(str(values[sections.SETTING_KEY] or ""))
+        if arranged:
+            out[sections.SETTING_KEY] = arranged
     return out
 
 
@@ -500,7 +512,17 @@ def set_appearance(person_id: int, values: Mapping[str, str]) -> dict[str, str]:
     person = get(person_id)
     if person is None:
         return {}
-    merged = {**appearance_of(person), **_valid_appearance(values)}
+    submitted = _valid_appearance(values)
+    merged = {**appearance_of(person), **submitted}
+    # An override submitted as blank is a REMOVAL, not a blank override, and
+    # the merge above cannot express that on its own. Only the page
+    # arrangement can be blank - every dropdown posts one of its own values -
+    # and blank is how it says "put me back on the shipped order". Without
+    # this, dragging a section back where it started would merge the old
+    # arrangement straight back over the top and the reset would look broken.
+    for key in list(merged):
+        if key in values and key not in submitted:
+            merged.pop(key)
     conn = db.get_conn()
     with db._LOCK:
         conn.execute(
@@ -612,6 +634,55 @@ def add_member(project_id: int, person_id: int) -> None:
             (int(project_id), int(person_id), db.now()),
         )
         conn.commit()
+
+
+def principal(project_id: Optional[int]) -> sqlite3.Row:
+    """The person a run on this project works on behalf of.
+
+    The install owner - unless the project has members and the owner is not one
+    of them, in which case it is the project's first member. That is what makes
+    a project Karli created hers in the agent's eyes and not just in the
+    dashboard's: before this, the contract was rendered once at import with the
+    owner's name, so a run on her project opened with "you are working on
+    behalf of Wes" and every question, blocked_on and approval in it pointed at
+    him (Wes, 2026-08-06: "it keeps talking to her as if she were me, or as if
+    she needed to get me to do stuff").
+
+    "First member" is `members()` order (owner first, then name), so on a
+    shared project the owner stays the principal and nothing about an existing
+    install shifts; only a project the owner is not on changes hands.
+    """
+    if project_id is not None:
+        folk = members(int(project_id))
+        if folk and not any(int(p["is_owner"] or 0) for p in folk):
+            return folk[0]
+    return owner()
+
+
+def template_vars_for(person: Optional[sqlite3.Row]) -> dict[str, str]:
+    """`config.SITE.template_vars()`, re-addressed to this person.
+
+    The machine half ($HOST, $BASE_URL, $PORTAL_ROOT) is always the install's;
+    the person half ($OWNER and the pronouns) is swapped for the given person
+    when they are not the install owner. For the owner (or None) this returns
+    the site vars untouched, byte for byte, so every existing prompt renders
+    exactly as it always has.
+    """
+    vars = config.SITE.template_vars()
+    if person is None:
+        return vars
+    try:
+        if int(person["is_owner"] or 0):
+            return vars
+    except (IndexError, KeyError):
+        return vars
+    name = name_of(person)
+    they, them, their, theirs = pronouns_of(person)
+    vars.update(
+        OWNER=name, OWNERS=possessive(name),
+        THEY=they, THEM=them, THEIR=their, THEIRS=theirs,
+    )
+    return vars
 
 
 def project_ids_for(person_id: int) -> set[int]:

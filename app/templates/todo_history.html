@@ -12,12 +12,25 @@
 {% if items %}
 <ul class="todo-list">
   {% for t in items %}
-  <li class="todo-item done">
-    <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle">
+  {# The id is identity for the live-refresh morph, and it is load-bearing now
+     that unticking patches this page: the row leaves the archive, so every row
+     below it moves up one. Without an id the morph pairs rows by POSITION, and
+     it preserves a checkbox's `checked` as the reader's own state - so the
+     box you just cleared would stay cleared beside the row that slid into
+     that slot. #}
+  <li class="todo-item done" id="todo-{{ t.id }}">
+    {# data-inplace, the same as the live list's toggle: this is a long
+       archive, and unticking one item used to leave the page entirely (the
+       route redirects to the project). Patched in place the row simply
+       disappears from the archive and you keep your place in it. #}
+    <form method="post" action="/todo/{{ t.id }}/toggle" class="inline-form todo-toggle"
+          data-inplace>
       {# Unticking from here puts the item back on the live list - it also
          clears the cleared_at stamp, so it doesn't vanish again. #}
       <input type="hidden" name="done" value="0">
-      <input type="checkbox" checked onchange="this.form.submit()"
+      {# submitForm, not this.form.submit(): the plain one fires no submit
+         event, so it would walk straight past the data-inplace handler. #}
+      <input type="checkbox" checked onchange="submitForm(this.form)"
              aria-label="reopen {{ t.text }}">
     </form>
     <span class="todo-text">{{ t.text }}</span>

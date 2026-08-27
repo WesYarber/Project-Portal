@@ -22,7 +22,15 @@
 #     than an error. `render_portal_url` in portal.toml is that second route;
 #     Settings > access shows what reaches what. See app/netinfo.py.
 #
-# Usage: deploy/screenshot.sh /settings [height] [out.png]
+# Usage: deploy/screenshot.sh /settings [height] [out.png] [width]
+#
+# The second argument is the HEIGHT. The width used to be hardcoded at 1280 with
+# nothing saying so, and three separate runs passed 390 there expecting a phone
+# and got a 1280x390 letterbox they then reported as a phone layout. It is the
+# fourth argument now, and WIDTH= in the environment works too:
+#
+#   deploy/screenshot.sh /project/x 900 /tmp/phone.png 390     # a real phone
+#   WIDTH=1920 deploy/screenshot.sh / 1200 /tmp/wide.png       # a wide desktop
 
 set -euo pipefail
 
@@ -46,6 +54,7 @@ fi
 PATH_=${1:-/}
 HEIGHT=${2:-1900}
 OUT=${3:-/tmp/portal-shot.png}
+WIDTH=${4:-${WIDTH:-1280}}
 REMOTE_NAME="portal-shot-$$.png"
 
 ssh -o BatchMode=yes "$BOX" bash -s <<EOF
@@ -53,7 +62,7 @@ set -e
 timeout 90 /snap/bin/chromium --headless --disable-gpu --no-sandbox --hide-scrollbars \
   --no-first-run --user-data-dir="\$HOME/.portal-shot-profile" \
   --run-all-compositor-stages-before-draw --virtual-time-budget=6000 \
-  --window-size=1280,$HEIGHT --screenshot="\$HOME/$REMOTE_NAME" --timeout=25000 \
+  --window-size=$WIDTH,$HEIGHT --screenshot="\$HOME/$REMOTE_NAME" --timeout=25000 \
   "$PORTAL$PATH_" >/dev/null 2>&1
 EOF
 

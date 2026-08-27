@@ -137,6 +137,36 @@ def test_a_forwarded_for_header_cannot_claim_to_be_somebody(client, project):
 
 
 # --------------------------------------------------------------------------
+# A project added from her browser is hers
+# --------------------------------------------------------------------------
+# Wes, 2026-08-06: "When Karli adds a project, it should just assign it to her
+# by default. It is currently assigning it to me, though."
+
+def _idea_from(client, note: str) -> db.sqlite3.Row:
+    r = client.post("/ideas", data={"idea": note}, follow_redirects=False)
+    assert r.status_code == 303
+    return db.get_project_by_slug(r.headers["location"].rsplit("/", 1)[1])
+
+
+def test_an_idea_from_her_browser_is_her_project(client, erin):
+    client.cookies.set(people.COOKIE, "erin")
+    created = _idea_from(client, "A recipe box")
+    assert people.member_ids(created["id"]) == {erin}
+
+
+def test_her_ideas_seed_note_is_signed_by_her_too(client, erin):
+    client.cookies.set(people.COOKIE, "erin")
+    created = _idea_from(client, "A recipe box")
+    entry = db.list_journal(created["id"])[0]
+    assert int(entry["person_id"]) == erin
+
+
+def test_an_idea_with_no_cookie_is_the_owners(client, erin):
+    created = _idea_from(client, "A recipe box")
+    assert people.member_ids(created["id"]) == {int(people.owner()["id"])}
+
+
+# --------------------------------------------------------------------------
 # Settings > people
 # --------------------------------------------------------------------------
 

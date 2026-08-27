@@ -19,8 +19,8 @@ def client(temp_data_dir):
     return TestClient(main.app)
 
 
-def _project(title, slug, priority, stage="active", build_approved=True):
-    return db.create_project(title, slug=slug, stage=stage, build_approved=build_approved, priority=priority)
+def _project(title, slug, stage="active", build_approved=True):
+    return db.create_project(title, slug=slug, stage=stage, build_approved=build_approved)
 
 
 def _grid(client, url="/"):
@@ -34,53 +34,44 @@ def _grid(client, url="/"):
 
 # --- sorting ---------------------------------------------------------------
 
-def test_priority_sort_puts_high_priority_first(client):
-    _project("Low", "low", 1)
-    _project("High", "high", 9)
-    html = _grid(client, "/?sort=priority")
-    assert html.index("High") < html.index("Low")
-
-
-def test_priority_beats_recency(client):
-    low = _project("Low", "low", 1)
-    _project("High", "high", 9)
-    # Touch the low-priority one so it is the most recently updated.
-    db.update_project(low["id"], description="just edited")
-    html = _grid(client, "/?sort=priority")
-    assert html.index("High") < html.index("Low")
-
-
-def test_recency_sort_ignores_priority(client):
-    _project("High", "high", 9)
-    low = _project("Low", "low", 1)
-    db.update_project(low["id"], description="just edited")
+def test_recency_sort_puts_the_freshly_touched_one_first(client):
+    _project("Older", "older")
+    newer = _project("Newer", "newer")
+    db.update_project(newer["id"], description="just edited")
     html = _grid(client, "/?sort=recent")
-    assert html.index("Low") < html.index("High")
+    assert html.index("Newer") < html.index("Older")
+
+
+def test_title_sort_ignores_recency(client):
+    zed = _project("Zed", "zed")
+    _project("Abel", "abel")
+    db.update_project(zed["id"], description="just edited")
+    html = _grid(client, "/?sort=title")
+    assert html.index("Abel") < html.index("Zed")
 
 
 def test_sort_choice_sticks_for_the_next_visit(client):
-    _project("High", "high", 9)
-    low = _project("Low", "low", 1)
-    db.update_project(low["id"], description="edited")
+    _project("Zed", "zed")
+    _project("Abel", "abel")
 
-    client.get("/?sort=recent")
-    assert db.get_setting("dashboard_sort") == "recent"
+    client.get("/?sort=title")
+    assert db.get_setting("dashboard_sort") == "title"
     html = _grid(client)  # no ?sort this time
-    assert html.index("Low") < html.index("High")
+    assert html.index("Abel") < html.index("Zed")
 
 
 def test_unknown_sort_is_ignored_rather_than_stored(client):
-    _project("A", "a", 5)
-    client.get("/?sort=recent")
+    _project("A", "a")
+    client.get("/?sort=title")
     client.get("/?sort=; DROP TABLE projects")
-    assert db.get_setting("dashboard_sort") == "recent"
+    assert db.get_setting("dashboard_sort") == "title"
     # And the projects table is, reassuringly, still there.
     assert len(db.list_projects()) == 1
 
 
 def test_every_sort_name_renders_and_is_valid_sql(client):
-    _project("A", "a", 5)
-    _project("B", "b", 3)
+    _project("A", "a")
+    _project("B", "b")
     for name in config.PROJECT_SORTS:
         assert client.get(f"/?sort={name}").status_code == 200
 
@@ -101,7 +92,7 @@ def test_no_aperture_terminology_anywhere(client, path):
 
 
 def test_backlog_is_the_stored_name_now(client):
-    _project("Idea", "idea", 5, stage="backlog")
+    _project("Idea", "idea", stage="backlog")
     html = client.get("/").text
     assert "backlog" in html
     # Stored name = displayed name under the state model.

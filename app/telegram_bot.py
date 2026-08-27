@@ -99,7 +99,7 @@ async def _handle_update(update: dict) -> None:
     # --- Layer 1: explicit forms ------------------------------------------
     reply_to = message.get("reply_to_message")
     if reply_to is not None:
-        qid = _question_id_for_message(reply_to.get("message_id"))
+        qid = db.question_for_telegram_message(chat_id, reply_to.get("message_id"))
         if qid is not None:
             await _answer_question(qid, text, chat_id, by_id=True)
             return
@@ -203,7 +203,7 @@ async def _handle_callback(callback: dict) -> None:
     if token == quickreplies.SKIP:
         db.dismiss_question_and_resume(question_id)
         await ack("Skipped.")
-        await _mark_answered(message, "skipped")
+        await _settle_or_mark(question_id, message, "skipped")
         return
 
     options = quickreplies.decode(question["quick_options"])
@@ -215,7 +215,15 @@ async def _handle_callback(callback: dict) -> None:
     answer_text = options[idx]
     db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await ack(f"Recorded: {answer_text}")
-    await _mark_answered(message, f"answered: {answer_text}")
+    await _settle_or_mark(question_id, message, f"answered: {answer_text}")
+
+
+async def _settle_or_mark(question_id: int, message: dict, verdict: str) -> None:
+    """Settle every chat's copy of the question; for one sent before the
+    copies table existed, fall back to editing the message the tap rode in
+    on - the one copy that certainly exists."""
+    if await notify.settle_question_copies(question_id, verdict) == 0:
+        await _mark_answered(message, verdict)
 
 
 async def _mark_answered(message: dict, verdict: str) -> None:
@@ -376,17 +384,6 @@ async def _cancel_active_run(chat_id: str, project_slug: Optional[str] = None) -
         await notify.send_telegram_text(chat_id, persona.say("run_none"))
 
 
-def _question_id_for_message(message_id: Optional[int]) -> Optional[int]:
-    if message_id is None:
-        return None
-    conn = db.get_conn()
-    with db._LOCK:  # noqa: SLF001 - internal reuse within the same package
-        row = conn.execute(
-            "SELECT id FROM questions WHERE telegram_msg_id = ?", (message_id,)
-        ).fetchone()
-    return int(row["id"]) if row else None
-
-
 def _person_id(chat_id: str) -> Optional[int]:
     """Who is typing, if the portal can say - the person who has claimed this
     Telegram chat on their own row in settings, else None.
@@ -420,9 +417,11 @@ async def _answer_question(ref: int, answer_text: str, chat_id: str, by_id: bool
     if answer_text.lower() == "skip":
         db.dismiss_question_and_resume(question_id)
         await notify.send_telegram_text(chat_id, persona.say("question_dismissed", qid=shown))
+        await notify.settle_question_copies(question_id, "skipped")
         return
     db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await notify.send_telegram_text(chat_id, persona.say("answer_recorded", qid=shown))
+    await notify.settle_question_copies(question_id, f"answered: {answer_text}")
 
 
 async def _handle_model(arg: str, chat_id: str) -> None:
@@ -503,8 +502,15 @@ async def _create_idea(idea_text: str, chat_id: str) -> None:
         await notify.send_telegram_text(chat_id, persona.say("idea_empty"))
         return
     title = idea_text.split("\n", 1)[0][:80]
-    project = db.create_project(title=title, description=idea_text, kind="unknown", stage="backlog")
-    db.add_journal(project["id"], "user", "note", idea_text, person_id=_person_id(chat_id))
+    # Whoever's chat this is owns the idea - same rule as the web form. A chat
+    # nobody has claimed resolves to None, and create_project falls back to
+    # the owner, which is the only defensible guess for an unclaimed chat.
+    person_id = _person_id(chat_id)
+    project = db.create_project(
+        title=title, description=idea_text, kind="unknown", stage="backlog",
+        person_id=person_id,
+    )
+    db.add_journal(project["id"], "user", "note", idea_text, person_id=person_id)
     url = f"http://{config.HOST_LABEL}:{config.PORT}/project/{project['slug']}"
     await notify.send_telegram_text(
         chat_id, persona.say("idea_created", title=project["title"], url=url)
@@ -541,7 +547,7 @@ def _status_summary() -> str:
     if not projects:
         lines.append("  (none)")
     for p in projects[:15]:
-        lines.append(f"  - {p['title']} [{db.display_state(p)}] (priority {p['priority']})")
+        lines.append(f"  - {p['title']} [{db.display_state(p)}]")
     lines.append("")
     lines.append(f"Open questions: {len(open_qs)}")
     for q in open_qs[:10]:

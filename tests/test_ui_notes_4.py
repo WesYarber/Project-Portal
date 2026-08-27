@@ -4,7 +4,10 @@
   header (the status card lower down still reports the budget).
 - The per-project runs/day cap control comes off the project page entirely -
   he never sets one - while the route and the worker's enforcement stay for a
-  cap set elsewhere.
+  cap set elsewhere. REVERSED on 2026-08-13, when he asked for it back ("I
+  don't see where I can increase daily limits on runs of single projects"):
+  the on-page assertions live in tests/test_run_cap_control.py now, and only
+  the route test is left here.
 - The Add-note row gains a "queue & don't run" button and the submit trio is
   right-justified with the green "add note" on the far right.
 """
@@ -62,15 +65,13 @@ def test_the_status_card_still_reports_the_budget(client):
 
 
 # --------------------------------------------------------------------------
-# Project page: runs/day cap control is gone, the route is not
+# Project page: the runs/day cap route
+#
+# The "the control is gone from the page" pair that used to sit here was
+# deleted on 2026-08-13 - he asked for the control back, so an assertion that
+# it is absent is now an assertion against what he wants. What the page shows
+# is pinned in tests/test_run_cap_control.py.
 # --------------------------------------------------------------------------
-
-
-def test_run_cap_control_is_off_the_project_page(client):
-    p = project()
-    html = client.get(f"/project/{p['slug']}").text
-    assert "runs/day cap" not in html
-    assert "max_runs_per_day" not in html
 
 
 def test_run_cap_route_still_enforceable_from_elsewhere(client):
@@ -87,15 +88,28 @@ def test_run_cap_route_still_enforceable_from_elsewhere(client):
 
 
 def test_note_buttons_in_wes_order(client):
-    """Left to right: add & run now, queue & don't run, add note - the green
-    default on the far right, the trio pushed right by .note-actions."""
-    p = project()
+    """Left to right: add & run now, queue note, add note - the green default on
+    the far right, the group pushed right by .note-actions.
+
+    Shown on a project that cannot be run now (backlog), which since 2026-08-10
+    is the only case where "add & run now" is rendered at all."""
+    p = db.create_project("Someday", slug="someday", stage="backlog")
     html = client.get(f"/project/{p['slug']}").text
     i_run = html.index('name="then" value="run"')
     i_queue = html.index('name="then" value="queue"')
-    i_add = html.index('class="btn go">add note')
+    i_add = html.index(">add note</button>")
     assert i_run < i_queue < i_add
     assert "note-actions" in html
+
+
+def test_the_queue_button_says_queue_note(client):
+    """Wes, 2026-08-10: "Change the 'Queue and don't run' button to just say
+    'queue note'"."""
+    p = project()
+    html = client.get(f"/project/{p['slug']}").text
+    assert "queue note" in html
+    # The old label, which was two words longer and said what it would not do.
+    assert "queue &amp; don" not in html
 
 
 def test_queue_and_dont_run_stores_the_note_quietly(client):

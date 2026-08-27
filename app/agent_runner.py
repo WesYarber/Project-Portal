@@ -13,9 +13,9 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    attachments, config, db, journalfile, limits, memory, notes, orphans, people,
-    promptbudget, qdedupe, runlimit, runlog, spawnauth, subprojects, todos,
-    worklock,
+    apiretry, attachments, config, db, headroom, journalfile, limits, memory, notes,
+    orphans, people, promptbudget, qdedupe, runlimit, runlog, spawnauth, strays,
+    subprojects, todos, unparsedreport, verifydepth, worklock,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -124,11 +124,17 @@ available in your session, write the same JSON to a file at
   owner "agent"; whenever something is blocked on $THEM (a purchase, a
   credential, a click), add it with owner "user". "done" takes the ids of
   items you actually completed and verified this run. All three default to
-  empty. "tags" retags items: short kebab labels shown as chips on the row,
-  and the given list REPLACES that item's tags, so `[]` untags. The tag
-  "blocked" has teeth - a blocked item does not count as workable when the
-  portal decides whether another run could make progress - so tag the items
-  that truly wait on $OWNER, and clear the tag the moment one no longer does.
+  empty. Keep the list short and each item to ONE sentence naming the action -
+  the background belongs in your journal entry, not the item. Open an item only
+  when a concrete action would otherwise be forgotten: never to log what you
+  already did, and never to hand a person a "go verify/check out this feature"
+  chore - those pile up unread; put what changed in the summary instead. Close
+  what you open: a stale watch-this item is yours to "done". "tags" retags
+  items: short kebab labels, and the given list REPLACES that item's tags, so
+  `[]` untags. Never write tags into the item's text. The tag "blocked" has
+  teeth - a blocked item does not count as workable when the portal decides
+  whether another run could make progress - so tag the items that truly wait
+  on $OWNER, and clear the tag the moment one no longer does.
 - "subprojects": split this project into children, each of which becomes a
   project in its own right with its own workspace, journal, todo list and runs.
   Use it when the project is really several independent deliverables that each
@@ -153,7 +159,12 @@ available in your session, write the same JSON to a file at
   preserved separately and shown to you every run. Leave it null if the current
   description is still accurate, or if the Project section below says the
   description is locked.
-- "title": leave null if the Project section says the title is locked.
+- "title": an improved short project title, or null to keep the current one. A
+  LOCKED title was typed by a person here and is never overwritten, so leave
+  this null unless you have a genuinely better name - in which case report it
+  anyway: it reaches the project page as a one-tap suggestion beside the title
+  they chose. A suggestion turned down is never shown again, so do not
+  re-propose one.
 - "learnings": almost always an empty list. This file is read into the prompt of
   every run of every project, so a line here is a permanent tax on every future
   agent - and it is currently so full of run-by-run trivia that $OWNER says it
@@ -216,6 +227,33 @@ run. A run that burns an hour guessing at $OWNERS intent is not.
 AGENT_CONTRACT = Template(_AGENT_CONTRACT_TEMPLATE).safe_substitute(
     **config.SITE.template_vars()
 )
+
+
+def _project_vars(project: Optional[sqlite3.Row]) -> dict[str, str]:
+    """The template vars for a run on this project: the site's, re-addressed
+    to the project's principal (see people.principal). On any project the
+    owner is on - which is every project on a one-person install - this is
+    `config.SITE.template_vars()` unchanged, so the rendered contract is
+    byte-identical to the module-level `AGENT_CONTRACT`. Falls back to the
+    owner's vars rather than failing a run over an addressing lookup."""
+    try:
+        return people.template_vars_for(people.principal(project["id"] if project is not None else None))
+    except Exception:  # noqa: BLE001 - addressing must never cost a run
+        log.exception("Could not resolve the project's principal")
+        return config.SITE.template_vars()
+
+
+def contract_for(project: Optional[sqlite3.Row]) -> str:
+    """The agent contract, addressed to the project's principal."""
+    return Template(_AGENT_CONTRACT_TEMPLATE).safe_substitute(**_project_vars(project))
+
+
+def guidance_for(task: str, project: Optional[sqlite3.Row]) -> str:
+    """One task's guidance block, addressed to the project's principal."""
+    template = _TASK_GUIDANCE_TEMPLATES.get(task)
+    if template is None:
+        return f"Task: {task}."
+    return Template(template).safe_substitute(**_project_vars(project))
 
 _TASK_GUIDANCE_TEMPLATES = {
     "triage": (
@@ -405,10 +443,23 @@ class RunResult:
     raw_stderr: str = ""
     report: Optional[dict] = field(default=None)
     # "structured" when the report came back schema-validated through the
-    # CLI's StructuredOutput tool, "file" when it was read from the legacy
-    # .portal/report.json, None when the run reported nothing.
+    # CLI's StructuredOutput tool, "recovered" when it was rescued out of a
+    # tool call the CLI could not parse (app/unparsedreport.py), "file" when it
+    # was read from the legacy .portal/report.json, None when the run reported
+    # nothing.
     report_source: Optional[str] = None
+    # True when the CLI could not parse the run's StructuredOutput call. Set
+    # even when a report was recovered or read from the file, because the
+    # submission still failed and a report that only half survived is worth
+    # saying out loud rather than leaving to look like a quiet success.
+    report_unreadable: bool = False
     is_rate_limited: bool = False
+    # What the CLI's own `api_retry` events said, accumulated as the stream
+    # arrived (app/apiretry.py). Present on runs that SUCCEEDED too - the CLI
+    # retries internally, so a run can wait out a quota wall and still finish
+    # green, and that run is exactly the one whose evidence keeps the next run
+    # from walking into the same wall.
+    retries: Optional["apiretry.RetryLog"] = None
     # True when the kernel OOM-killed something inside this run's memory-capped
     # scope (app/runlimit.py). The run itself usually survives - the cap kills
     # the greedy process only - so this can be set on a run that otherwise
@@ -449,7 +500,7 @@ def _row_get(row: sqlite3.Row, key: str, default=None):
     return default if value is None else value
 
 
-def _project_section(project: sqlite3.Row) -> str:
+def _project_section(project: sqlite3.Row, tvars: Optional[dict[str, str]] = None) -> str:
     """The project header of the prompt.
 
     Both the original idea and the current description are shown, always and
@@ -457,20 +508,33 @@ def _project_section(project: sqlite3.Row) -> str:
     has become and gets rewritten as work lands; the idea is the sentence Wes
     actually typed, and it is the only record of what he was originally after -
     so summarizing it away would quietly lose the brief.
+
+    `tvars` is the project's addressing (see _project_vars): the approval and
+    original-idea lines name the project's principal, not unconditionally the
+    install owner - on a project Karli alone is on, "Wes has approved building
+    this" reads to the agent as his project with her visiting.
     """
+    if tvars is None:
+        tvars = config.SITE.template_vars()
     idea = (_row_get(project, "initial_idea", "") or "").strip()
     description = (project["description"] or "").strip()
     lines = [
         "## Project",
         f"- Title: {project['title']}"
-        + (" (LOCKED - do not propose a new title)" if _row_get(project, "title_locked", 0) else ""),
+        + (
+            " (LOCKED - named by hand, so it will not be renamed. You may still "
+            "report a better `title`; it reaches the project page as a one-tap "
+            "suggestion, and is dropped silently if that wording was already "
+            "turned down.)"
+            if _row_get(project, "title_locked", 0)
+            else ""
+        ),
         f"- Slug: {project['slug']}",
         f"- Kind: {project['kind']}",
         f"- Status: {db.display_state(project)}",
-        f"- Priority: {project['priority']}",
         "- Build approval: "
         + (
-            f"{config.SITE.owner} has approved building this - write code."
+            f"{tvars['OWNER']} has approved building this - write code."
             if _row_get(project, "build_approved", 0)
             else "NOT yet approved for building. Triage, plan and research only; "
             "ask for the OK rather than starting to write the project's code."
@@ -484,7 +548,7 @@ def _project_section(project: sqlite3.Row) -> str:
         )
     if idea:
         lines.append(
-            f"- {config.SITE.owners} original idea (never changes, this is the brief):\n{idea}"
+            f"- {tvars['OWNERS']} original idea (never changes, this is the brief):\n{idea}"
         )
     locked = _row_get(project, "description_locked", 0)
     if description and description == idea:
@@ -536,6 +600,71 @@ def _skills_section() -> str:
         "These are in your working directory. Read the file before deciding you "
         "cannot do something.\n" + "\n".join(lines)
     )
+
+
+def _hard_target_section() -> str:
+    """What the compaction agent is aiming at, in the unit that costs.
+
+    The old version of this block said "this file auto-compacts once it passes
+    200 lines" and nothing else, which was wrong twice over: the trigger is a
+    byte cap now, and - more importantly - it left the agent believing the
+    whole file is read. It is not. A prompt fills a byte budget from the top of
+    the file, so on 2026-08-07 the last 127 of 171 learnings had never appeared
+    in a single prompt: the compaction agent was being asked to shorten a file
+    without being told that three quarters of it was already dead weight it
+    could cut without losing anything a run would have seen.
+
+    So this states the reach, names the sections a prompt never reaches, and
+    only then gives the target. Empty string when the cap is disabled, which
+    keeps "no cap, no hard target" true.
+    """
+    cap = memory.learnings_cap_kb()
+    if not cap:
+        return ""
+    target = memory.learnings_target_kb()
+    try:
+        reach = memory.learnings_reach()
+    except Exception:  # noqa: BLE001 - a measurement bug must never block compaction
+        log.exception("Could not measure learnings reach for the compaction prompt")
+        return (
+            f"## Hard target\nThis file auto-compacts once it passes {cap} KB, which "
+            f"is why you are running now. Finish under {target} KB - that is the "
+            "budget a prompt carries this file in, so anything past it is written "
+            "but never read."
+        )
+
+    lines = [
+        "## Hard target",
+        f"This file is {reach.total / 1024:.1f} KB. A prompt carries it in a "
+        f"{target} KB budget, filled from the TOP in your order, so "
+        f"{reach.in_prompt / 1024:.1f} KB of it reaches a run and "
+        f"{reach.bytes_out / 1024:.1f} KB does not. It auto-compacts past "
+        f"{cap} KB, which is why you are running now.",
+    ]
+    if reach.unreachable:
+        lines.append(
+            f"**{reach.entries_out} of its {reach.entries_total} learnings are not "
+            "in any prompt today** - they are written and never read:"
+        )
+        for u in reach.unreachable:
+            lines.append(
+                f"- {u.entries} entries ({u.size / 1024:.1f} KB) at the end of "
+                f"\"{u.heading}\""
+            )
+        lines.append(
+            "That is where the cutting is cheapest: those entries are costing "
+            "nothing today, so anything among them worth keeping has to earn its "
+            "way UP the file past something already there, and the rest can go. "
+            "Do not read that as permission to delete the tail unexamined - a "
+            "hazard down there that has bitten twice belongs promoted into the "
+            "engineering lessons, not dropped."
+        )
+    lines.append(
+        f"Finish under {target} KB so that everything you keep is actually read. "
+        "If you cannot, you are keeping project trivia that should be dropped or "
+        "merged."
+    )
+    return "\n".join(lines)
 
 
 def _promote_skills_section() -> str:
@@ -629,17 +758,9 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     # duplication it is there to collapse is spread across the whole thing.
     if task == "compact":
         parts.append(TASK_GUIDANCE["compact"])
-        try:
-            cap = max(0, int(db.get_setting("learnings_cap_lines") or "200"))
-        except (TypeError, ValueError):
-            cap = 200
-        if cap:
-            parts.append(
-                f"## Hard target\nThis file auto-compacts once it passes {cap} lines, "
-                f"which is why you are running now. Finish comfortably under {cap} "
-                "lines - if you cannot, you are keeping project trivia that should be "
-                "dropped or merged."
-            )
+        target = _hard_target_section()
+        if target:
+            parts.append(target)
         parts.append(_promote_skills_section())
         ages = _entry_ages_section()
         if ages:
@@ -655,6 +776,9 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         parts.append(TASK_GUIDANCE["reflect"])
         parts.append(AGENT_CONTRACT)
         profile = config.PROFILE_MD.read_text(encoding="utf-8") if config.PROFILE_MD.exists() else ""
+        target = _profile_target_section(len(profile))
+        if target:
+            parts.append(target)
         learnings = _learnings_for_prompt()
         journal = db.list_journal(project_id=None, limit=40)
         journal_txt = "\n".join(
@@ -679,9 +803,28 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
         return "\n\n".join(parts)
 
     assert project is not None
-    parts.append(TASK_GUIDANCE.get(task, f"Task: {task}."))
-    parts.append(AGENT_CONTRACT)
-    parts.append(_project_section(project))
+    # Addressed per project: on a project the install owner is not on, $OWNER
+    # throughout the contract and guidance is the project's own person, so the
+    # agent works on their behalf, asks THEM the questions, and never routes
+    # their project's decisions through somebody who is not on it.
+    tvars = _project_vars(project)
+    parts.append(Template(_TASK_GUIDANCE_TEMPLATES[task]).safe_substitute(**tvars) if task in _TASK_GUIDANCE_TEMPLATES else f"Task: {task}.")
+    parts.append(Template(_AGENT_CONTRACT_TEMPLATE).safe_substitute(**tvars))
+
+    # Directly under the contract, and deliberately far above the journal: this
+    # section exists to outrank the twenty journal entries below it, most of
+    # which describe a heavy mutation sweep and none of which were an
+    # instruction. Empty on every task that writes no code. See
+    # app/verifydepth.py.
+    try:
+        depth_txt = verifydepth.prompt_section(task)
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Could not build the verification-depth section")
+        depth_txt = ""
+    if depth_txt:
+        parts.append(depth_txt)
+
+    parts.append(_project_section(project, tvars))
 
     # Sits directly under the project section, above the journal: an agent that
     # reads no further than the first screen still finds out that a previous run
@@ -756,6 +899,16 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     # Uploaded files sit in the workspace, so the agent only needs to be told
     # they exist and where - it can Read them itself. Omitted entirely when
     # there are none, rather than adding an empty heading to every prompt.
+    #
+    # They get *put* in the workspace here, immediately above the section that
+    # names them, and that adjacency is the feature. Wes, 2026-08-16: an upload
+    # used to land in the workspace the instant it was uploaded, so a run
+    # already in flight - whose prompt was built before the note existed - found
+    # an unexplained screenshot under its feet and asked what it was for. Now
+    # the run that is shown a file is the run whose prompt carries the note it
+    # came with, because this is the moment both are read. Never raises; a file
+    # that cannot be moved stays staged for the next run (see attachments.reveal).
+    attachments.reveal(project["id"], project["slug"])
     attach_txt = attachments.prompt_section(project["id"])
     if attach_txt:
         parts.append(attach_txt)
@@ -779,20 +932,50 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     # something; on a one-person install this section is byte-identical to
     # before. An answer nobody was recorded for stays unnamed rather than being
     # credited to the owner - see people.known_name.
+    #
+    # Under a byte budget since 2026-07-29, and collapsing repeats before it
+    # spends one. This block had no bound at all: every question ever answered
+    # on a project was in every prompt that project would ever build. On this
+    # one that had reached 11.8 KB, ten of the twenty-five being the same
+    # question about spending down a Claude window - the exact repetition Wes
+    # complained about, preserved forever at the cost of bytes. See
+    # app/promptbudget.py.
     qa = db.answered_qa(project["id"])
     show_who = people.more_than_one()
-    qa_lines = []
-    for row in qa:
-        who = people.known_name(row["answered_by"]) if show_who else ""
-        qa_lines.append(f"- Q: {row['question']}\n  A{f' ({who})' if who else ''}: {row['answer']}")
-    parts.append(f"## Answered questions\n{'\n'.join(qa_lines) or '(none)'}")
+    qa_txt = promptbudget.answered_for_prompt(
+        [
+            promptbudget.Answered(
+                question=row["question"] or "",
+                answer=row["answer"] or "",
+                who=people.known_name(row["answered_by"]) if show_who else "",
+                options=_row_get(row, "quick_options"),
+            )
+            for row in qa
+        ],
+        _budget_bytes("prompt_answered_kb", 6),
+    )
+    parts.append(f"## Answered questions\n{qa_txt}")
 
     skills_txt = _skills_section()
     if skills_txt:
         parts.append(skills_txt)
 
-    profile = config.PROFILE_MD.read_text(encoding="utf-8") if config.PROFILE_MD.exists() else "(none)"
-    parts.append(f"## Memory: profile.md (full)\n{profile}")
+    profile = _profile_for_prompt()
+    # The profile is the install owner's, and on a project the owner is not on
+    # it is the single largest Wes-shaped block in the prompt - unframed, it is
+    # why a run on Karli's project talked to her as if she were him. The
+    # framing costs two lines and pins whose words these are.
+    if tvars["OWNER"] != config.SITE.owner:
+        parts.append(
+            f"## Memory: profile.md (full)\n"
+            f"This profile describes {config.SITE.owner}, who runs this portal's server - "
+            f"NOT the person this project belongs to. {config.SITE.owner} is not on this "
+            f"project: it is {tvars['OWNERS']}, so work for {tvars['OWNER']}, address "
+            f"{tvars['OWNER']}, and only involve {config.SITE.owner} for things that "
+            f"genuinely need the server or the household infrastructure below.\n\n{profile}"
+        )
+    else:
+        parts.append(f"## Memory: profile.md (full)\n{profile}")
 
     parts.append(f"## Memory: learnings.md\n{_learnings_for_prompt()}")
 
@@ -829,6 +1012,88 @@ def _budget_bytes(key: str, default_kb: int) -> int:
     except (TypeError, ValueError):
         kb = default_kb
     return max(1, kb) * 1024
+
+
+def profile_cap_bytes() -> int:
+    """The size profile.md is meant to stay under, in bytes. 0 disables it.
+
+    Read here as well as in `worker` for the same reason `learnings_cap_kb`
+    now lives in `memory`: worker imports agent_runner and not the other way
+    round, and the setting is a single db row either way.
+    """
+    try:
+        kb = int(db.get_setting("profile_cap_kb") or "16")
+    except (TypeError, ValueError):
+        kb = 16
+    return max(0, kb) * 1024
+
+
+def _profile_target_section(size: int) -> str:
+    """What the daily reflect is told about how big profile.md may be.
+
+    The reflect rewrites this file every day and was never given a number, only
+    the word "concise" - which is how it went from 16.6 KB to 26.7 KB in ten
+    days while dutifully believing it was being concise. This is the whole
+    enforcement mechanism: the file is capped where it is *written*, not where
+    it is read, because it is a coherent authored document and the right person
+    to shorten it is the one writing it.
+
+    The order paragraph is the same argument the compaction agent gets about
+    learnings.md, and for the same reason: the prompt-side backstop fills from
+    the top and drops whole sections off the bottom, so what sits at the bottom
+    is what an agent loses first if the file ever runs over.
+    """
+    cap = profile_cap_bytes()
+    if not cap:
+        return ""
+    over = size > cap
+    head = (
+        f"## Hard target: profile.md is {size // 1024} KB and over its {cap // 1024} KB cap"
+        if over else
+        f"## Hard target: keep profile.md under {cap // 1024} KB"
+    )
+    body = [
+        f"This file is pasted WHOLE into the prompt of every run of every project, so "
+        f"every kilobyte of it is paid for many times a day. It is {size // 1024} KB "
+        f"today and the cap is {cap // 1024} KB."
+    ]
+    if over:
+        body.append(
+            "Your rewrite must come back UNDER that. Merge lines that say the same "
+            "thing in different words, cut the examples once the rule is stated, and "
+            "drop anything that is really about one project's internals rather than "
+            "about the person - that belongs in the project's own journal. Losing a "
+            "duplicate is free; losing a fact is not, so merge before you delete."
+        )
+    else:
+        body.append(
+            "Stay under it. Adding a line means earning its place, usually by "
+            "sharpening or absorbing one that is already there."
+        )
+    body.append(
+        "ORDER IS LOAD-BEARING. A prompt fills this file from the TOP and, if it is "
+        "ever over, drops whole `## ` sections off the BOTTOM (named, never cut in "
+        "half). So put the sections that change how an agent behaves - who the person "
+        "is, what they value, how they want things built, how they work - at the top, "
+        "and let the reference material that only matters occasionally sit last."
+    )
+    return head + "\n" + " ".join(body)
+
+
+def _profile_for_prompt() -> str:
+    """The profile block, whole unless the file has run away from its cap.
+
+    The backstop fires at twice the cap rather than at it, so the day-to-day
+    state is the file arriving intact and the reflect being the thing that keeps
+    it small. A trim here is a symptom, and it says so in the prompt.
+    """
+    if not config.PROFILE_MD.exists():
+        return "(none)"
+    text = config.PROFILE_MD.read_text(encoding="utf-8")
+    cap = profile_cap_bytes()
+    if not cap:
+        return text
+    return promptbudget.profile_for_prompt(text, cap * 2, str(config.PROFILE_MD))
 
 
 def _learnings_for_prompt() -> str:
@@ -912,6 +1177,32 @@ def _looks_rate_limited(text: str) -> bool:
     if "limit" not in t:
         return False
     return any(word in t for word in ("reach", "exceed", "rate"))
+
+
+def _hit_a_usage_limit(
+    retries: "apiretry.RetryLog", result_text: str, stderr: str
+) -> bool:
+    """Did this failed run die on the account's allowance?
+
+    Three cases, in order of how much the CLI actually told us:
+
+    1. **It said so.** A retry carried quota-429 headers, which the CLI only
+       attaches to a genuinely exhausted allowance. Believe it.
+    2. **It said something else.** There were retries and none were quota, so
+       the CLI has named the cause - overloaded servers, a dropped connection,
+       a 500 - and it was not the allowance. Believe that too, and in
+       particular do NOT fall through to the string match: an outage whose
+       message mentions "rate" would otherwise park the whole scheduler for
+       hours over a problem that clears in seconds.
+    3. **It said nothing.** No retry events at all, because the CLI only
+       retries what it thinks is retryable and a hard refusal is not. This is
+       where the old prose match still earns its place, unchanged.
+    """
+    if retries.saw_quota:
+        return True
+    if retries.count:
+        return False
+    return _looks_rate_limited(result_text) or _looks_rate_limited(stderr)
 
 
 # stream-json emits one JSON object per line, and a line carrying a big tool
@@ -1010,6 +1301,7 @@ def build_cmd(
     max_budget_usd: Optional[float] = None,
     json_schema: Optional[str] = None,
     settings_json: Optional[str] = None,
+    mcp_config: Optional[str] = None,
 ) -> list[str]:
     """The argv for a run - deliberately without the prompt in it.
 
@@ -1055,6 +1347,15 @@ def build_cmd(
     # the CLI merges it with whatever the workspace's own settings say.
     if settings_json:
         cmd += ["--settings", settings_json]
+    # The portal exposing itself to the run as an MCP server, so a decision only
+    # a person can make can be asked *and answered* mid-run rather than parked
+    # until the report. See app/portalmcp.py.
+    #
+    # Deliberately without `--strict-mcp-config`: strict would also switch off
+    # any MCP server a project's own workspace configures, which is the
+    # project's business and not this flag's. Ours is additive.
+    if mcp_config:
+        cmd += ["--mcp-config", mcp_config]
     # Continue an existing CLI session instead of starting fresh - this is how
     # a one-off task's follow-up message reaches an agent that remembers the
     # whole exchange. The CLI issues a NEW session id for the resumed
@@ -1076,6 +1377,7 @@ async def run_claude(
     resume_session: Optional[str] = None,
     json_schema: Optional[str] = None,
     settings_json: Optional[str] = None,
+    mcp_config: Optional[str] = None,
     lock_dir: Optional[Path] = None,
 ) -> RunResult:
     """Run the agent, streaming its events to `on_event` as they happen.
@@ -1092,7 +1394,7 @@ async def run_claude(
     cmd = build_cmd(
         model, max_turns, resume_session,
         max_budget_usd=_configured_budget_usd(), json_schema=json_schema,
-        settings_json=settings_json,
+        settings_json=settings_json, mcp_config=mcp_config,
     )
     # Two wrappers, and the nesting is load-bearing.
     #
@@ -1115,6 +1417,12 @@ async def run_claude(
     inner = worklock.wrap(cmd, lock_dir)
     leased = inner is not cmd
     argv = runlimit.wrap(inner, run_id)
+    # The five-hour meter as it reads before this run has spent anything. Paired
+    # with the stamp in the `finally` below, it is the portal's only measurement
+    # of what one of its own runs costs that window - which is what decides
+    # whether a run is started into a window too full to finish in. See
+    # app/headroom.py.
+    headroom.stamp_start(run_id)
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -1145,6 +1453,16 @@ async def run_claude(
         # sweep cannot tell a survivor from a corpse, and guessing wrong unlocks
         # an occupied workspace. See db._reconcile_orphaned_runs.
         db.set_run_scope(run_id, runlimit.unit_of(argv))
+        # And the workspace it leases - but only where the lease actually
+        # applied, which is what `leased` records and why it is read from the
+        # argv we built rather than re-derived. This is the reaper's second
+        # completion signal: `--close` keeps the lease out of everything the
+        # agent detaches, so a free lease means a dead agent even when a preview
+        # server it left behind is holding the scope above open forever. Writing
+        # one for a run that took no lease would settle it the moment it
+        # started. See worker._reap_adopted.
+        if leased:
+            db.set_run_lease(run_id, str(lock_dir))
 
     # Started, not awaited, and deliberately so: the prompt is far larger than
     # a pipe buffer (64 KiB on Linux; the busiest projects render past 120 KB),
@@ -1155,7 +1473,28 @@ async def run_claude(
         return await _supervise(proc, cwd, run_id, on_event, timeout_min, len(prompt), leased)
     finally:
         feeder.cancel()
+        # Closes the pair opened before the spawn. In the `finally` so a run
+        # that timed out, was canceled or blew up still contributes its
+        # measurement - those are the expensive runs, and leaving them out
+        # would measure only the ones that went well.
+        headroom.stamp_end(run_id)
         _forget(run_id)
+        # The agent has exited, so anything still in its scope is something it
+        # detached and meant to outlive it - a preview server, a tunnel. Move
+        # those out before letting go of the scope name, or the scope never
+        # empties and this finished run reads as alive forever. See app/strays.py
+        # for why that ends in a project no run can ever be scheduled for.
+        #
+        # Ordering: `forget_scope` must come after, because it is what makes the
+        # unit name unprotected, and `strays.evict` is the last thing that needs
+        # it. The common case is a scope with nothing left in it, which costs one
+        # `systemctl show` and one read.
+        unit = runlimit.unit_of(argv)
+        if unit:
+            try:
+                strays.evict(unit)
+            except Exception:  # pragma: no cover - a sweep must never fail a run
+                log.exception("Stray sweep failed for scope %s", unit)
         runlimit.forget_scope(run_id)
 
 
@@ -1194,6 +1533,7 @@ async def _supervise(
     parsed: dict = {}
     raw_parts: list[str] = []
     raw_len = 0
+    retries = apiretry.RetryLog()
     mem = _MemoryWatch(proc.pid, run_id, on_event)
     watcher = asyncio.create_task(mem.poll_forever())
 
@@ -1218,6 +1558,7 @@ async def _supervise(
                 continue
             if event.get("type") == "result":
                 parsed = event
+            retries.observe(event)
             await _emit(on_event, event, runlog.render_event(event))
 
     async def read_stderr() -> bytes:
@@ -1234,6 +1575,9 @@ async def _supervise(
         return RunResult(
             ok=False, timed_out=True, result_text="Run timed out",
             oom_killed=mem.oom_killed, peak_memory_bytes=mem.peak_bytes,
+            # A run that spent its whole wall-clock budget waiting on retries
+            # looks identical to a runaway agent without this.
+            retries=retries,
         )
 
     # Read the scope one last time before anything is reaped. Without this the
@@ -1268,18 +1612,30 @@ async def _supervise(
     # Only treat as rate-limited on an actual failure; agent output legitimately
     # mentioning "rate limits" must not trigger a backoff.
     failed = is_error or proc.returncode != 0
-    rate_limited = failed and (
-        _looks_rate_limited(result_text) or _looks_rate_limited(stderr)
-    )
+    rate_limited = failed and _hit_a_usage_limit(retries, result_text, stderr)
 
     report, report_source = _pick_report(parsed, cwd)
-    if report_source == "structured":
+    if report_source in ("structured", "recovered"):
         # With structured output the CLI's `result` string is the raw JSON the
         # StructuredOutput call submitted; stored as a run summary it reads as
-        # noise. The report's own summary bullets are the human line.
-        bullets = report.get("summary")
+        # noise. The report's own summary bullets are the human line - and when
+        # there are none, an EMPTY line still beats the JSON. This used to only
+        # overwrite when bullets existed, which is why every reflect run (they
+        # legitimately report `summary: []`) wore a JSON blob as its summary.
+        result_text = _human_summary(report)
+
+    # The CLI could not parse the StructuredOutput call and substituted its
+    # `__unparsedToolInput` placeholder. Whatever the fallbacks produced above,
+    # the one thing that must not happen is the placeholder's JSON reaching the
+    # project page as this run's summary and journal entry - which is exactly
+    # what it did on run 897. Say what happened instead.
+    unreadable = unparsedreport.is_unparsed(parsed.get("structured_output"))
+    if unreadable and report_source not in ("structured", "recovered"):
+        bullets = report.get("summary") if isinstance(report, dict) else None
         if isinstance(bullets, list) and bullets:
             result_text = "; ".join(str(b) for b in bullets)
+        else:
+            result_text = unparsedreport.failure_note(parsed.get("structured_output"))
 
     usage = parsed.get("usage") if isinstance(parsed.get("usage"), dict) else None
     _record_usage(run_id, usage, prompt_bytes)
@@ -1297,9 +1653,11 @@ async def _supervise(
         report=report,
         report_source=report_source,
         is_rate_limited=rate_limited,
+        retries=retries,
         oom_killed=mem.oom_killed,
         peak_memory_bytes=mem.peak_bytes,
         lock_conflict=lock_conflict,
+        report_unreadable=unreadable,
         subtype=str(parsed.get("subtype")) if parsed.get("subtype") else None,
     )
 
@@ -1363,22 +1721,67 @@ class _MemoryWatch:
                 return
             if self.oom_killed and not self._announced:
                 self._announced = True
-                note = runlimit.kill_note()
+                note = runlimit.kill_note(peak=self.peak_bytes)
                 log.warning("Run %s: %s", self.run_id, note)
                 await _emit(self.on_event, {"type": "portal_oom"}, [f"! {note}"])
             await asyncio.sleep(self.INTERVAL_S)
 
 
+def _human_summary(report: Optional[dict]) -> str:
+    """One line of prose for a report, for the run list and the failure note.
+
+    The summary bullets are the line Wes reads, so they come first. A report
+    with no bullets but a journal entry falls back to that entry's heading,
+    which is written to be exactly this: the one line that says what the run
+    did. Anything else yields "" rather than a JSON blob - the caller stores
+    this as the run's summary, and a blank cell is honest where a serialized
+    object is just noise wearing a summary's clothes.
+    """
+    if not isinstance(report, dict):
+        return ""
+    bullets = report.get("summary")
+    if isinstance(bullets, list) and bullets:
+        return "; ".join(str(b) for b in bullets)
+    entry = report.get("journal_entry_md")
+    if isinstance(entry, str):
+        for line in entry.splitlines():
+            line = line.strip().lstrip("#").strip()
+            if line:
+                return line
+    return ""
+
+
 def _pick_report(parsed: dict, cwd: Path) -> tuple[Optional[dict], Optional[str]]:
     """The run's report: schema-validated structured output when the CLI
-    returned one, else the legacy .portal/report.json file.
+    returned one, else what can be rescued from an unparseable one, else the
+    legacy .portal/report.json file.
 
     The file stays accepted forever, not just for one migration run - a run
     that dies short of calling StructuredOutput, an older prompt, or a spawn
     made without the schema flag can still report the old way. When both
-    exist the structured one wins: it is the one the CLI validated."""
+    exist the structured one wins: it is the one the CLI validated.
+
+    The `__unparsedToolInput` placeholder is emphatically NOT a report, even
+    though it is a dict and arrives in the same field. Accepting it cost run
+    897 its entire report; see app/unparsedreport.py. Neither is an argument
+    envelope - `{"parameter": "<the report as a JSON string>"}` - which cost
+    runs 962, 973 and 976 theirs, with no placeholder key to give it away."""
     structured = parsed.get("structured_output")
-    if isinstance(structured, dict):
+    if unparsedreport.is_unparsed(structured):
+        recovered = unparsedreport.recover(structured)
+        if recovered is not None:
+            return recovered, "recovered"
+    elif isinstance(structured, dict):
+        unwrapped = unparsedreport.unwrap_envelope(structured)
+        if unwrapped is not None:
+            # Logged rather than journaled: the unwrap is lossless, so a note on
+            # the project page would be noise - but if this shape becomes the
+            # norm the log is where it shows up.
+            log.warning(
+                "Report arrived wrapped in {%s}; unwrapped it",
+                ", ".join(sorted(structured)),
+            )
+            return unwrapped, "recovered"
         return structured, "structured"
     file_report = _read_report(cwd)
     if file_report is not None:

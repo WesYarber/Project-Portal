@@ -65,7 +65,9 @@ def project():
 
 def _row_html(html: str) -> str:
     """The first .todo-item element's markup."""
-    m = re.search(r'<li class="todo-item[^"]*">(.*?)</li>', html, re.S)
+    # `[^>]*` after the class: the row also carries an id since 2026-08-04, so
+    # the class is no longer the last attribute on the tag.
+    m = re.search(r'<li class="todo-item[^"]*"[^>]*>(.*?)</li>', html, re.S)
     assert m, "no todo row rendered"
     return m.group(1)
 
@@ -73,18 +75,20 @@ def _row_html(html: str) -> str:
 # --- the markup hook -------------------------------------------------------
 
 
-def test_the_chips_are_grouped_so_they_can_take_their_own_line(client, project):
-    """Ungrouped, each chip was a separate flex item competing with the text on
-    one line. The group is the thing `flex-basis: 100%` can be applied to."""
+def test_only_the_blocked_chip_renders_and_it_is_grouped(client, project):
+    """Wes, 2026-08-04: "fold the tags into this menu, aside from the 'blocked'
+    tag. Too many tags can be present and restrict the space available for the
+    todo item itself." So the row wears one chip at most, and it still sits in
+    the .todo-meta group `flex-basis: 100%` can hand its own line on a phone."""
     row = _row_html(client.get("/project/clicks").text)
-    assert 'class="todo-meta"' in row
-    # Everything that is not the text lives inside it.
     meta = re.search(r'<span class="todo-meta">(.*?)</span>\s*$', row, re.S)
     assert meta, "the .todo-meta group is not closed at the end of the row"
     inner = meta.group(1)
-    assert "todo-tag" in inner, "tag chips must be inside the group"
-    assert "tag-add-btn" in inner, "'+tag' must be inside the group"
-    assert "todo-del" in inner, "the delete cross must be inside the group"
+    assert ">blocked<" in inner, "the blocked chip must be inside the group"
+    assert "billing" not in inner, "every other tag belongs in the menu, not on the row"
+    # The old inline controls are gone - they live in the right-click menu now.
+    for cls in ("tag-add-btn", "todo-del", "todo-who", "tag-x"):
+        assert cls not in row, f"{cls} should have moved into the menu"
 
 
 def test_the_text_stays_outside_the_group(client, project):
@@ -99,14 +103,18 @@ def test_the_text_stays_outside_the_group(client, project):
     assert span and "todo-tag" not in span.group(1)
 
 
-def test_an_untagged_row_still_gets_the_group(client, project):
-    """Otherwise an untagged row would lay out by a different set of rules than
-    a tagged one, and the delete cross would land in a different place on each."""
+def test_an_unblocked_row_carries_no_group_at_all(client, project):
+    """The group used to hold controls every row needed. Now it exists only for
+    the blocked chip, so a row without that tag renders nothing after its text -
+    an empty span would just be markup for the flex layout to trip on."""
     html = client.get("/project/clicks").text
-    rows = re.findall(r'<li class="todo-item[^"]*">(.*?)</li>', html, re.S)
+    rows = re.findall(r'<li class="todo-item[^"]*"[^>]*>(.*?)</li>', html, re.S)
     assert len(rows) >= 2
-    for row in rows:
-        assert 'class="todo-meta"' in row
+    blocked = [r for r in rows if "tag-blocked" in r]
+    plain = [r for r in rows if "tag-blocked" not in r]
+    assert blocked and plain
+    for row in plain:
+        assert 'class="todo-meta"' not in row
 
 
 # --- the CSS contract ------------------------------------------------------
@@ -126,19 +134,29 @@ def _decls(body: str) -> str:
     return re.sub(r"/\*.*?\*/", "", body, flags=re.S)
 
 
-def _phone_block(css: str) -> str:
-    """The body of the `@media (max-width: 560px)` block."""
-    start = css.index("@media (max-width: 560px)")
-    depth, i = 0, css.index("{", start)
-    begin = i
+def _phone_block(css: str, marker: str = ".todo-meta") -> str:
+    """The body of the `@media (max-width: 560px)` block holding `marker`.
+
+    The sheet has more than one phone block since the activity tables learned to
+    stack (2026-08-06), and this used to take the first one - which silently
+    became the wrong one the moment another was added above it.
+    """
+    at = 0
     while True:
-        if css[i] == "{":
-            depth += 1
-        elif css[i] == "}":
-            depth -= 1
-            if depth == 0:
-                return css[begin : i + 1]
-        i += 1
+        start = css.index("@media (max-width: 560px)", at)
+        depth, i = 0, css.index("{", start)
+        begin = i
+        while True:
+            if css[i] == "{":
+                depth += 1
+            elif css[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        if marker in css[begin : i + 1]:
+            return css[begin : i + 1]
+        at = i
 
 
 def test_the_phone_rule_gives_the_group_its_own_line():
@@ -197,33 +215,18 @@ def _meta_group(row_inner: str) -> str:
     raise AssertionError("the .todo-meta group is never closed")
 
 
-def test_the_re_file_control_is_inside_the_group_too(client, project):
-    """#420's "whose?" control shares the row with the text, so it obeys the
-    same rule everything else does: outside `.todo-meta` it would get its own
-    flex item and be back to competing with the text for one line at 390px."""
-    from app import people
-
-    karli = people.get(people.add(name="Karli", gender="female"))
-    people.add_member(project["id"], karli["id"])
-    db.add_todo(project["id"], "A human item", owner="user")
-
-    html = client.get("/project/clicks").text
-    row = re.search(
-        r'<li class="todo-item[^"]*">((?:(?!</li>).)*todo-who(?:(?!</li>).)*)</li>', html, re.S
-    )
-    assert row, "no row carrying the re-file control rendered"
-
-    assert "todo-who" in _meta_group(row.group(1)), (
-        "the re-file control must be inside the .todo-meta group"
-    )
-
-
-def test_the_re_file_controls_do_not_raise_the_row_height(client, project):
-    """The 16-row scroll cap is an exact height (--todo-row-h), so any control
-    sharing a row must be `height: auto` - a shared 2.3rem control height here
-    would raise EVERY row and make the cap show fewer items than it claims."""
-    css = (STATIC / "style.css").read_text()
-    for cls in (".todo-who-btn", ".todo-who-pick"):
-        block = re.search(re.escape(cls) + r"\s*\{([^}]*)\}", css)
-        assert block, f"{cls} has no rule"
-        assert "height: auto" in block.group(1), f"{cls} must not inherit the control height"
+def test_a_long_press_does_not_fight_text_selection(client, project):
+    """On a phone the row's menu opens by long press, and iOS answers a long
+    press with text selection and the copy callout unless the element opts
+    out. Coarse pointers only: desktop copy-by-drag still works."""
+    css = (STATIC / "style.css").read_text(encoding="utf-8")
+    # Every coarse-pointer block, not the first one: touch is a fact about the
+    # device rather than about one feature, so the rules keyed on it live
+    # beside the things they change (the 16px form controls that stop iOS
+    # zooming on focus are in another such block, up in the forms section).
+    blocks = re.findall(r"@media \(pointer: coarse\)\s*\{(.*?)\n\}", css, re.S)
+    assert blocks, "no coarse-pointer block in style.css"
+    body = "\n".join(blocks)
+    assert ".todo-item" in body
+    assert "user-select: none" in body
+    assert "-webkit-touch-callout: none" in body

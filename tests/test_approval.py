@@ -193,7 +193,9 @@ async def test_the_old_waiting_user_report_becomes_blocked_on(temp_data_dir):
     after = _apply(project, new_status="waiting_user")
     assert after["stage"] == "active"
     assert after["blocked_on"]
-    assert db.project_shelf(after) == "paused"
+    # And since Wes's 2026-07-30 note it keeps its place on the Active shelf,
+    # wearing the `blocked` badge rather than being folded away.
+    assert db.project_shelf(after) == "active"
 
 
 @pytest.mark.anyio
@@ -362,8 +364,11 @@ def test_the_dashboard_flags_projects_waiting_for_an_ok(client):
     gated = idea("Fridge Board", "fridge-board", stage="active", requested=True)
     db.create_project("Approved", stage="active", build_approved=True, slug="approved")
     body = client.get("/").text
-    assert "needs your OK" in body
-    # One badge, on the gated card only.
-    assert body.count("needs your OK") == 1
+    # The side rail's More tail lists the gated project with its own
+    # "needs your OK" status line; split it off so the card count is the
+    # card count.
+    rail, page = body.split("</aside>", 1)  # the rail renders before the content
+    assert page.count("needs your OK") == 1  # one badge, on the gated card only
+    assert rail.count("needs your OK") == 1  # and the rail row agrees
     db.approve_build(gated["id"])
     assert "needs your OK" not in client.get("/").text

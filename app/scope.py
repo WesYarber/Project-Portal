@@ -58,6 +58,26 @@ def visible_ids(person: sqlite3.Row | None) -> set[int]:
     return ids
 
 
+def pending_questions(person: sqlite3.Row | None) -> list[sqlite3.Row]:
+    """The open questions that count as waiting on `person` right now.
+
+    One definition, three surfaces: the nav badge, the top of /questions, and
+    the `app_badge` a web push paints on the home-screen icon. They drifting
+    apart is the failure worth designing out - an icon saying 3 that opens onto
+    a list of 1 is worse than an icon saying nothing at all.
+
+    Shelved projects (paused by hand, or still in the backlog) are left out.
+    Wes asked the number to mean "things waiting on me right now"; those
+    questions are still answerable, in their own section below the fold.
+    """
+    shelved = db.shelved_project_ids()
+    ids = visible_ids(person)
+    return [
+        q for q in db.open_questions()
+        if q["project_id"] in ids and q["project_id"] not in shelved
+    ]
+
+
 def is_admin(person: sqlite3.Row | None) -> bool:
     """Who may look at somebody else's board. The install owner, and only him.
 
@@ -81,8 +101,18 @@ def only_runs(snapshot: dict, ids: set[int], admin: bool = False) -> dict:
     it costs nothing real. The reason describes the install's scheduler queue,
     which is an operational detail of the whole portal rather than anything a
     second person can see the projects in or act on.
+
+    One-off task runs carry no `project_id`, so a bare membership test drops
+    them - which had the side rail saying "1 agent working" over a strip
+    showing "no agent running" on the very same page. They follow the rule
+    `sidebar.visible_runs` already applies: counted for the owner, whose task
+    console they belong to, and left out for anybody else rather than leaking
+    a task title into their chrome.
     """
-    runs = [r for r in snapshot.get("runs", []) if r.get("project_id") in ids]
+    runs = [
+        r for r in snapshot.get("runs", [])
+        if r.get("project_id") in ids or (admin and not r.get("project_id"))
+    ]
     if not runs:
         return {
             "active": False,

@@ -190,6 +190,30 @@ def test_the_polled_api_is_scoped_like_the_strip_it_feeds(client, board):
     assert "His Thing" not in body and "his-thing" not in body
 
 
+def test_a_oneoff_run_shows_on_the_owners_strip(client, board):
+    """A one-off task run has no project_id, so a bare membership test drops
+    it - which had the side rail saying "1 agent working" over a strip
+    reading "no agent running" on the same page. The strip now follows the
+    rail's rule: the owner sees his own task console's runs."""
+    oneoff = db.create_oneoff("Sort out the garage inventory")
+    db.create_run(None, "task", "opus", oneoff_id=int(oneoff["id"]))
+    as_him(client, board)
+    body = client.get("/api/active-run").json()
+    assert body["active"] is True
+    assert any(r.get("oneoff_id") for r in body["runs"])
+
+
+def test_a_oneoff_run_is_not_shown_to_anybody_else(client, board):
+    """The other half of the rule: a task title in the strip's chrome is still
+    a leak, and a one-off belongs to the owner alone."""
+    oneoff = db.create_oneoff("Sort out the garage inventory")
+    db.create_run(None, "task", "opus", oneoff_id=int(oneoff["id"]))
+    as_her(client, board)
+    body = client.get("/api/active-run").json()
+    assert body["active"] is False
+    assert "garage" not in json.dumps(body)
+
+
 def test_your_own_run_still_shows(client, board):
     """The filter has to leave the thing it is filtering for. A strip that
     showed nothing to anybody would pass every test above."""

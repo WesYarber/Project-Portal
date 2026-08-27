@@ -183,15 +183,97 @@ def test_an_empty_half_says_so_rather_than_vanishing(project):
 
 
 def test_the_completed_tail_is_trimmed_but_open_items_never_are(project):
-    for i in range(todos.MAX_DONE_SHOWN + 10):
-        row = db.add_todo(project["id"], f"Finished item {i}")
+    for i in range(60):
+        row = db.add_todo(project["id"], f"Finished item {i} " + "y" * 100)
         db.set_todo_done(row["id"], True)
     for i in range(30):
-        db.add_todo(project["id"], f"Open item {i}")
+        db.add_todo(project["id"], f"Open item {i} " + "z" * 100)
 
     text = todos.prompt_section(project["id"])
-    assert text.count("- [x]") == todos.MAX_DONE_SHOWN
+    assert text.count("- [x]") < 60
     assert text.count("- [ ]") == 30
+
+
+def test_the_completed_tail_is_bounded_by_bytes_not_by_a_count(project):
+    """The cap used to be 15 items, and a portal todo runs to 500 characters -
+    so on this project's own list it was admitting more bytes of finished work
+    than the whole open list. Two lists of the same LENGTH now cost the same
+    bytes, whatever the length of the items on them."""
+    for i in range(40):
+        row = db.add_todo(project["id"], f"Finished item {i} " + "x" * 400)
+        db.set_todo_done(row["id"], True)
+
+    text = todos.prompt_section(project["id"])
+    done_bytes = sum(len(ln) + 1 for ln in text.splitlines() if ln.startswith("- [x]"))
+    assert done_bytes <= todos.DONE_TAIL_BYTES
+    # A count-based cap would have let fifteen 400-byte items through.
+    assert text.count("- [x]") < 15
+
+
+def test_the_newest_completed_items_are_the_ones_kept(project):
+    for i in range(40):
+        row = db.add_todo(project["id"], f"Finished item {i} " + "x" * 400)
+        db.set_todo_done(row["id"], True)
+
+    text = todos.prompt_section(project["id"])
+    assert "Finished item 39" in text
+    assert "Finished item 0 " not in text
+
+
+def test_a_trimmed_completed_tail_says_it_was_trimmed(project):
+    """Silence here reads as 'the older work was never done', which is the
+    reading that makes an agent redo something."""
+    for i in range(40):
+        row = db.add_todo(project["id"], f"Finished item {i} " + "x" * 400)
+        db.set_todo_done(row["id"], True)
+
+    text = todos.prompt_section(project["id"])
+    assert "older completed item(s) not shown" in text
+
+
+def test_an_untrimmed_list_carries_no_trimming_notice(project):
+    db.set_todo_done(db.add_todo(project["id"], "One finished thing")["id"], True)
+    text = todos.prompt_section(project["id"])
+    assert "not shown" not in text
+
+
+def test_one_completed_item_survives_however_long_it_is():
+    """A half that admits nothing claims the half is empty, which is a
+    different and worse claim than "here is the last thing you finished".
+
+    Tested against `_done_tail` directly rather than through the checklist,
+    because `db.add_todo` truncates text at 500 characters - so no item stored
+    through the public API can ever exceed the budget on its own, and a test
+    that went that way passed whether or not the guard existed. Found by the
+    delete-the-fix sweep: removing the guard broke nothing."""
+    fat = {"id": 1, "done": 1, "tags": "", "text": "x" * 3000}
+    kept, dropped = todos._done_tail([fat], budget=1000)
+    assert len(kept) == 1
+    assert dropped == 0
+
+
+def test_a_run_of_oversized_items_keeps_exactly_the_newest_one():
+    rows = [
+        {"id": i, "done": 1, "tags": "", "text": f"item {i} " + "x" * 3000}
+        for i in range(4)
+    ]
+    kept, dropped = todos._done_tail(rows, budget=1000)
+    assert len(kept) == 1 and dropped == 3
+    assert "item 3 " in kept[0]
+
+
+def test_the_caller_can_state_its_own_budget():
+    """The parameter has to actually be read, not just accepted. If it were
+    ignored these fixtures would silently go back to depending on
+    DONE_TAIL_BYTES - which is the coupling it exists to remove."""
+    rows = [
+        {"id": i, "done": 1, "tags": "", "text": f"item {i} " + "x" * 3000}
+        for i in range(4)
+    ]
+    roomy, dropped = todos._done_tail(rows, budget=100_000)
+    assert len(roomy) == 4 and dropped == 0
+    # ...and the same rows under the module default keep only the newest.
+    assert len(todos._done_tail(rows)[0]) == 1
 
 
 def test_the_list_reaches_the_run_prompt(project):
@@ -239,6 +321,51 @@ def test_re_adding_an_item_the_agent_already_has_is_not_counted_as_new(project):
     counts = todos.apply_updates(project["id"], {"add": ["Already listed"]})
     assert counts["added"] == 0
     assert len(db.list_todos(project["id"])) == 1
+
+
+def test_tags_written_into_the_text_become_real_tags(project):
+    """Wes, 2026-08-04: "The tags often show up in the body of the todo item as
+    [tag] [tag2], and they should not." The prompt shows tags as bracketed
+    chips in front of the text, so a model restating an item writes them back
+    into `text` sooner or later - they are split off into actual tags."""
+    todos.apply_updates(
+        project["id"],
+        {"add": [{"text": "[ui] [verify] Watch the new rail", "owner": "agent", "tags": ["ui"]}]},
+    )
+    row = db.list_todos(project["id"])[0]
+    assert row["text"] == "Watch the new rail"
+    assert sorted(db.todo_tags(row)) == ["ui", "verify"]
+
+
+def test_a_bracketed_clause_that_is_not_tag_shaped_stays_in_the_text(project):
+    """Eating a word somebody meant is worse than leaving a chip in the text:
+    only short kebab-ish tokens at the very front are tags."""
+    for text in (
+        "[RESEARCH.md §1] read the sandbox notes",
+        "fix the [blocked] label rendering",
+        "[a very long bracketed clause that is plainly a sentence] trailing",
+    ):
+        todos.apply_updates(project["id"], {"add": [{"text": text}]})
+    kept = [r["text"] for r in db.list_todos(project["id"])]
+    assert kept == [
+        "[RESEARCH.md §1] read the sandbox notes",
+        "fix the [blocked] label rendering",
+        "[a very long bracketed clause that is plainly a sentence] trailing",
+    ]
+
+
+def test_the_prompt_tells_the_agent_to_keep_items_short_and_close_stale_ones(project):
+    """Wes, 2026-08-04: "Todo lists get so gummed up ... it should stop
+    assigning things like 'Go verify this feature' ... Todo items would
+    ideally be much shorter than these paragraphs." Both halves of the fix are
+    prompt guidance; pin the load-bearing phrases in both places it is taught."""
+    db.add_todo(project["id"], "one item")
+    section = todos.prompt_section(project["id"])
+    assert "ONE sentence" in section
+    assert "never write tags into the text" in section.lower()
+    assert "go admire or verify" in section  # the go-verify chore is called out by name
+    assert "ONE sentence" in agent_runner.AGENT_CONTRACT
+    assert "go verify/check out this feature" in agent_runner.AGENT_CONTRACT
 
 
 def test_a_missing_or_malformed_block_is_ignored(project):

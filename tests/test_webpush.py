@@ -336,7 +336,7 @@ async def test_one_dead_device_does_not_mute_the_rest(temp_data_dir, monkeypatch
 async def test_notify_pushes_to_enrolled_devices(temp_data_dir, monkeypatch):
     pushed = []
 
-    async def fake_push_to(subs, title, message, urgency="normal"):
+    async def fake_push_to(subs, title, message, urgency="normal", **extra):
         pushed.append((title, message, urgency))
         return 1
 
@@ -349,7 +349,7 @@ async def test_notify_pushes_to_enrolled_devices(temp_data_dir, monkeypatch):
 async def test_notify_marks_questions_urgent(temp_data_dir, monkeypatch):
     pushed = []
 
-    async def fake_push_to(subs, title, message, urgency="normal"):
+    async def fake_push_to(subs, title, message, urgency="normal", **extra):
         pushed.append(urgency)
         return 1
 
@@ -368,7 +368,7 @@ async def test_the_test_button_still_reaches_every_device(temp_data_dir, monkeyp
     person pressing it is asking."""
     reached = []
 
-    async def fake_push_to(subs, title, message, urgency="normal"):
+    async def fake_push_to(subs, title, message, urgency="normal", **extra):
         reached.extend(s["endpoint"] for s in subs)
         return len(subs)
 

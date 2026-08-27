@@ -1,4 +1,4 @@
-"""One-tap answer buttons for questions delivered over Telegram.
+"""One-tap answer buttons for questions, on Telegram and on the lock screen.
 
 Wes answers most portal questions from his phone, and a lot of them are
 really a single tap's worth of decision - "want me to spend it down?",
@@ -26,6 +26,11 @@ The option list is stored on the question row at creation time
 (`questions.quick_options`, JSON), because the tap callback only carries an
 index - the text it resolves to must be the text that was offered, not
 whatever the list would derive to today.
+
+The same option list becomes the buttons on a Declarative Web Push
+notification (`push_actions`), which is the channel that actually reaches an
+enrolled phone. It is a narrower surface than Telegram's - two buttons, all or
+nothing, no skip - and the reasons are on that function.
 """
 from __future__ import annotations
 
@@ -125,6 +130,46 @@ def keyboard(question_id: int, options: list[str]) -> dict:
     one_row = len(buttons) <= 3 and all(len(b["text"]) <= 12 for b in buttons)
     rows = [buttons] if one_row else [[b] for b in buttons]
     return {"inline_keyboard": rows}
+
+
+# How many buttons a lock-screen notification may carry. Two, because that is
+# what `Notification.maxActions` actually is on the browsers that matter and
+# what iOS reliably renders for a declarative push - the WebKit material on
+# this is examples rather than a stated number, so the conservative one wins.
+PUSH_MAX_ACTIONS = 2
+
+
+def push_actions(question_id: int, options: list[str], base_url: str) -> list[dict]:
+    """The buttons on a web-push notification for a question.
+
+    All of the options or none of them. Telegram can show four in a column, a
+    lock screen cannot, and quietly truncating a four-way choice down to its
+    first two would offer a one-tap answer to somebody who never saw that the
+    other two existed - an uninformed tap recorded as a decision, which is
+    exactly the failure the option list is meant to prevent. A question with
+    more options than fit gets no buttons and is answered by tapping the
+    notification body, which opens the full list.
+
+    `skip` is deliberately not offered here. It costs one of the two slots, and
+    dismissing the notification already leaves the question exactly where
+    skipping would - open on the questions page, waiting.
+
+    Each button navigates rather than posting: that is all the spec allows, so
+    the URL lands on a page that submits itself. The index is what travels, not
+    the label, for the same reason the Telegram callback carries one - the text
+    it resolves to must be the text that was offered.
+    """
+    if not options or len(options) > PUSH_MAX_ACTIONS:
+        return []
+    root = base_url if base_url.endswith("/") else base_url + "/"
+    return [
+        {
+            "action": f"q{question_id}-{idx}",
+            "title": text,
+            "navigate": f"{root}questions/{question_id}/tap?opt={idx}",
+        }
+        for idx, text in enumerate(options)
+    ]
 
 
 def parse_callback(data: str) -> Optional[tuple[int, str]]:

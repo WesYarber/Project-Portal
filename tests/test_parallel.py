@@ -252,10 +252,14 @@ def test_reason_when_there_is_nothing_to_work_on(temp_data_dir):
 
 
 def test_reason_when_every_project_is_capped(client, projects):
+    """Wording changed when the cap gained a board-wide default: the reason a
+    project stopped here is now as often that default as a number set on the
+    project itself, so "its own per-project daily cap" was wrong half the time.
+    See tests/test_project_run_cap.py."""
     for p in projects:
         client.post(f"/project/{p['slug']}/run-cap", data={"max_runs_per_day": "1"})
         db.finish_run(db.create_run(p["id"], "build", "opus"), "ok")
-    assert "per-project daily cap" in worker.idle_reason()
+    assert "taken all its runs for today" in worker.idle_reason()
 
 
 def test_reason_when_backing_off(projects):

@@ -9,6 +9,18 @@
 
 <h2>Profile</h2>
 <div class="card">
+  <div class="memory-head">
+    <span class="small muted">{{ profile_chars }} characters, whole, in every prompt{% if profile_cap_kb %} &middot; cap {{ profile_cap_kb }} KB{% endif %}</span>
+  </div>
+  {% if profile_over_cap %}
+  {# No compact button here on purpose: the daily reflect already rewrites this
+     whole file every day, so it is told the cap and does the shortening as part
+     of a run that was happening anyway. A second agent would be a second bill. #}
+  <p class="hint warn">Over the {{ profile_cap_kb }} KB cap. This file is pasted whole
+    into every run of every project, so the next daily reflect is told to bring it back
+    under (snapshotting it to revisions first). Past twice the cap a prompt starts
+    leaving out whole sections from the bottom, named rather than silently.</p>
+  {% endif %}
   <form method="post" action="/memory/profile">
     <div class="field">
       {# rows is a floor, not the size: the textarea grows to fit its content
@@ -23,20 +35,46 @@
 <h2>Learnings</h2>
 <div class="card">
   <div class="memory-head">
-    <span class="small muted">{{ learnings_lines }} lines &middot; {{ learnings_chars }} characters, in every prompt{% if learnings_cap %} &middot; cap {{ learnings_cap }} lines{% endif %}</span>
+    <span class="small muted">{{ learnings_lines }} lines &middot; {{ '%.1f'|format(learnings_reach.total / 1024) }} KB, of which
+      {{ '%.1f'|format(learnings_reach.in_prompt / 1024) }} KB reaches a prompt{% if learnings_cap %} &middot; cap {{ learnings_cap }} KB{% endif %}</span>
     <form method="post" action="/memory/compact" class="inline-form">
       {% if compacting %}
       <button type="submit" class="btn secondary" disabled>compacting...</button>
+      {% elif memory_busy %}
+      <button type="submit" class="btn secondary" disabled>memory in use...</button>
       {% else %}
       <button type="submit" class="btn secondary"
-              data-confirm="Send an agent through learnings.md to distil it? The current version is kept under revisions.">compact this file</button>
+              data-confirm="Send an agent through learnings.md to distill it? The current version is kept under revisions.">compact this file</button>
       {% endif %}
     </form>
   </div>
-  {% if learnings_over_cap %}
-  <p class="hint warn">Over the {{ learnings_cap }}-line cap. The portal will auto-compact
-    this at the next quiet day-boundary (snapshotting it to revisions first); press
-    compact above to do it now.</p>
+  {% if memory_busy and not compacting %}
+  {# Said out loud rather than left as a dead button: the reason is not visible
+     anywhere else on this page, and a disabled control with no explanation is
+     indistinguishable from a broken one. #}
+  <p class="hint">An agent is working in the memory directory right now - the daily
+    reflect, or a compaction started before the last restart. Compacting waits for it
+    rather than letting two agents rewrite this file at once.</p>
+  {% endif %}
+  {# One warning, not two. Being over the cap and having entries out of reach are
+     the same story - the reach is the reason, the auto-compact is what happens
+     about it - and two orange paragraphs saying it twice is a wall of prose on a
+     phone. Either half can appear without the other: a file of few enormous lines
+     is over the cap with everything still readable, and a file under the cap can
+     still have a tail nothing carries. #}
+  {% if learnings_over_cap or learnings_reach.entries_out %}
+  <p class="hint warn">
+    {%- if learnings_over_cap %}Over the {{ learnings_cap }} KB cap &mdash; auto-compacting at
+    the next quiet day-boundary (snapshotted to revisions first), or press compact above.
+    {% endif -%}
+    {%- if learnings_reach.entries_out %}{{ learnings_reach.entries_out }} of
+    {{ learnings_reach.entries_total }} learnings never reach a prompt, past the
+    {{ '%.0f'|format(learnings_reach.budget / 1024) }} KB it is carried in:
+    {%- for u in learnings_reach.unreachable %}
+    {{ u.entries }} at the end of &ldquo;{{ u.heading }}&rdquo;{{ ";" if not loop.last else "." }}
+    {%- endfor %}
+    {%- endif %}
+  </p>
   {% endif %}
   <form method="post" action="/memory/learnings">
     <div class="field">
@@ -180,15 +218,16 @@
     snapshots the current version first, so it is never a one-way door.</p>
 </div>
 
-{# Every learning the write gate supersedes (a refined rephrasing replacing an
-   old one) or retires (an explicit delete) is logged here rather than dropped
-   silently, so a fact that left the live file is still browsable with the date
-   and reason it went. #}
+{# Every learning that leaves the live file is logged here rather than dropped
+   silently: the write gate's supersedes and deletes, and - since the 2026-08-07
+   compaction cut 171 bullets to 46 - whatever a compaction drops outright.
+   Unlike a revision, this never ages out. #}
 <h2>Retired learnings</h2>
 <div class="card">
-  <p class="small muted">Facts the write gate removed from <code>learnings.md</code> - a
-    line <em>superseded</em> by a refined rephrasing, or <em>retired</em> as no longer true -
-    kept here with the date and reason rather than dropped without a trace.</p>
+  <p class="small muted">Facts that left <code>learnings.md</code> - a line
+    <em>superseded</em> by a refined rephrasing, <em>retired</em> as no longer true, or
+    <em>compacted</em> away as no longer worth its place - kept here with the date and
+    reason. A revision ages out after {{ revision_keep }} newer ones; this does not.</p>
   {% if archived_learnings %}
   <ul class="archive-list scroll-cap scroll-cap-panel">
     {% for a in archived_learnings %}
@@ -252,7 +291,13 @@
 {% if suggestions %}
 <div class="project-grid">
   {% for s in suggestions %}
-  <div class="project-cell">
+  {# The id is identity for the live-refresh morph, and it matters now that
+     dismissing patches this page rather than reloading it: a dismissed
+     suggestion changes its badge and swaps its buttons in place, and the
+     `<details>` holding a long description keeps whatever the reader had open.
+     Paired by position instead, an open description would end up on the
+     neighboring cell. #}
+  <div class="project-cell" id="suggestion-{{ s.id }}">
     <span class="cell-title">{{ s.title }}</span>
     {#
       Wes, 2026-07-28: "Allow the Suggestions in the memory tab to be opened to
@@ -293,10 +338,17 @@
     </span>
     {% if s.status == 'proposed' %}
     <div class="button-row" style="margin-top:0.5rem;">
+      {# Deliberately NOT data-inplace: accepting creates a project and the
+         route redirects to it, which is the point of pressing it. An in-place
+         post would leave you here on the memory page while a project appeared
+         somewhere you were not looking. #}
       <form method="post" action="/suggestions/{{ s.id }}/accept" class="inline">
         <button type="submit">accept</button>
       </form>
-      <form method="post" action="/suggestions/{{ s.id }}/dismiss" class="inline">
+      {# data-inplace: dismissing comes back to this page, and the suggestions
+         are a list you work down - each dismissal used to send you back to the
+         top of a long page. #}
+      <form method="post" action="/suggestions/{{ s.id }}/dismiss" class="inline" data-inplace>
         <button type="submit" class="secondary">dismiss</button>
       </form>
     </div>
@@ -308,7 +360,7 @@
        was the button. It also times out on its own after a week; see
        db.SUGGESTION_DISMISSAL_DAYS. #}
     <div class="button-row" style="margin-top:0.5rem;">
-      <form method="post" action="/suggestions/{{ s.id }}/restore" class="inline">
+      <form method="post" action="/suggestions/{{ s.id }}/restore" class="inline" data-inplace>
         <button type="submit" class="secondary">undo dismiss</button>
       </form>
       <span class="hint">comes back on its own {{ dismissal_days }} days after it was dismissed</span>

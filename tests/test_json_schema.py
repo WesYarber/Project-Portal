@@ -170,10 +170,27 @@ async def test_summary_bullets_replace_the_raw_json_result_text(tmp_path, fake_c
 
 
 @pytest.mark.asyncio
-async def test_a_structured_report_without_bullets_keeps_the_raw_text(tmp_path, fake_claude):
-    fake_claude(_emit([_result_event(structured_output={"summary": []})]))
+async def test_no_bullets_leaves_the_summary_blank_rather_than_json(tmp_path, fake_claude):
+    """A reflect run legitimately reports `summary: []`, and with structured
+    output the CLI's `result` string is the report's own JSON - so leaving the
+    raw text in place wrote a serialized object into the run summary. Every
+    reflect run on this install wore one."""
+    report = {"summary": [], "journal_entry_md": None}
+    fake_claude(_emit([_result_event(
+        result=json.dumps(report), structured_output=report,
+    )]))
     result = await agent_runner.run_claude("prompt", tmp_path / "ws", "opus", timeout_min=1)
-    assert result.result_text == "raw text"
+    assert result.result_text == ""
+
+
+@pytest.mark.asyncio
+async def test_no_bullets_falls_back_to_the_journal_heading(tmp_path, fake_claude):
+    report = {"summary": [], "journal_entry_md": "\n## What the run did\n\nbody\n"}
+    fake_claude(_emit([_result_event(
+        result=json.dumps(report), structured_output=report,
+    )]))
+    result = await agent_runner.run_claude("prompt", tmp_path / "ws", "opus", timeout_min=1)
+    assert result.result_text == "What the run did"
 
 
 # --- worker wiring ----------------------------------------------------------

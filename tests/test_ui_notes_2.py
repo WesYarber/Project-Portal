@@ -50,20 +50,30 @@ def test_the_banner_is_only_on_the_dashboard(client, project):
     assert 'class="banner"' not in client.get("/project/fridge").text
 
 
-# --- attachments fold -------------------------------------------------------
+# --- the Files fold ---------------------------------------------------------
+# Uploads used to have a section of their own. Wes, 2026-08-01: "combine the
+# workspace and attachments sections into the new files section." An attachment
+# is written into `<workspace>/attachments/`, so the two were always one place.
 
-def test_the_attachments_section_is_collapsed_by_default(client, project):
+def test_the_files_section_is_collapsed_by_default(client, project):
     db.add_attachment(project["id"], "shot.png", "0001-shot.png", "image/png", 1234)
     html = client.get("/project/fridge").text
-    assert '<details class="fold-section attach-block" id="attachments">' in html
+    assert 'class="fold-section files-block" id="files"' in html
     # No `open` attribute: it starts folded.
-    assert 'id="attachments" open' not in html
+    assert 'id="files" open' not in html
 
 
-def test_the_attachment_count_is_readable_without_opening_it(client, project):
+def test_the_upload_count_is_readable_without_opening_it(client, project):
     db.add_attachment(project["id"], "shot.png", "0001-shot.png", "image/png", 1234)
     db.add_attachment(project["id"], "clip.mp4", "0002-clip.mp4", "video/mp4", 999)
-    assert "2 files" in client.get("/project/fridge").text
+    assert "2 uploaded" in client.get("/project/fridge").text
+
+
+def test_a_project_with_no_uploads_says_nothing_about_them(client, project):
+    """The summary carries the workspace count always and the upload count only
+    when there is one - "0 uploaded" is a fact nobody needs."""
+    html = client.get("/project/fridge").text
+    assert "uploaded" not in html
 
 
 # --- the work summary banner on historical runs -----------------------------

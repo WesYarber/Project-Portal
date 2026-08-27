@@ -109,6 +109,31 @@ def test_delete_refuses_bad_or_missing_names(temp_data_dir, bad):
     assert (memory.promoted_skills_dir() / "real-skill").exists()
 
 
+def test_delete_refuses_a_traversal_onto_a_directory_that_really_is_there(temp_data_dir):
+    """The case the parametrized test above only looks like it covers.
+
+    Every one of its bad names points at something that does not exist, so
+    `delete_promoted_skill` returns False at `target.is_dir()` and neither path
+    guard is reached. Both of them could be deleted and it still passed - which
+    a delete-the-fix sweep found, and which matters because the name arrives as
+    a path parameter on `POST /memory/skill/{name}/delete` and this function is
+    an `rm -rf`.
+
+    So the directory a traversal would land on has to be real for the refusal to
+    be worth anything. It stands in for what is actually one level up from the
+    skills root on a live install: other people's working checkouts.
+    """
+    root = memory.promoted_skills_dir()
+    _write_skill(root, "real-skill")
+    victim = root.parent / "someone-elses-checkout"
+    victim.mkdir(parents=True, exist_ok=True)
+    (victim / "work.txt").write_text("a whole project", encoding="utf-8")
+
+    assert memory.delete_promoted_skill("../someone-elses-checkout") is False
+    assert (victim / "work.txt").is_file(), "a traversal removed a real directory"
+    assert (root / "real-skill").is_dir()
+
+
 # --------------------------------------------------------------------------
 # They reach workspaces (worker._sync_skills) and prompts (_skills_section)
 # --------------------------------------------------------------------------

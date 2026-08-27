@@ -91,19 +91,9 @@ def test_child_points_at_its_parent(temp_data_dir):
 def test_child_starts_in_the_backlog(temp_data_dir):
     """"Some games won't be developed for now" - a split must not commit Wes to
     building every piece of it."""
-    parent = _parent(stage="active", build_approved=True, priority=7)
+    parent = _parent(stage="active", build_approved=True)
     child = subprojects.create_child(parent, "Catan")
     assert child["stage"] == "backlog"
-
-
-def test_child_priority_steps_down_from_the_parent(temp_data_dir):
-    parent = _parent(priority=7)
-    assert subprojects.create_child(parent, "Catan")["priority"] == 6
-
-
-def test_child_priority_never_goes_negative(temp_data_dir):
-    parent = _parent(priority=0)
-    assert subprojects.create_child(parent, "Catan")["priority"] == 0
 
 
 def test_child_inherits_build_approval(temp_data_dir):
@@ -115,6 +105,32 @@ def test_child_inherits_build_approval(temp_data_dir):
 def test_child_of_an_unapproved_parent_is_unapproved(temp_data_dir):
     parent = _parent(build_approved=0)
     assert subprojects.create_child(parent, "Catan")["build_approved"] == 0
+
+
+def test_child_inherits_the_parents_members(temp_data_dir):
+    # A child split out of Karli's project goes on Karli's board - the owner
+    # fallback in create_project must not reassign her split (Wes, 2026-08-06,
+    # about the idea form; same wrong default here).
+    from app import people
+
+    parent = _parent()
+    karli = people.add(name="Karli", gender="female")
+    people.set_members(parent["id"], {karli})
+
+    child = subprojects.create_child(parent, "Catan")
+    assert people.member_ids(child["id"]) == {karli}
+
+
+def test_child_of_a_shared_parent_is_shared_too(temp_data_dir):
+    from app import people
+
+    parent = _parent()
+    karli = people.add(name="Karli", gender="female")
+    owner_id = int(people.owner()["id"])
+    people.set_members(parent["id"], {owner_id, karli})
+
+    child = subprojects.create_child(parent, "Catan")
+    assert people.member_ids(child["id"]) == {owner_id, karli}
 
 
 def test_child_inherits_the_parents_kind_when_none_is_given(temp_data_dir):

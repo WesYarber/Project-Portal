@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{# The page an answer button on a lock-screen notification lands on.
+
+   A notification action can only navigate - the Declarative Web Push spec has
+   no background-fetch button - so the answer has to be submitted from here.
+   It is a POST that this page fires at itself on load rather than a mutating
+   GET, because the URL is one Safari may preload and one that sits in history:
+   a GET that answered would let a link preview decide something for Wes.
+
+   So: one tap on the phone, the app flashes this, and it lands on the
+   questions page with the answer recorded. Without JavaScript the same form is
+   a real button that says what it will do. #}
+
+{% block title %}{{ heading }} - Project Portal{% endblock %}
+{% block header_stat %}answering{% endblock %}
+
+{% block content %}
+<section class="panel tap-answer">
+  <h2>{{ heading }}</h2>
+  <p class="tap-question">{{ question.question }}</p>
+
+  {% if choice %}
+  <form id="tap-form" method="post" action="/questions/{{ question.id }}/answer">
+    <input type="hidden" name="choice" value="{{ choice }}">
+    <input type="hidden" name="next" value="/questions">
+    <p class="tap-choice">Answering <strong>{{ choice }}</strong>&hellip;</p>
+    <button type="submit" class="btn">Send this answer</button>
+  </form>
+  <script>
+    // Fired on load so the common path is one tap and a flash. The button
+    // above stays as the no-JavaScript path and as the thing to press if
+    // this submit is somehow refused.
+    document.getElementById('tap-form').requestSubmit();
+  </script>
+  {% else %}
+  <p class="tap-note">{{ note }}</p>
+  <p><a class="btn" href="/questions">Open the questions page</a></p>
+  {% endif %}
+</section>
+{% endblock %}

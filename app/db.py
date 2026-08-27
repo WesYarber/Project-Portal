@@ -11,7 +11,7 @@ import re
 import sqlite3
 import threading
 from datetime import datetime, timedelta, timezone
-from typing import Any, Iterable, NamedTuple, Optional, Sequence
+from typing import Any, Iterable, Mapping, NamedTuple, Optional, Sequence
 
 from app import config, qdedupe
 
@@ -47,6 +47,15 @@ CREATE TABLE IF NOT EXISTS projects (
     initial_idea TEXT DEFAULT '',
     description_locked INTEGER NOT NULL DEFAULT 0,
     title_locked INTEGER NOT NULL DEFAULT 0,
+    -- A better title an agent proposed while the title was locked. Wes, in his
+    -- own words on 2026-07-29: "if a title is defined, do not change it. If you
+    -- want to suggest alternative titles, feel free to, but do not change a
+    -- title that the user set themselves." So a locked title is not a gag - the
+    -- proposal lands here and waits for one click on the project page.
+    title_suggestion TEXT,
+    -- The last suggestion he turned down, kept so the same rename cannot be
+    -- proposed at him every single run.
+    title_suggestion_rejected TEXT,
     -- Has Wes okayed building this? Agents can triage and plan on their own,
     -- but writing code is gated on this being 1 (see app/worker.py). Set when
     -- he moves a project to `building` himself, or presses "approve build".
@@ -68,7 +77,6 @@ CREATE TABLE IF NOT EXISTS projects (
     -- click). Cleared automatically when the next run on the project reports,
     -- so it cannot go stale silently.
     blocked_on TEXT,
-    priority INTEGER NOT NULL DEFAULT 0,
     model TEXT,
     max_runs_per_day INTEGER,
     created_at TEXT NOT NULL,
@@ -94,6 +102,20 @@ CREATE TABLE IF NOT EXISTS questions (
     answer TEXT,
     answered_at TEXT,
     telegram_msg_id INTEGER
+);
+
+-- Every Telegram copy of a question, one row per chat it went to. The
+-- legacy questions.telegram_msg_id column only ever held the FIRST copy's
+-- id, so when a question reached two chats and somebody answered it, the
+-- other person's copy kept its buttons and looked unanswered forever. The
+-- sent text rides along because editMessageText needs the full new text -
+-- the outcome is appended to what was actually said, not reconstructed.
+CREATE TABLE IF NOT EXISTS question_messages (
+    question_id INTEGER NOT NULL REFERENCES questions(id),
+    chat_id TEXT NOT NULL,
+    message_id INTEGER NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (question_id, chat_id)
 );
 
 -- A working checklist per project, split by who has to do the thing. The
@@ -141,7 +163,15 @@ CREATE TABLE IF NOT EXISTS runs (
     last_event_at TEXT,
     -- The one-off task this run belongs to, for runs that have no project.
     -- See the oneoff_tasks table below and app/oneoff.py.
-    oneoff_id INTEGER
+    oneoff_id INTEGER,
+    -- The project repo's HEAD before and after this run, and when its commits
+    -- were reverted from the portal. See app/revert.py and _ADDED_COLUMNS.
+    ws_head_before TEXT,
+    ws_head_after TEXT,
+    reverted_at TEXT,
+    -- The five-hour usage meter either side of this run. See app/headroom.py.
+    session_percent_start REAL,
+    session_percent_end REAL
 );
 
 CREATE TABLE IF NOT EXISTS suggestions (
@@ -170,7 +200,11 @@ CREATE TABLE IF NOT EXISTS attachments (
     stored_name TEXT NOT NULL,
     mime TEXT NOT NULL DEFAULT 'application/octet-stream',
     size INTEGER NOT NULL DEFAULT 0,
-    note TEXT
+    note TEXT,
+    -- Whisper's text for an audio upload (app/transcribe.py). NULL means "not
+    -- transcribed yet"; a failure stores "[transcription failed: ...]" so the
+    -- UI and the agent prompt say so rather than showing nothing.
+    transcript TEXT
 );
 
 -- One-off agent tasks: a scratch chat session with an agent, for work that
@@ -306,6 +340,10 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("initial_idea", "TEXT DEFAULT ''"),
         ("description_locked", "INTEGER NOT NULL DEFAULT 0"),
         ("title_locked", "INTEGER NOT NULL DEFAULT 0"),
+        # See the schema comment: a locked title still collects proposals, it
+        # just does not apply them.
+        ("title_suggestion", "TEXT"),
+        ("title_suggestion_rejected", "TEXT"),
         ("build_approved", "INTEGER NOT NULL DEFAULT 0"),
         # Set once Wes has had his say about the folder name - either by
         # renaming it himself or by dismissing the suggestion. See
@@ -342,13 +380,14 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # port and is the only one who knows the number. See app/preview.py.
         ("preview_url", "TEXT NOT NULL DEFAULT ''"),
     ],
-    "runs": [
-        ("events", "INTEGER NOT NULL DEFAULT 0"),
-        ("last_activity", "TEXT"),
-        ("last_event_at", "TEXT"),
-        ("report_summary", "TEXT"),
-        ("oneoff_id", "INTEGER"),
-    ],
+    # NOTE: there is exactly one "runs" key in this dict, further down, and the
+    # same goes for every other table. A dict literal keeps only its LAST value
+    # for a repeated key, so a second `"runs": [...]` here would silently
+    # discard everything in it - migrations that never run, on a table that
+    # looks correct on any fresh install because SCHEMA creates the columns
+    # anyway. That is exactly what happened to this block's five columns, and it
+    # was invisible until a sixth was added in 2026-08.
+    # `test_added_columns_has_no_duplicate_table_keys` fails the build on it now.
     # The short number a question is referred to by ("Q7"). Recycled: see
     # `next_question_slot`. NULL once the question is answered or dismissed.
     # quick_options: JSON list of one-tap answers offered on the Telegram
@@ -366,10 +405,6 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # SQLite cannot ALTER a populated table to add a column with a foreign key.
     "questions": [("slot", "INTEGER"), ("quick_options", "TEXT NOT NULL DEFAULT ''"),
                   ("answered_by", "INTEGER")],
-    "todos": [
-        ("cleared_at", "TEXT"),
-        ("tags", "TEXT NOT NULL DEFAULT ''"),
-    ],
     # When this entry was rendered into a prompt an agent actually received.
     # NULL means "written, but no model has seen it yet" - which is exactly the
     # window in which one of Wes's notes is still his to edit or take back. Set
@@ -385,6 +420,20 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # projects.parent_id: SQLite cannot add a column with a foreign key to a
     # populated table, and this is added by ALTER on every existing portal.db.
     "journal": [("delivered_at", "TEXT"), ("person_id", "INTEGER")],
+    "attachments": [
+        ("transcript", "TEXT"),
+        # When this file was moved into the project workspace, where an agent
+        # can see it. NULL means it is still staged in config.INCOMING_DIR and
+        # no run has been given it yet - see app/attachments.py.
+        #
+        # Every row that predates this column gets NULL and its file is already
+        # in the workspace, which `attachments.reveal` handles by stamping a row
+        # whose file is where it belongs rather than insisting on the move. So
+        # there is no backfill here: the first prompt built on a project does
+        # it, and doing it that way means the same code path covers a file that
+        # was moved by hand or restored from a backup.
+        ("revealed_at", "TEXT"),
+    ],
     # This person's own look, as a JSON object of appearance keys they have
     # chosen (see config.APPEARANCE_CHOICES). Wes, 2026-07-28: "It would be
     # cool as well if she was able to customize the theme of the site for her
@@ -401,10 +450,11 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     #
     # `gender` replaced a `pronouns` column on 2026-07-28 (Wes: "get rid of
     # the pronoun stuff and just ask someone if they are male or female").
-    # The old column is left in place on databases that have it rather than
-    # dropped: _backfill_gender copies its meaning across once, and an
-    # abandoned column costs nothing while an ALTER ... DROP on a live table
-    # is the kind of migration that has no undo.
+    # The old column was left in place for a while rather than dropped, so the
+    # backfill had a source; `_drop_pronouns` takes it off on 2026-08-16, and
+    # carries that one-time move inside itself so an install upgrading from
+    # before the rename still keeps its answers. The `pronouns` key in
+    # portal.toml is a DIFFERENT thing and is still read - see site.load.
     #
     # `ntfy_topic` and `telegram_chat_id` are this person's own notification
     # channels, '' while they have none. Empty is not "send nowhere": it falls
@@ -433,6 +483,8 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # with exactly one member is that member's, because the set of people who
     # could do it has one element in it. See todos.responsible_for.
     "todos": [
+        ("cleared_at", "TEXT"),
+        ("tags", "TEXT NOT NULL DEFAULT ''"),
         ("person_id", "INTEGER"),
     ],
     # Whose phone this is, or NULL for a device enrolled before anyone asked.
@@ -456,6 +508,24 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # experiment instead of with the portal's own history. See
     # app/promptbudget.py.
     "runs": [
+        ("events", "INTEGER NOT NULL DEFAULT 0"),
+        ("last_activity", "TEXT"),
+        ("last_event_at", "TEXT"),
+        ("report_summary", "TEXT"),
+        ("oneoff_id", "INTEGER"),
+        # The project repo's HEAD either side of the run, so what it committed
+        # can be named and undone later. `ws_head_before` was already being
+        # computed for the proof check and thrown away; persisting both is what
+        # makes app/revert.py possible. NULL on every run that predates this,
+        # which is exactly the runs whose undo button is correctly absent - the
+        # range cannot be reconstructed after the fact, because "the commits
+        # around that timestamp" is a guess and this is a destructive button.
+        ("ws_head_before", "TEXT"),
+        ("ws_head_after", "TEXT"),
+        # When somebody reverted this run's commits from the portal. Set once
+        # and never cleared: it is a record of what happened, not a toggle, and
+        # the undo of an undo is a git operation rather than a second button.
+        ("reverted_at", "TEXT"),
         ("input_tokens", "INTEGER"),
         ("output_tokens", "INTEGER"),
         ("cache_write_tokens", "INTEGER"),
@@ -468,6 +538,30 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # and without the unit name written down a fresh process has no way to
         # ask whether that is the case. NULL for a run that was never scoped.
         ("scope_unit", "TEXT"),
+        # The workspace directory this run holds a kernel lease on
+        # (app/worklock.py), or NULL if it took no lease. The reaper's SECOND
+        # completion signal, and the only one that works when a process the
+        # agent detached is holding its scope open forever.
+        #
+        # The NULL matters as much as the value. Reflect, compaction and one-off
+        # runs take no lease, so their workspace always reads free - settling a
+        # run on a free lease it never held would mark every one of them dead
+        # the moment it started. Written only where `worklock.wrap` actually
+        # applied, so "no lease recorded" and "lease is free" can never be
+        # confused for each other. See worker._reap_adopted.
+        ("lock_dir", "TEXT"),
+        # The five-hour usage meter as it read when this run started and when
+        # it ended. The portal was holding scheduled runs at a fixed 90% of
+        # that window and had no way to say whether the 10 points it left were
+        # enough for a run to finish inside; on 2026-08-06 and 2026-08-07 seven
+        # runs that had done real work (86-311 events apiece) were killed
+        # part-way through by the session limit. Answering that question needs
+        # the meter measured *against* a run rather than read in isolation, so
+        # both ends are written down. NULL whenever the reading was missing or
+        # stale, which is not the same as zero and must never be read as it.
+        # See app/headroom.py.
+        ("session_percent_start", "REAL"),
+        ("session_percent_end", "REAL"),
     ],
 }
 
@@ -532,15 +626,76 @@ def set_run_scope(run_id: int, unit: Optional[str]) -> None:
         conn.commit()
 
 
-def running_runs_with_scopes() -> list[tuple[int, Optional[int], Optional[str]]]:
-    """Every 'running' row as (run_id, project_id, scope_unit). The worker uses
-    this to find runs it does not own and check whether they are still alive."""
+class RunningRun(NamedTuple):
+    """Everything a portal process that did NOT start a run can use to find out
+    whether it is still alive: the systemd scope containing it, and the
+    workspace directory it leases. Both outlive the process that minted them,
+    and both can be NULL - a run may be scoped and unleased (the reflect), or
+    neither (capping and leasing both off)."""
+
+    run_id: int
+    project_id: Optional[int]
+    scope_unit: Optional[str]
+    lock_dir: Optional[str]
+
+
+def running_run_handles() -> list[RunningRun]:
+    """Every 'running' row, with the handles a foreign process can act on. The
+    worker uses this to find runs it does not own and check whether they have
+    ended."""
     conn = get_conn()
     with _LOCK:
         rows = conn.execute(
-            "SELECT id, project_id, scope_unit FROM runs WHERE status = 'running'"
+            "SELECT id, project_id, scope_unit, lock_dir FROM runs "
+            "WHERE status = 'running'"
         ).fetchall()
-    return [(int(r["id"]), r["project_id"], r["scope_unit"]) for r in rows]
+    return [
+        RunningRun(int(r["id"]), r["project_id"], r["scope_unit"], r["lock_dir"])
+        for r in rows
+    ]
+
+
+def set_run_lease(run_id: int, lock_dir: Optional[str]) -> None:
+    """Record the workspace this run holds a kernel lease on.
+
+    Only ever called where the lease actually applied. See the `lock_dir` column
+    comment: a value here is a promise that a free lease means a dead agent, and
+    writing one for a run that took no lease breaks that promise in the
+    direction that settles live runs."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute("UPDATE runs SET lock_dir = ? WHERE id = ?", (lock_dir, run_id))
+        conn.commit()
+
+
+def set_run_workspace_heads(
+    run_id: int, before: Optional[str], after: Optional[str]
+) -> None:
+    """Record where the project's repo stood either side of this run.
+
+    Both are written together, at the end of the run, so a row can never carry a
+    `before` with no `after` - a half-written pair would name an open-ended
+    range, and app/revert.py would offer to undo every commit made since,
+    including other runs'.
+    """
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET ws_head_before = ?, ws_head_after = ? WHERE id = ?",
+            (before, after, run_id),
+        )
+        conn.commit()
+
+
+def mark_run_reverted(run_id: int) -> None:
+    """Note that this run's commits have been undone from the portal."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET reverted_at = ? WHERE id = ? AND reverted_at IS NULL",
+            (now(), run_id),
+        )
+        conn.commit()
 
 
 def init_db() -> None:
@@ -564,6 +719,8 @@ def init_db() -> None:
         # project["status"] fail loudly rather than read a stale value.
         if "status" in {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}:
             _migrate_status_to_stage(conn)
+
+        _drop_priority(conn)
 
         # Every journal entry that existed before delivery was tracked has been
         # seen by an agent (or is not a note at all), so it is delivered. This
@@ -636,6 +793,8 @@ def init_db() -> None:
                 f"so no second agent is started into the same workspace.",
             )
 
+    _migrate_learnings_cap()
+
     for key, value in config.DEFAULT_SETTINGS.items():
         if get_setting(key) is None:
             set_setting(key, value)
@@ -646,7 +805,7 @@ def init_db() -> None:
         _seed_data()
 
     _backfill_people()
-    _backfill_gender()
+    _drop_pronouns()
     _clear_legacy_shelved_questions()
 
 
@@ -688,32 +847,54 @@ def _clear_legacy_shelved_questions() -> None:
 GENDER_BACKFILL_KEY = "people_gender_backfilled"
 
 
-def _backfill_gender() -> None:
-    """Carry the retired `pronouns` column onto `gender`, once.
+def _drop_pronouns() -> None:
+    """Take the retired `pronouns` column off an existing database.
 
-    Somebody who has already said which they are has said it, and a rename of
-    the field is not a reason to ask them again - still less a reason to
-    quietly reset them to they/them, which is what a bare `DEFAULT ''` would
-    have done to every existing row.
+    `gender` replaced it on 2026-07-28 (Wes: "get rid of the pronoun stuff and
+    just ask someone if they are male or female"), and the column was left in
+    place deliberately: `_backfill_gender` needed it as a source, and an
+    `ALTER ... DROP` on a live table has no undo. Two and a half weeks later
+    nothing reads it, and his own database says so plainly - Karli's row holds
+    `pronouns = 'they'` beside `gender = 'female'`, a value that has disagreed
+    with the truth for weeks without anything noticing, because there is no
+    longer a code path that could notice. That is what a dead column looks
+    like, and it is the situation `_drop_priority` refused to leave behind.
 
-    Guarded by a settings key rather than by "is gender empty", because ''
-    is a legitimate answer (nobody has asked) and re-running this would
-    overwrite a deliberate clearing with the stale pronoun every boot.
+    Idempotent by inspection rather than by a settings flag: the column's own
+    absence is the guard, the same shape `_migrate_status_to_stage` and
+    `_drop_priority` use, and it cannot drift out of step with what it guards.
+
+    **The backfill happens here or it never happens.** An install upgrading
+    from before 2026-07-28 straight to today has a `pronouns` column full of
+    answers and an empty `gender` column, and the flag that says otherwise has
+    never been set. Deleting `_backfill_gender` outright would reset every one
+    of those people to they/them on the boot that dropped the column - the
+    exact failure that function was written to prevent, arriving by way of its
+    removal. So its body runs first, under its own flag, and only then does the
+    column go. The flag still guards it because '' is a legitimate answer
+    (nobody has asked), and re-running the move would put a stale pronoun back
+    over a clearing somebody meant.
 
     The OWNER is skipped, and that is not an oversight. Their answer belongs to
-    `portal.toml` (see people.ensure_owner) - `site.load` already reads a
-    legacy `pronouns = "he"` line there, so an upgrading install keeps its
-    answer by the config route. Touching the owner's row here would put the
-    table and the config into a fight that neither wins cleanly: this function
-    would write `male` on the first boot and `ensure_owner` would put it back
-    to the config's value on the second, so the settings page would appear to
-    change its mind overnight for no visible reason.
+    `portal.toml` (see people.ensure_owner) - `site.load` still reads a legacy
+    `pronouns = "he"` line there, and that config key is NOT retired by this
+    function. Touching the owner's row would put the table and the config into
+    a fight neither wins: the move would write `male` on the first boot and
+    `ensure_owner` would put the config's value back on the second, so the
+    settings page would appear to change its mind overnight.
+
+    A DROP COLUMN has no undo, so the values go to the log on the way out - one
+    line, and the difference between a deliberate deletion and a careless one.
+    The flag row goes with the column: nothing reads `people_gender_backfilled`
+    once there is no column left to move, and a settings row no code can
+    explain is the thing this function exists to stop leaving behind.
     """
     conn = get_conn()
-    if get_setting(GENDER_BACKFILL_KEY) == "1":
-        return
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(people)")}
-    if "pronouns" in columns:
+    if "pronouns" not in columns:
+        return
+
+    if get_setting(GENDER_BACKFILL_KEY) != "1":
         from app import site  # local: site is imported for its normalizer only
 
         rows = conn.execute(
@@ -733,7 +914,21 @@ def _backfill_gender() -> None:
             conn.commit()
         if moved:
             log.info("Moved %s person row(s) from pronouns to gender", moved)
-    set_setting(GENDER_BACKFILL_KEY, "1")
+
+    kept = conn.execute(
+        "SELECT slug, pronouns FROM people WHERE COALESCE(pronouns, '') != '' ORDER BY id"
+    ).fetchall()
+    if kept:
+        log.info(
+            "Dropping the people.pronouns column; the values were %s",
+            ", ".join(f"{row['slug']}={row['pronouns']}" for row in kept),
+        )
+    with _LOCK:
+        conn.execute("ALTER TABLE people DROP COLUMN pronouns")
+        # Direct SQL rather than a helper: `_LOCK` is not reentrant and
+        # `set_setting` takes it.
+        conn.execute("DELETE FROM settings WHERE key = ?", (GENDER_BACKFILL_KEY,))
+        conn.commit()
 
 
 def _backfill_people() -> None:
@@ -816,7 +1011,73 @@ def _migrate_status_to_stage(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE projects RENAME COLUMN status TO status_old")
 
 
+def _drop_priority(conn: sqlite3.Connection) -> None:
+    """Take the dead `priority` column off an existing database.
+
+    Wes, 2026-08-16: "Get rid of the notion of project 'priority' values."
+    Nothing reads the column any more - not the dashboard, not the scheduler,
+    not the sub-project list, not the prompt - so leaving it in place would be
+    the `pronouns` situation over again: a column the schema still declares, no
+    code path that can explain it, and a cleanup item aging on the todo list.
+
+    A DROP COLUMN has no undo, so the values go to the log on the way out. They
+    are two dozen zeros and a handful of small integers, but "recoverable from
+    journalctl" costs one line here and is the difference between a deliberate
+    deletion and a careless one.
+
+    Idempotent by inspection rather than by a settings flag: the column's own
+    absence is the guard, which is the same shape `_migrate_status_to_stage`
+    uses and cannot drift out of step with the thing it guards.
+
+    The two settings rows go with it. `dashboard_sort` held the literal string
+    "priority" on every install seeded before today, and while the dashboard
+    falls back safely from that, a stored preference naming a sort that cannot
+    exist is a fallback taken on every page load forever rather than a
+    preference. `show_priority` is simply dead: nothing reads it, nothing
+    re-seeds it, and a settings row no code can explain is the thing this
+    function exists to stop leaving behind.
+    """
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+    if "priority" not in cols:
+        return
+    kept = conn.execute(
+        "SELECT slug, priority FROM projects WHERE priority != 0 ORDER BY priority DESC"
+    ).fetchall()
+    if kept:
+        log.info(
+            "Dropping the projects.priority column; the non-zero values were %s",
+            ", ".join(f"{row['slug']}={row['priority']}" for row in kept),
+        )
+    conn.execute("ALTER TABLE projects DROP COLUMN priority")
+    conn.execute("DELETE FROM settings WHERE key = 'show_priority'")
+    conn.execute(
+        "UPDATE settings SET value = ? WHERE key = 'dashboard_sort' AND value = 'priority'",
+        (config.DEFAULT_PROJECT_SORT,),
+    )
+
+
 BUILD_APPROVAL_BACKFILL_KEY = "build_approval_backfilled"
+
+
+def _migrate_learnings_cap() -> None:
+    """`learnings_cap_lines` became `learnings_cap_kb` on 2026-08-07.
+
+    The two are not convertible - that is the whole point of the change, since
+    a line count says nothing about bytes - so the new cap takes its default
+    rather than a translated value. The one thing that MUST carry over is the
+    off switch: 0 meant "never auto-compact", and silently re-enabling a
+    scheduled agent run somebody turned off is exactly the kind of thing that
+    burns allowance overnight with nobody having asked for it.
+
+    Runs before the defaults are seeded, so the value it writes stands. The old
+    row is left where it is: reading it costs nothing and deleting settings is
+    how an install loses the record of what somebody chose.
+    """
+    if get_setting("learnings_cap_kb") is not None:
+        return
+    old = get_setting("learnings_cap_lines")
+    if old is not None and str(old).strip() == "0":
+        set_setting("learnings_cap_kb", "0")
 
 
 def _backfill_build_approval() -> None:
@@ -876,11 +1137,10 @@ def blocked_on(project: sqlite3.Row) -> str:
 def projects_awaiting_build_approval() -> list[sqlite3.Row]:
     """Projects whose agent has asked to start writing code, held for Wes's OK."""
     conn = get_conn()
-    order = project_order("updated_at DESC, id DESC")
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE build_approved = 0 AND build_requested = 1 "
-            f"ORDER BY {order}"
+            "ORDER BY updated_at DESC, id DESC"
         ).fetchall()
 
 
@@ -1058,11 +1318,11 @@ def create_project(
     description: str = "",
     kind: str = "unknown",
     stage: str = "backlog",
-    priority: int = 0,
     slug: Optional[str] = None,
     parent_id: Optional[int] = None,
     build_approved: Optional[bool] = None,
     person_id: Optional[int] = None,
+    title_locked: bool = False,
 ) -> sqlite3.Row:
     conn = get_conn()
     ts = now()
@@ -1082,14 +1342,14 @@ def create_project(
     with _LOCK:
         cur = conn.execute(
             """INSERT INTO projects (slug, title, description, initial_idea, kind,
-                                      stage, priority, build_approved, parent_id,
-                                      created_at, updated_at)
+                                      stage, build_approved, parent_id,
+                                      title_locked, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             # initial_idea starts as a copy of the description: at creation the
             # two are the same thing, and they diverge only once an agent
             # rewrites the description.
-            (slug, title or slug, description, description, kind, stage, priority,
-             1 if build_approved else 0, parent_id, ts, ts),
+            (slug, title or slug, description, description, kind, stage,
+             1 if build_approved else 0, parent_id, 1 if title_locked else 0, ts, ts),
         )
         conn.commit()
         row = conn.execute("SELECT * FROM projects WHERE id = ?", (cur.lastrowid,)).fetchone()
@@ -1119,82 +1379,74 @@ def get_project_by_slug(slug: str) -> Optional[sqlite3.Row]:
 
 def list_projects(order_by: Optional[str] = None) -> list[sqlite3.Row]:
     conn = get_conn()
-    order_by = order_by or project_order("updated_at ASC")
+    order_by = order_by or "updated_at ASC"
     with _LOCK:
         return conn.execute(f"SELECT * FROM projects ORDER BY {order_by}").fetchall()
 
 
-def show_priority() -> bool:
-    """Whether the per-project priority number is part of this install.
+def worked_on_at(project: Any, activity: Mapping[int, str]) -> str:
+    """When this project was last WORKED ON, as one comparable string.
 
-    Read defensively: this is called from every project listing, including ones
-    that run before the settings table has been seeded (and from tests holding
-    a bare database), and a listing that raises is worse than one that keeps
-    the default.
+    The newest of "something happened to it" (`last_activity_at`: runs, notes,
+    agent entries, reports, status changes) and "its own row was written"
+    (`updated_at`, which covers a project that has had neither). A plain string
+    max is a chronological max here because both are UTC ISO with an offset.
+
+    One definition, because three surfaces ask this question - the dashboard,
+    the side rail and /everyone - and a rail ranking projects differently from
+    the board it links into is a second opinion nobody asked for.
     """
-    try:
-        value = get_setting("show_priority")
-    except Exception:
-        return True
-    if value is None:
-        value = config.DEFAULT_SETTINGS.get("show_priority", "1")
-    return value == "1"
+    return max(
+        str(activity.get(int(project["id"])) or ""),
+        str(_row_get(project, "updated_at", "") or ""),
+    )
 
 
-def project_order(rest: str) -> str:
-    """An ORDER BY for projects, with priority in front of it when it is on.
+def by_recency(
+    projects: Iterable[Any], activity: Mapping[int, str]
+) -> list[Any]:
+    """Projects most recently worked on first.
 
-    One definition rather than five copies of the same string, so turning
-    priority off cannot leave one listing still ranking by it. `rest` is the
-    tiebreak that applies either way.
-
-    CALL THIS BEFORE TAKING `_LOCK`, never inside the `with` block. It reads a
-    setting, and `get_setting` takes `_LOCK` itself - which is a plain
-    threading.Lock, not an RLock, so the same thread taking it twice hangs
-    forever. The first cut of this interpolated the call straight into the
-    f-string inside each `with _LOCK:` block, which deadlocked the dashboard,
-    the scheduler and the sub-project list. See test_priority_toggle.py's
-    watchdog test, which fails in a second rather than hanging the suite.
+    Ties break on id descending, so two projects touched in the same second
+    come back in a stable order rather than in whatever order SQLite felt like
+    - the same rule every entry in `config.PROJECT_SORTS` follows, and the
+    reason the board does not reshuffle under a live refresh.
     """
-    return f"priority DESC, {rest}" if show_priority() else rest
+    return sorted(
+        projects,
+        key=lambda p: (worked_on_at(p, activity), int(p["id"])),
+        reverse=True,
+    )
 
 
-def project_sorts() -> dict[str, tuple[str, str]]:
-    """The dashboard's sort menu for this install.
-
-    With priority off, "priority, then recent" comes off the menu rather than
-    staying there ranking by a number nothing on the page can set.
-    """
-    if show_priority():
-        return dict(config.PROJECT_SORTS)
-    return {k: v for k, v in config.PROJECT_SORTS.items() if k != "priority"}
-
-
-def default_project_sort() -> str:
-    """The sort a dashboard with no stored preference uses. Falls through to
-    the first one still on the menu when the configured default is gone."""
-    sorts = project_sorts()
-    if config.DEFAULT_PROJECT_SORT in sorts:
-        return config.DEFAULT_PROJECT_SORT
-    return next(iter(sorts))
-
-
-def list_projects_sorted(sort: Optional[str]) -> list[sqlite3.Row]:
-    """Projects in one of the named orders from `project_sorts()`.
+def list_projects_sorted(
+    sort: Optional[str], activity: Optional[Mapping[int, str]] = None
+) -> list[sqlite3.Row]:
+    """Projects in one of the named orders from `config.PROJECT_SORTS`.
 
     The name is looked up rather than interpolated, so an unknown (or hostile)
     `?sort=` value falls back to the default instead of reaching SQLite.
+
+    `config.ACTIVITY_SORT` is the one order SQL cannot express by itself: it
+    ranks on runs and journal entries that live in other tables, so the SQL
+    order is only the base and `by_recency` refines it here. Passing no
+    `activity` leaves the base order, which is `updated_at DESC` - the same
+    question asked of the one column that can answer it alone, so a caller with
+    no activity map degrades to a near-miss rather than to nonsense.
     """
-    sorts = project_sorts()
-    label_sql = sorts.get(sort or "") or sorts[default_project_sort()]
-    return list_projects(order_by=label_sql[1])
+    sorts = config.PROJECT_SORTS
+    name = sort if sort in sorts else config.DEFAULT_PROJECT_SORT
+    rows = list_projects(order_by=sorts[name][1])
+    if name == config.ACTIVITY_SORT and activity is not None:
+        return by_recency(rows, activity)
+    return rows
 
 
 def list_projects_by_stage(stages: Iterable[str]) -> list[sqlite3.Row]:
     stages = list(stages)
     conn = get_conn()
     placeholders = ",".join("?" for _ in stages)
-    order = project_order("updated_at ASC")
+    order = "updated_at ASC"
     with _LOCK:
         return conn.execute(
             f"SELECT * FROM projects WHERE stage IN ({placeholders}) "
@@ -1206,9 +1458,15 @@ def list_projects_by_stage(stages: Iterable[str]) -> list[sqlite3.Row]:
 def list_schedulable_projects() -> list[sqlite3.Row]:
     """What the worker may pick from on its own: active-stage, not paused.
     Finer filters (the build gate, blocked-with-nothing-workable) are the
-    worker's, since they depend on settings and todos."""
+    worker's, since they depend on settings and todos.
+
+    Least recently touched first, which is a fairness queue rather than a
+    ranking: whatever has waited longest goes next. It used to be `priority
+    DESC` in front of that, and taking priority out is what makes the plain
+    round robin the whole rule. See `config.PROJECT_SORTS`.
+    """
     conn = get_conn()
-    order = project_order("updated_at ASC")
+    order = "updated_at ASC"
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE stage = 'active' "
@@ -1235,11 +1493,12 @@ def parent_id_of(project: Optional[sqlite3.Row]) -> Optional[int]:
 def child_projects(parent_id: int) -> list[sqlite3.Row]:
     """A parent's sub-projects, in the order they should be worked on.
 
-    Same ordering as the dashboard's default (priority first, then least
-    recently touched), so the list on the parent page reads as a queue.
+    Least recently touched first - the same queue `list_schedulable_projects`
+    hands the worker, so the list on the parent page reads as what will
+    actually happen rather than as a second opinion about it.
     """
     conn = get_conn()
-    order = project_order("updated_at ASC")
+    order = "updated_at ASC"
     with _LOCK:
         return conn.execute(
             "SELECT * FROM projects WHERE parent_id = ? "
@@ -1369,11 +1628,22 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
     `paused`, `backlog` or `done`. Arithmetic, not interpretation - the third
     rewrite of this mapping was the design's whole argument.
 
-    An active project that is waiting on Wes for *anything* - his pause, an
-    agent blocked on him, a build request he hasn't answered, an open question -
-    folds to the Paused shelf ("even if they need user input or something, I
-    don't care - I want them in the paused/backlog section"). Review stays
-    Review even with questions open: that shelf already means "your turn".
+    An active project that is waiting on Wes to *unblock the whole project* -
+    his pause, a build request he hasn't answered, an open question - folds to
+    the Paused shelf ("even if they need user input or something, I don't care -
+    I want them in the paused/backlog section"). Review stays Review even with
+    questions open: that shelf already means "your turn".
+
+    `blocked_on` is the one that used to fold and no longer does, on Wes's note
+    of 2026-07-30: "Projects that are active, but blocked should stay in the
+    active category on the dashboard." That is not a reversal of the rule above,
+    it is the distinction the rest of the portal already draws. `blocked_on`
+    names one thing only Wes can do; the agent contract tells every run that
+    "being blocked does not stop future runs - they work whatever does not
+    depend on him", the scheduler keeps scheduling the project, and its blocked
+    todos are tagged so the workable ones can be found. So a blocked project is
+    still work in flight, and hiding it inside a shut <details> misreported
+    that. The `blocked` badge on the card is what says a part of it is stuck.
     """
     stage = str(_row_get(project, "stage", "backlog"))
     if stage in config.DONE_STAGES:
@@ -1387,9 +1657,30 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
         and not build_approved(project)
         and (get_setting("require_build_approval") or "1") == "1"
     )
-    if blocked_on(project) or gate_wait or open_questions:
+    if gate_wait or open_questions:
         return "paused"
     return "active"
+
+
+def shelf_of(project: sqlite3.Row, open_questions: int = 0, running: bool = False) -> str:
+    """`project_shelf`, plus the one rule that outranks everything in it: a
+    project with an agent working on it right now is Active whatever its stored
+    stage says.
+
+    That rule lived inline in the dashboard route and had to move the moment a
+    second surface listed the same shelves - the side rail. Two lists of "what
+    is active" on one screen that disagree about a project is worse than either
+    list being wrong on its own, because there is no way to tell which one to
+    believe. One function, both callers.
+
+    A finished project is never dragged back onto a shelf by a run: `done` and
+    `abandoned` are Wes's word about the project, and a late run on one (a
+    cleanup, a report) does not undo it. The dashboard skips those rows
+    entirely before it ever gets here; the rail relies on this guard.
+    """
+    if running and str(_row_get(project, "stage", "backlog")) not in config.DONE_STAGES:
+        return "active"
+    return project_shelf(project, open_questions)
 
 
 def shelved_project_ids() -> set[int]:
@@ -1472,6 +1763,87 @@ def suggested_slug(project: sqlite3.Row) -> Optional[str]:
     return None if taken else target
 
 
+def title_suggestion(project: sqlite3.Row) -> str:
+    """The alternative title an agent has proposed and Wes has not answered, or
+    "". Empty once it matches the title he is already using, so accepting a
+    rename from anywhere - this button, the heading, the details form - takes
+    the offer off the page without a second write."""
+    proposed = clean_title(str(_row_get(project, "title_suggestion", "") or ""))
+    if not proposed:
+        return ""
+    if same_title(proposed, str(_row_get(project, "title", "") or "")):
+        return ""
+    return proposed
+
+
+def same_title(a: str, b: str) -> bool:
+    """Two titles a person would call the same one. Case and surrounding space
+    only - a capitalization change is a real edit if Wes makes it, but it is not
+    worth interrupting him for when an agent proposes it."""
+    return a.strip().casefold() == b.strip().casefold()
+
+
+def propose_title(project: sqlite3.Row, title: str) -> bool:
+    """An agent's title for a project whose title is locked. Recorded rather
+    than applied, and returns whether it is new enough to be worth showing.
+
+    Dropped without a trace when it is the title already in use, or the one he
+    turned down last time. That second case is the whole reason the rejected
+    text is stored: an agent that likes its own name for a project would
+    otherwise re-propose it on every run, and a suggestion you have already
+    said no to is not a suggestion, it is nagging.
+    """
+    proposed = clean_title(title or "")
+    if not proposed:
+        return False
+    if same_title(proposed, str(_row_get(project, "title", "") or "")):
+        return False
+    if same_title(proposed, str(_row_get(project, "title_suggestion_rejected", "") or "")):
+        return False
+    if same_title(proposed, str(_row_get(project, "title_suggestion", "") or "")):
+        # Already on the page, unanswered. Not news, and rewriting it would
+        # bump `updated_at` for nothing.
+        return False
+    update_project(project["id"], title_suggestion=proposed)
+    return True
+
+
+def accept_title_suggestion(project: sqlite3.Row) -> str:
+    """Wes takes the agent's name for it. Returns the new title, or "".
+
+    The title stays locked: he has now chosen this title as deliberately as if
+    he had typed it, and the point of the lock is that his choice stands.
+    """
+    proposed = title_suggestion(project)
+    if not proposed:
+        return ""
+    was = str(_row_get(project, "title", "") or "")
+    update_project(
+        project["id"],
+        title=proposed,
+        title_locked=1,
+        title_suggestion=None,
+        title_suggestion_rejected=None,
+    )
+    add_journal(
+        project["id"], "user", "status",
+        f"Took the agent's suggested title: `{was}` -> `{proposed}`.",
+    )
+    return proposed
+
+
+def reject_title_suggestion(project: sqlite3.Row) -> None:
+    """"Keep mine." Remembered by text, so the same proposal cannot come back
+    next run - a different one still can."""
+    proposed = title_suggestion(project)
+    if not proposed:
+        update_project(project["id"], title_suggestion=None)
+        return
+    update_project(
+        project["id"], title_suggestion=None, title_suggestion_rejected=proposed
+    )
+
+
 def projects_with_suggested_slugs() -> list[tuple[sqlite3.Row, str]]:
     """Every project whose folder name is still the raw idea text."""
     out = []
@@ -1540,11 +1912,64 @@ def set_attachment_stored_name(attachment_id: int, stored_name: str) -> None:
         conn.commit()
 
 
+def set_attachment_transcript(attachment_id: int, transcript: str) -> None:
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE attachments SET transcript = ? WHERE id = ?", (transcript, attachment_id)
+        )
+        conn.commit()
+
+
+def attachments_needing_transcript() -> list[sqlite3.Row]:
+    """Audio attachments with no transcript yet, oldest first - the startup
+    backfill's worklist (app/transcribe.py)."""
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT attachments.*, projects.slug AS project_slug "
+            "FROM attachments JOIN projects ON projects.id = attachments.project_id "
+            "WHERE attachments.mime LIKE 'audio/%' AND attachments.transcript IS NULL "
+            "AND attachments.stored_name != '' ORDER BY attachments.id"
+        ).fetchall()
+
+
 def set_attachment_journal(attachment_id: int, journal_id: int) -> None:
     conn = get_conn()
     with _LOCK:
         conn.execute(
             "UPDATE attachments SET journal_id = ? WHERE id = ?", (journal_id, attachment_id)
+        )
+        conn.commit()
+
+
+def unrevealed_attachments(project_id: int) -> list[sqlite3.Row]:
+    """Files uploaded to this project that no agent has been shown yet.
+
+    Oldest first, so a batch of them lands in the workspace in the order they
+    were dropped. See `attachments.reveal`.
+    """
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM attachments WHERE project_id = ? AND stored_name != '' "
+            "AND revealed_at IS NULL ORDER BY id ASC",
+            (project_id,),
+        ).fetchall()
+
+
+def mark_attachment_revealed(attachment_id: int) -> None:
+    """Record that this file is now in the project workspace.
+
+    Guarded on `revealed_at IS NULL` so a second pass over a row that is already
+    revealed cannot move its timestamp forward - the stamp is when the agent
+    first saw the file, and rewriting it would erase that.
+    """
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE attachments SET revealed_at = ? WHERE id = ? AND revealed_at IS NULL",
+            (now(), attachment_id),
         )
         conn.commit()
 
@@ -1691,9 +2116,26 @@ def update_journal_content(entry_id: int, content_md: str) -> bool:
 def delete_journal_note(entry_id: int) -> bool:
     """Same window as editing. Attachments that rode along with the note keep
     their rows and their files - the note is Wes's text, and a file he uploaded
-    is not undone by taking the sentence back."""
+    is not undone by taking the sentence back.
+
+    Keeping them takes a statement, not an omission: `attachments.journal_id` is
+    a real foreign key, so until 2026-08-17 deleting a note that carried a file
+    raised IntegrityError and the route 500ed - which is to say the whole
+    documented behavior above had never once run. The file lets go of the note
+    first and stays in the project's uploads, where it is still served, still
+    listed, and still deletable on its own.
+
+    The detach carries the same window as the delete, so a note already sent to
+    an agent does not quietly lose its files' provenance to a refused delete.
+    """
     conn = get_conn()
     with _LOCK:
+        conn.execute(
+            "UPDATE attachments SET journal_id = NULL WHERE journal_id = ? "
+            "AND EXISTS (SELECT 1 FROM journal WHERE id = ? AND delivered_at IS NULL "
+            "AND author = 'user' AND kind = 'note')",
+            (entry_id, entry_id),
+        )
         cur = conn.execute(
             "DELETE FROM journal WHERE id = ? AND delivered_at IS NULL "
             "AND author = 'user' AND kind = 'note'",
@@ -1715,6 +2157,7 @@ def list_journal(
     project_id: Optional[int] = None,
     limit: int = 100,
     only_projects: Optional[set[int]] = None,
+    exclude: tuple = (),
 ) -> list[sqlite3.Row]:
     """The journal feed. `only_projects` scopes it to a set of project ids.
 
@@ -1723,32 +2166,52 @@ def list_journal(
     other people's entries eat the slots, and a second person whose one project
     is quiet would open the portal to a feed of 25 entries with two left in it.
 
+    `exclude` is a tuple of (author, kind) pairs to leave out, filtered in SQL
+    before the LIMIT for that same reason - the project page passes SIDE_THREAD,
+    and a chatty ask thread must not eat the slots of the journal it is no
+    longer shown in.
+
     Entries with no project at all are kept. Those are install-wide notices
     (the service restarting, a model appearing) rather than anybody's private
     work, and silently dropping them would take the portal's own status
     messages off every feed but the raw one.
     """
+    drop = ""
+    drop_params: list = []
+    for author, kind in exclude:
+        drop += " AND NOT (journal.author = ? AND journal.kind = ?)"
+        drop_params.extend([author, kind])
     conn = get_conn()
     with _LOCK:
         if project_id is None:
-            where = ""
+            # `1 = 1` so the scope clause and the exclusions can both be
+            # appended with AND and neither has to know whether the other is
+            # there. The scope itself is parenthesized because it is an OR:
+            # without the brackets a trailing `AND NOT (...)` would bind to its
+            # right half alone and quietly stop excluding anything on the
+            # install-wide entries.
+            where = "WHERE 1 = 1"
             params: list = []
             if only_projects is not None:
                 marks = ",".join("?" * len(only_projects))
                 # An empty set still has to produce valid SQL, and IN () is not:
                 # `IN (NULL)` matches nothing, which is the right answer for
                 # somebody on no projects at all.
-                where = f"WHERE journal.project_id IS NULL OR journal.project_id IN ({marks or 'NULL'}) "
+                where += (
+                    " AND (journal.project_id IS NULL OR journal.project_id "
+                    f"IN ({marks or 'NULL'}))"
+                )
                 params = [int(i) for i in sorted(only_projects)]
             return conn.execute(
                 "SELECT journal.*, projects.title AS project_title, projects.slug AS project_slug "
                 "FROM journal LEFT JOIN projects ON projects.id = journal.project_id "
-                f"{where}{_JOURNAL_ORDER} LIMIT ?",
-                (*params, limit),
+                f"{where}{drop} {_JOURNAL_ORDER} LIMIT ?",
+                (*params, *drop_params, limit),
             ).fetchall()
         return conn.execute(
-            f"SELECT * FROM journal WHERE project_id = ? {_JOURNAL_ORDER} LIMIT ?",
-            (project_id, limit),
+            f"SELECT * FROM journal WHERE journal.project_id = ?{drop} "
+            f"{_JOURNAL_ORDER} LIMIT ?",
+            (project_id, *drop_params, limit),
         ).fetchall()
 
 
@@ -1791,11 +2254,45 @@ def list_person_writings(person_id: int, limit: int = 40) -> list[sqlite3.Row]:
 # still see. See app/quoting.py.
 SIDE_THREAD = (("user", "ask"), ("agent", "answer"))
 
+# How many entries of that thread anyone reads back at once - the page and the
+# prompt alike. Twenty is ten exchanges, which is far more conversation than any
+# one project has had, and it bounds both the markup and the bytes an ask's own
+# prompt can grow to.
+ASK_THREAD_LIMIT = 20
+
 
 def is_side_thread(author: str, kind: str) -> bool:
     """Whether an entry belongs to the ask side thread (used by the template to
     badge it, so the page and the prompt agree about what a run reads)."""
     return (author, kind) in SIDE_THREAD
+
+
+def ask_thread(project_id: int, limit: int = ASK_THREAD_LIMIT) -> list[sqlite3.Row]:
+    """The ask conversation on a project, oldest first.
+
+    Wes, 2026-08-16: "I also want the questions to be asked and answered all up
+    at the 'Ask' area instead of in line in the journal." So the same rows that
+    used to sit in the journal feed between agent reports are read back here as
+    one thread - the project page draws it inside the ask box, and
+    `ask.build_prompt` hands it to the model as the conversation so far.
+
+    Oldest at the top, which is this portal's reading order everywhere and the
+    only order a conversation can be read in. The LIMIT takes the NEWEST `limit`
+    entries and they are reversed afterwards, so a long thread loses its
+    beginning rather than its most recent exchange.
+    """
+    pairs = " OR ".join("(author = ? AND kind = ?)" for _ in SIDE_THREAD)
+    params: list = [project_id]
+    for author, kind in SIDE_THREAD:
+        params.extend([author, kind])
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            f"SELECT * FROM journal WHERE project_id = ? AND ({pairs}) "
+            f"{_JOURNAL_ORDER} LIMIT ?",
+            (*params, int(limit)),
+        ).fetchall()
+    return list(reversed(rows))
 
 
 def list_journal_asc(
@@ -1895,9 +2392,11 @@ def file_question(
         existing = conn.execute(
             "SELECT * FROM questions WHERE project_id = ? AND ("
             "  status = 'open'"
-            # No cutoff on a deleted one, deliberately. Answering settles a
-            # question for a while; deleting it settles it for good, and a
-            # rewording arriving the next day is exactly what deleting is for.
+            # No cutoff on a deleted one HERE: as long as the row exists it
+            # bars a rewording, which is what deleting is for. The row itself
+            # ages out after DELETED_QUESTION_RETENTION_DAYS (Wes, 2026-08-06:
+            # "Deleted questions should fully delete after 7 days"), so the
+            # bar lasts a week rather than forever.
             "  OR status = 'deleted'"
             "  OR (status IN ('answered', 'dismissed') "
             "      AND COALESCE(answered_at, ts) >= ?)"
@@ -1963,6 +2462,53 @@ def set_question_telegram_msg_id(question_id: int, msg_id: int) -> None:
     with _LOCK:
         conn.execute("UPDATE questions SET telegram_msg_id = ? WHERE id = ?", (msg_id, question_id))
         conn.commit()
+
+
+def record_question_message(question_id: int, chat_id: str, message_id: int, text: str) -> None:
+    """Remember one chat's copy of a question, so it can be settled later.
+
+    One row per (question, chat): Telegram message ids are only unique within
+    a chat, so the chat id is half of the copy's identity, not decoration."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "INSERT OR REPLACE INTO question_messages (question_id, chat_id, message_id, text) "
+            "VALUES (?, ?, ?, ?)",
+            (question_id, str(chat_id), int(message_id), text),
+        )
+        conn.commit()
+
+
+def question_messages(question_id: int) -> list[sqlite3.Row]:
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM question_messages WHERE question_id = ? ORDER BY chat_id",
+            (question_id,),
+        ).fetchall()
+
+
+def question_for_telegram_message(chat_id: str, message_id: Optional[int]) -> Optional[int]:
+    """Which question a Telegram message is a copy of, or None.
+
+    The copies table first - it knows which chat the copy is in. The legacy
+    telegram_msg_id column second, for questions sent before the table
+    existed; that column never recorded the chat, so it matches on message id
+    alone exactly as the old lookup did."""
+    if message_id is None:
+        return None
+    conn = get_conn()
+    with _LOCK:
+        row = conn.execute(
+            "SELECT question_id AS id FROM question_messages "
+            "WHERE chat_id = ? AND message_id = ?",
+            (str(chat_id), int(message_id)),
+        ).fetchone()
+        if row is None:
+            row = conn.execute(
+                "SELECT id FROM questions WHERE telegram_msg_id = ?", (int(message_id),)
+            ).fetchone()
+    return int(row["id"]) if row else None
 
 
 def open_questions(project_id: Optional[int] = None) -> list[sqlite3.Row]:
@@ -2031,6 +2577,50 @@ def open_question_counts() -> dict[int, int]:
             "WHERE status = 'open' GROUP BY project_id"
         ).fetchall()
     return {int(row["project_id"]): int(row["c"]) for row in rows}
+
+
+def last_activity_at() -> dict[int, str]:
+    """{project_id: iso timestamp of the last thing that HAPPENED to it}.
+
+    Wes, 2026-08-07: "the recents in the bar on the left side doesn't seem to
+    actually reflect projects that were used/run/notes added to most recently
+    sorted to the top as I think it should."
+
+    It didn't, and the reason is that the rail sorted on `projects.updated_at`,
+    which only moves when a project's own *row* is written - a stage change, a
+    title, a preview URL. Starting a run does not write that row. Neither does
+    an agent journalling, nor Wes dropping a note, nor a report coming back. So
+    the column answers "when did this project's metadata last change", and the
+    rail was asking "when was this last worked on". On 2026-08-07 those
+    disagreed badly enough to be obvious: Commander Case had an agent running
+    on it at that moment and sat fifth, under a project last touched seven
+    hours earlier, and OpenJournal - which had gained a journal entry that
+    afternoon - sat sixteenth on a July timestamp.
+
+    So the answer is the newest of the three things that are actually events:
+    the journal (which covers notes, agent entries, status changes and reports,
+    since every one of them lands there), a run starting, and a run ending. The
+    project row's own `updated_at` is folded in by the caller, so a project
+    with no journal and no runs still sorts somewhere sensible.
+
+    One query for the whole board, not one per project: this feeds the side
+    rail, which renders on every page in the portal.
+    """
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            """
+            SELECT project_id, MAX(ts) AS ts FROM (
+                SELECT project_id, ts FROM journal WHERE project_id IS NOT NULL
+                UNION ALL
+                SELECT project_id, started_at AS ts FROM runs WHERE project_id IS NOT NULL
+                UNION ALL
+                SELECT project_id, ended_at AS ts FROM runs
+                 WHERE project_id IS NOT NULL AND ended_at IS NOT NULL
+            ) GROUP BY project_id
+            """
+        ).fetchall()
+    return {int(row["project_id"]): str(row["ts"]) for row in rows if row["ts"]}
 
 
 def answer_question(question_id: int, answer: str,
@@ -2127,11 +2717,12 @@ def delete_question(question_id: int) -> Optional[sqlite3.Row]:
     - The project page's answered list is a record of things Wes actually
       decided. A row that only says "not answering" would sit in it wearing
       the same clothes as a real decision.
-    - `file_question` treats a deleted question as a permanent bar on that
-      question being asked again (see the dedupe query), where an answered one
-      only bars it for QUESTION_SETTLED_HOURS. Deleting says "stop asking me
-      this", and a rewording arriving a day later is the exact failure that
-      would make deleting worthless.
+    - `file_question` treats a deleted question as a bar on that question
+      being asked again for as long as the row exists - seven days, until
+      prune_deleted_questions ages it out - where an answered one only bars
+      it for QUESTION_SETTLED_HOURS. Deleting says "stop asking me this",
+      and a rewording arriving a day later is the exact failure that would
+      make deleting worthless.
 
     No run is queued, and none ever was for an answer either - answering has
     never woken a project by itself. What deleting *does* release is the hold
@@ -2157,6 +2748,40 @@ def deleted_questions(project_id: int) -> list[sqlite3.Row]:
             "SELECT * FROM questions WHERE project_id = ? AND status = 'deleted' ORDER BY ts ASC",
             (project_id,),
         ).fetchall()
+
+
+# Wes, 2026-08-06: "Deleted questions should fully delete after 7 days."
+DELETED_QUESTION_RETENTION_DAYS = 7
+
+
+def prune_deleted_questions(days: int = DELETED_QUESTION_RETENTION_DAYS) -> int:
+    """Age deleted questions out of the table for good.
+
+    The knowing tradeoff: a deleted row is what bars `file_question` from
+    filing the same question again, so removing it re-opens that door. Wes
+    asked for exactly this - seven days of "stop asking me this" and then a
+    clean slate - and a nag that comes back after a week is at least a nag
+    that waited a week. `answered_at` (stamped by delete_question) is the
+    deletion time; COALESCE covers rows from before that column was filled.
+    """
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).isoformat(timespec="seconds")
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "DELETE FROM question_messages WHERE question_id IN "
+            "(SELECT id FROM questions WHERE status = 'deleted' "
+            "AND COALESCE(answered_at, ts) < ?)",
+            (cutoff,),
+        )
+        cur = conn.execute(
+            "DELETE FROM questions WHERE status = 'deleted' "
+            "AND COALESCE(answered_at, ts) < ?",
+            (cutoff,),
+        )
+        conn.commit()
+        return cur.rowcount
 
 
 # --------------------------------------------------------------------------
@@ -2573,6 +3198,56 @@ def record_run_usage(
              prompt_bytes, run_id),
         )
         conn.commit()
+
+
+def record_run_session_meter(
+    run_id: int,
+    *,
+    start: Optional[float] = None,
+    end: Optional[float] = None,
+) -> None:
+    """Stamp the five-hour usage meter at one end of a run.
+
+    Each end is written independently, and a None is a no-op rather than a
+    NULL: the reading can be missing at the start (no snapshot yet) and present
+    at the end, or the other way round, and neither should erase the one that
+    did land. See app/headroom.py for what the pair is for.
+    """
+    sets, values = [], []
+    if start is not None:
+        sets.append("session_percent_start = ?")
+        values.append(float(start))
+    if end is not None:
+        sets.append("session_percent_end = ?")
+        values.append(float(end))
+    if not sets:
+        return
+    values.append(run_id)
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(f"UPDATE runs SET {', '.join(sets)} WHERE id = ?", values)
+        conn.commit()
+
+
+def recent_session_meter_pairs(limit: int) -> list[tuple[float, float]]:
+    """Both meter readings for the most recent runs that have both. Newest first.
+
+    A NULL is the whole filter, and it is enough on its own: a run in flight has
+    no end reading *yet*, which is a different thing from a run that cost
+    nothing, and the column says so. The row's `status` deliberately does not
+    appear here - the end is stamped when the agent process exits, which is a
+    moment before the row is finished, so a status filter would drop a complete
+    measurement for being a few milliseconds early.
+    """
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT session_percent_start AS a, session_percent_end AS b FROM runs "
+            "WHERE session_percent_start IS NOT NULL "
+            "AND session_percent_end IS NOT NULL ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [(float(r["a"]), float(r["b"])) for r in rows]
 
 
 def finish_run(
@@ -3170,6 +3845,24 @@ def effective_max_runs() -> int:
     return base_max_runs() + bonus_runs_today()
 
 
+def default_project_max_runs() -> int:
+    """How many runs one project may take in a day when it has no cap of its own.
+
+    `max_runs_per_day` above is a budget for the whole board, and the scheduler
+    takes projects in one order - see `list_schedulable_projects` - so the
+    project at the head takes runs until it has nothing workable left and only
+    then does the tick reach the second. On 2026-08-07 that meant Project
+    Portal took 70 of the board's 202 runs in a week, which is what Wes meant
+    by "ran a ton without me meaning for it to".
+
+    0 means no default cap, which is exactly the behavior before this existed.
+    """
+    try:
+        return max(0, int(get_setting("project_max_runs_per_day") or "6"))
+    except ValueError:
+        return 6
+
+
 def max_parallel_runs() -> int:
     """How many agent runs may be in flight at once. 1 restores the old
     strictly-serial behavior."""
@@ -3530,7 +4223,6 @@ def _seed_data() -> None:
         # Parked until the owner engages: backlog is never scheduled, so a
         # fresh install does not start improving itself before anyone looks.
         stage="backlog",
-        priority=5,
         slug="project-portal",
     )
     add_journal(
@@ -3540,7 +4232,7 @@ def _seed_data() -> None:
         (
             "**Project Portal v1 seeded.**\n\n"
             "v1 includes: dashboard with quick-add ideas, per-project pages with "
-            "status/priority controls, journal timeline, open questions with "
+            "status controls, journal timeline, open questions with "
             "answer forms, workspace file browser, a background worker that "
             "invokes `claude -p` headlessly to triage/plan/build projects, "
             "Telegram + ntfy notifications, a memory system (profile/learnings/"

@@ -252,7 +252,7 @@ def wire(monkeypatch):
     async def fake_telegram(token, chat_id, text, question_id, record_msg_id=True):
         sent["telegram"].append(chat_id)
 
-    async def fake_push(subs, title, message, urgency="normal"):
+    async def fake_push(subs, title, message, urgency="normal", **extra):
         sent["push"].extend(s["endpoint"] for s in subs)
         return len(subs)
 
@@ -325,3 +325,70 @@ async def test_only_the_first_telegram_copy_records_the_message_id(
     await notify.notify("New question", "why?", question_id=1)
 
     assert [flag for _, flag in recorded] == [True, False]
+
+
+# --------------------------------------------------------------------------
+# Web push is the default method (Wes, 2026-08-06)
+# --------------------------------------------------------------------------
+
+def test_an_enrolled_device_of_your_own_makes_you_covered(wes, karli):
+    _sub("https://push/karli", person_id=int(karli["id"]))
+    rows = routing.recipients(None)
+    assert routing.push_covered(rows, db.list_push_subscriptions()) == {karli["id"]}
+
+
+def test_an_unattributed_device_covers_nobody(wes, karli):
+    """A device with no person on it is nobody's lock screen in particular, so
+    it cannot stand in for anyone's fallback."""
+    _sub("https://push/old")
+    rows = routing.recipients(None)
+    assert routing.push_covered(rows, db.list_push_subscriptions()) == set()
+
+
+def test_a_covered_person_stops_pulling_the_install_fallback(install_channels, karli):
+    rows = [people.get(int(karli["id"]))]
+    covered = {int(karli["id"])}
+    assert routing.ntfy_topics(rows, "portal", covered) == []
+    assert routing.telegram_chats(rows, "111", covered) == []
+
+
+def test_a_covered_person_keeps_an_explicitly_typed_topic(install_channels, karli):
+    """Explicit beats default: somebody who configured a topic AND enrolled a
+    phone asked for both."""
+    people.update(int(karli["id"]), ntfy_topic="karli-portal")
+    rows = [people.get(int(karli["id"]))]
+    assert routing.ntfy_topics(rows, "portal", {int(karli["id"])}) == ["karli-portal"]
+
+
+def test_an_uncovered_person_still_falls_back(install_channels, wes, karli):
+    """Wes has no enrolled device, so covering Karli must not mute him."""
+    rows = routing.recipients(None)
+    assert routing.ntfy_topics(rows, "portal", {int(karli["id"])}) == ["portal"]
+
+
+@pytest.mark.asyncio
+async def test_her_enrolled_phone_alone_keeps_her_project_off_his_channels(
+    install_channels, wire, wes, karli
+):
+    """The 2026-08-06 ask end to end: Karli has NO topic and NO chat id of her
+    own - only the phone she enrolled - and her project's question reaches that
+    phone and nothing of the install's."""
+    _sub("https://push/karli", person_id=int(karli["id"]))
+    hers = db.create_project(title="Hers", description="d")
+    people.set_members(hers["id"], [int(karli["id"])])
+
+    await notify.notify("New question", "why?", project_id=hers["id"])
+
+    assert wire["ntfy"] == []
+    assert wire["telegram"] == []
+    assert wire["push"] == ["https://push/karli"]
+
+
+@pytest.mark.asyncio
+async def test_install_wide_with_one_covered_person_still_reaches_the_other(
+    install_channels, wire, wes, karli
+):
+    _sub("https://push/karli", person_id=int(karli["id"]))
+    await notify.notify("New model", "Opus 6 is out")
+    assert wire["ntfy"] == ["portal"]
+    assert wire["push"] == ["https://push/karli"]

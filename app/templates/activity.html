@@ -11,20 +11,25 @@
   Switch it back to dollars in <a href="/settings">settings</a>.</p>
 {% endif %}
 
+{# `stat-fact` on everything that is one short fact: the row wraps BETWEEN them
+   rather than each of them breaking inside itself. Without it a narrow column
+   renders "runs today:" over "6 / 80" and "adjust" over "budget", which reads
+   as three broken labels rather than as a narrow window. The idle reason is a
+   whole sentence and is deliberately not one of them. #}
 <div class="card status-line">
-  <span>
+  <span class="stat-fact">
     runs today: <strong data-usage="runs_today">{{ usage.runs_today }}</strong> /
     <strong data-usage="max_runs">{{ usage.max_runs }}</strong>
   </span>
-  <span class="muted">resets in <span data-usage="resets_in">{{ usage.resets_in }}</span></span>
+  <span class="muted stat-fact">resets in <span data-usage="resets_in">{{ usage.resets_in }}</span></span>
   {% for r in active_run.runs %}
-  <span><span class="dot running"></span>
+  <span class="stat-fact"><span class="dot running"></span>
     <a href="/run/{{ r.run_id }}">{{ r.task }} on {{ r.project_title }} &middot; {{ r.elapsed }}</a>
   </span>
   {% else %}
   <span class="muted">idle &mdash; {{ active_run.idle_reason }}</span>
   {% endfor %}
-  <a class="small" href="/settings#budget">adjust budget</a>
+  <a class="small stat-fact" href="/settings#budget">adjust budget</a>
 </div>
 
 <h2>Last {{ days }} days</h2>
@@ -74,6 +79,15 @@
 {% if history.by_project and not project_filter %}
 <h2>By project</h2>
 <div class="card">
+  {# .table-scroll: seven columns is more than a narrow window can hold, and
+     without a scrolling box the overflow runs straight across the card's right
+     border and gets sliced off by `overflow-x: hidden` on <body>.
+
+     `cell-name` and `data-label` are what let the same markup stop being a
+     table below 560px - the name becomes the block's heading and every other
+     cell carries its own column header. See the stacked-table block in
+     style.css. #}
+  <div class="table-scroll">
   <table class="run-table breakdown">
     <thead><tr>
       <th>project</th><th>share</th><th>{{ cost_noun() }}</th>
@@ -82,20 +96,117 @@
     <tbody>
       {% for g in history.by_project %}
       <tr>
-        <td class="small">
+        <td class="small cell-name">
           {% if g.slug %}<a href="/activity?days={{ days }}&project={{ g.slug }}">{{ g.title }}</a>
           {% else %}<span class="muted">{{ g.title }}</span>{% endif %}
         </td>
-        <td><pre class="spark cost share-bar">{{ g.bar }}</pre></td>
-        <td class="small">{{ g.cost|cost(2) }} <span class="muted">({{ g.share }}%)</span></td>
-        <td class="small">{{ g.runs }}</td>
-        <td class="small">{{ g.ok }}</td>
-        <td class="small">{{ g.failed }}{% if g.cancelled %} <span class="muted">+{{ g.cancelled }} canceled</span>{% endif %}</td>
-        <td class="small">{{ g.avg_duration_sec // 60 }}m</td>
+        <td class="cell-bar"><pre class="spark cost share-bar">{{ g.bar }}</pre></td>
+        <td class="small" data-label="{{ cost_noun() }}">{{ g.cost|cost(2) }} <span class="muted">({{ g.share }}%)</span></td>
+        <td class="small" data-label="runs">{{ g.runs }}</td>
+        <td class="small" data-label="ok">{{ g.ok }}</td>
+        <td class="small" data-label="failed">{{ g.failed }}{% if g.cancelled %} <span class="muted">+{{ g.cancelled }} canceled</span>{% endif %}</td>
+        <td class="small" data-label="avg length">{{ g.avg_duration_sec // 60 }}m</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
+</div>
+{% endif %}
+
+{# Where the tokens go. Above the prompt panel on purpose: the prompt is the
+   smallest of the three slices, and reading its size without this framing
+   invites a diet that cannot pay for itself. #}
+{% if history.anatomy.runs %}
+<h2>Where the tokens go</h2>
+<div class="card">
+  <div class="table-scroll">
+  <table class="run-table breakdown">
+    <thead><tr><th>slice</th><th>share</th><th></th><th>whose it is</th></tr></thead>
+    <tbody>
+      <tr>
+        <td class="small cell-name">the run itself</td>
+        <td class="small" data-label="share">{{ history.anatomy.run_pct }}%</td>
+        <td class="cell-bar"><pre class="spark cost share-bar">{{ history.anatomy.run_bar }}</pre></td>
+        <td class="small muted">what it said and read back &mdash; grows with run length</td>
+      </tr>
+      <tr>
+        <td class="small cell-name">Claude Code</td>
+        <td class="small" data-label="share">{{ history.anatomy.cli_pct }}%</td>
+        <td class="cell-bar"><pre class="spark cost share-bar">{{ history.anatomy.cli_bar }}</pre></td>
+        <td class="small muted">its system prompt and tool schemas &mdash; not ours to cut</td>
+      </tr>
+      <tr>
+        <td class="small cell-name">the portal's prompt</td>
+        <td class="small" data-label="share">{{ history.anatomy.prompt_pct }}%</td>
+        <td class="cell-bar"><pre class="spark cost share-bar">{{ history.anatomy.prompt_bar }}</pre></td>
+        <td class="small muted">memory, journal, todos, contract &mdash; budgeted below</td>
+      </tr>
+    </tbody>
+  </table>
+  </div>
+  <p class="small muted">A run re-reads its whole context on every turn, so a
+    token is charged once per turn that follows it. That is why run
+    <em>length</em> moves this page far more than prompt size does.</p>
+</div>
+{% endif %}
+
+{# Turns per run and weight per turn: the two numbers behind a run getting more
+   expensive, split oldest half of the window against newest. #}
+{% if history.trend.runs %}
+<h2>What changed</h2>
+<div class="card">
+  <div class="stat-row">
+    <span class="stat"><em>{{ history.trend.newer.turns_per_run }}</em>turns a run
+      {% if history.trend.turns_change_pct %}<small class="muted">({{ '+' if history.trend.turns_change_pct > 0 }}{{ history.trend.turns_change_pct }}%)</small>{% endif %}</span>
+    <span class="stat"><em>{{ history.trend.newer.cost_per_turn | cost }}</em>{{ cost_noun() }} a turn
+      {% if history.trend.per_turn_change_pct %}<small class="muted">({{ '+' if history.trend.per_turn_change_pct > 0 }}{{ history.trend.per_turn_change_pct }}%)</small>{% endif %}</span>
+    <span class="stat"><em>{{ history.trend.newer.cost_per_run | cost(2) }}</em>{{ cost_noun() }} a run
+      {% if history.trend.per_run_change_pct %}<small class="muted">({{ '+' if history.trend.per_run_change_pct > 0 }}{{ history.trend.per_run_change_pct }}%)</small>{% endif %}</span>
+  </div>
+  <p class="small muted">Newest half of this window against the oldest half. The
+    two left-hand numbers <em>multiply</em>: a longer run also carries a fatter
+    context on each of its extra turns, so they land on the right-hand one
+    together. Cap how many runs a project may take a day under
+    <a href="/settings#pacing">settings &rsaquo; pacing</a>.</p>
+</div>
+{% endif %}
+
+{# Prompt size, which is the one number on this page that multiplies: every run
+   rebuilds its prompt from scratch and re-reads it once per turn. Drawn only
+   once some runs have recorded a size - the column landed 2026-07-28. #}
+{% if history.prompts.runs %}
+<h2>Prompt size</h2>
+<div class="card">
+  <div class="stat-row">
+    <span class="stat"><em>{{ history.prompts.avg_kb }} KB</em>average prompt</span>
+    <span class="stat"><em>{{ history.prompts.max_kb }} KB</em>largest</span>
+    <span class="stat"><em>{{ history.prompts.runs }}</em>runs measured</span>
+  </div>
+  <p class="small muted">A prompt is rebuilt for every run and re-read on every
+    turn, so its size is paid many times over. The memory, journal, completed
+    todos and answered questions in it are each held under a byte budget you can
+    change under <a href="/settings#agent">settings &rsaquo; agent</a>.</p>
+  {% if history.prompts.by_project|length > 1 and not project_filter %}
+  <div class="table-scroll">
+  <table class="run-table breakdown">
+    <thead><tr><th>project</th><th>avg</th><th>largest</th><th>runs</th></tr></thead>
+    <tbody>
+      {% for g in history.prompts.by_project %}
+      <tr>
+        <td class="small cell-name">
+          {% if g.slug %}<a href="/activity?days={{ days }}&project={{ g.slug }}">{{ g.title }}</a>
+          {% else %}<span class="muted">{{ g.title }}</span>{% endif %}
+        </td>
+        <td class="small" data-label="avg">{{ g.avg_kb }} KB</td>
+        <td class="small" data-label="largest">{{ g.max_kb }} KB</td>
+        <td class="small" data-label="runs">{{ g.runs }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -119,6 +230,13 @@
   </form>
 
   {% if runs %}
+  {# Nine columns, one of them a task line of arbitrary length. Below 560px the
+     row stops being a row: the PROJECT becomes the block's heading and every
+     other cell carries its own column name. The project rather than the run
+     number ("#712" tells you nothing) or the task - almost every scheduled run
+     on this portal is called "build", so a column of "build" headings would
+     identify nothing at all. #}
+  <div class="table-scroll">
   <table class="run-table">
     <thead><tr>
       <th>run</th><th>when</th><th>project</th><th>task</th>
@@ -127,22 +245,23 @@
     <tbody>
       {% for r in runs %}
       <tr class="run-{{ r.status }}">
-        <td><a href="/run/{{ r.id }}">#{{ r.id }}</a></td>
-        <td class="small">{{ r.started_at|timeago }}</td>
-        <td class="small">
+        <td data-label="run"><a href="/run/{{ r.id }}">#{{ r.id }}</a></td>
+        <td class="small" data-label="when">{{ r.started_at|timeago }}</td>
+        <td class="small cell-name">
           {% if r.project_slug %}<a href="/project/{{ r.project_slug }}">{{ r.project_title }}</a>
           {% else %}<span class="muted">{{ r.project_title }}</span>{% endif %}
         </td>
-        <td class="small">{{ r.task }}</td>
-        <td class="small">{{ r.model }}</td>
-        <td><span class="badge run-status-{{ r.status }}">{{ r.status }}</span></td>
-        <td class="small">{{ r.duration }}</td>
-        <td class="small">{{ r.cost_usd|cost }}</td>
-        <td class="small">{{ r.events }}</td>
+        <td class="small" data-label="task">{{ r.task }}</td>
+        <td class="small" data-label="model">{{ r.model }}</td>
+        <td class="cell-status"><span class="badge run-status-{{ r.status }}">{{ r.status }}</span></td>
+        <td class="small" data-label="took">{{ r.duration }}</td>
+        <td class="small" data-label="{{ cost_noun() }}">{{ r.cost_usd|cost }}</td>
+        <td class="small" data-label="events">{{ r.events }}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
+  </div>
   {% else %}
   <p class="empty-state">No runs match.</p>
   {% endif %}

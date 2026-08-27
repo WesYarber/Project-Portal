@@ -54,17 +54,39 @@ Like `runlimit`, everything here fails open. No `flock(1)`, a directory that
 cannot be opened, an OS without BSD locks - all of them mean runs spawn exactly
 as they did before, back to the SELECT alone. A hardening feature that can stop
 every run on the board from starting is worse than the problem it solves.
+
+**What takes a lease, and what deliberately does not.** Every agent that can
+write to a directory two agents could share takes one:
+
+* a project run leases `data/projects/<slug>`;
+* the daily reflect and the learnings compaction both lease
+  `config.MEMORY_DIR`, because they work in the same directory and rewrite the
+  same two files - their only previous guard was a pair of in-memory slots that
+  die with the portal process, on a box that restarts itself several times an
+  hour to load its own new code;
+* a one-off task leases its own workspace, whose only previous guard was
+  `db.oneoff_running` - a SELECT on `runs.status`, which is the exact derived
+  answer this module exists to stop trusting alone. Two agents resuming one CLI
+  session fork the conversation as well as the checkout.
+
+An **ask** takes none, and that is a decision rather than an oversight. It is
+read-only by construction (`ask.build_command` denies Bash, Edit and Write and
+a test pins those flags), so it cannot collide with anything - and because the
+lease is `--nonblock`, giving it one would turn "ask a question about a project
+that happens to be mid-run" into a refusal. Reading a workspace somebody is
+writing is what a question about live work IS.
 """
 
 from __future__ import annotations
 
+import contextlib
 import fcntl
 import logging
 import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 log = logging.getLogger("portal.worklock")
 
@@ -193,18 +215,86 @@ def is_busy(lock_dir: Optional[Path]) -> Optional[bool]:
         os.close(fd)
 
 
-def refused_note(slug: str) -> str:
-    """The journal line for a run that started and found its workspace leased.
+# --- holding one from inside this process ----------------------------------
+
+
+class Busy(Exception):
+    """Somebody else holds the lease."""
+
+
+class Unavailable(Exception):
+    """The lease could not be taken for a reason that is not contention."""
+
+
+@contextlib.contextmanager
+def held(lock_dir: Path) -> Iterator[None]:
+    """Hold the workspace lease for the duration of a block of work in *this*
+    process, rather than for the lifetime of a spawned agent.
+
+    `wrap` covers the spawn case and cannot cover this one: there is no child to
+    wrap when the portal itself edits a workspace (see app/revert.py). The lock
+    is the same BSD lock on the same directory, so the two exclude each other -
+    an agent's `flock(1)` and this share one inode.
+
+    **This one fails closed**, which is the opposite of every other decision in
+    this module, and deliberately. Everywhere else a missing lease means a run
+    starts unlocked - annoying at worst. Here the lease guards a *destructive*
+    operation on a directory an agent may be mid-edit in, so "could not lock"
+    has to mean "did not do it". Raising rather than returning a flag is the
+    same argument continued: a caller cannot forget to check an exception.
+    """
+    try:
+        fd = os.open(str(lock_dir), os.O_RDONLY)
+    except OSError as exc:
+        raise Unavailable(f"cannot open {lock_dir}: {exc}") from exc
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise Busy(f"{lock_dir} is leased by a live run") from exc
+        except OSError as exc:
+            raise Unavailable(f"cannot lock {lock_dir}: {exc}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+def workspace_resource(slug: str) -> str:
+    """How a project workspace is named in a refusal."""
+    return f"the `{slug}` workspace"
+
+
+# The reflect and the compaction both work in `config.MEMORY_DIR` and both
+# rewrite files in it, so to a lease they are one resource and not two - which
+# their two separate in-memory slots have never been able to say.
+MEMORY_RESOURCE = "the shared memory directory"
+
+
+def oneoff_resource(task_id: int) -> str:
+    """How a one-off task's own workspace is named in a refusal."""
+    return f"the workspace for one-off task {task_id}"
+
+
+def refused_note(resource: str) -> str:
+    """The journal line for a run that started and found its directory leased.
+
+    `resource` names the thing in the reader's terms, because not every leased
+    directory is a project workspace - see the three helpers above. Passing a
+    bare slug here would read as "another agent still holds project-portal",
+    which is the one phrasing that does not say what was actually held.
 
     Worth a journal entry rather than a silent log line: it means the portal's
     own bookkeeping disagreed with the kernel, and the kernel was right. If this
-    ever appears, something upstream is scheduling onto a busy project and the
+    ever appears, something upstream is scheduling onto a busy directory and the
     lease is the only thing that caught it.
     """
     return (
-        f"Run refused: another agent still holds the `{slug}` workspace. "
-        f"Nothing was changed. The portal's run table said the project was "
-        f"free and the kernel's lock on the workspace directory said it was "
-        f"not - the lock is the one that is right, so the run stopped rather "
-        f"than putting two agents in one git checkout. See app/worklock.py."
+        f"Run refused: another agent still holds {resource}. "
+        f"Nothing was changed. The portal's own bookkeeping said it was free "
+        f"and the kernel's lock on the directory said it was not - the lock is "
+        f"the one that is right, so the run stopped rather than putting two "
+        f"agents in one directory. See app/worklock.py."
     )

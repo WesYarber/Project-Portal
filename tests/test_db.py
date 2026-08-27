@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 from app import config, db
 
@@ -79,3 +80,44 @@ def test_init_db_is_idempotent():
     db.init_db()
     db.init_db()
     assert len(db.list_projects()) == before
+
+
+def test_added_columns_has_no_duplicate_table_keys():
+    """A repeated key in the `_ADDED_COLUMNS` literal silently discards every
+    migration in the earlier block.
+
+    This has to read the SOURCE: by the time the module is imported Python has
+    already collapsed the duplicates, so the dict cannot be asked what it lost.
+    Two tables had been in this state - `runs` (five columns) and `todos` (two)
+    - and it was invisible for months, because `SCHEMA` creates those columns on
+    any fresh install. Only a database old enough to predate them would ever
+    have noticed, and by then the failure is a missing column at runtime.
+    """
+    import ast
+
+    tree = ast.parse(Path(db.__file__).read_text(encoding="utf-8"))
+    literal = next(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AnnAssign)
+        and getattr(node.target, "id", "") == "_ADDED_COLUMNS"
+    )
+    names = [k.value for k in literal.keys if isinstance(k, ast.Constant)]
+    duplicates = {n for n in names if names.count(n) > 1}
+    assert not duplicates, f"repeated table keys silently drop migrations: {duplicates}"
+
+
+def test_every_declared_migration_actually_reaches_the_table():
+    """Whatever `_ADDED_COLUMNS` names must exist after `init_db()`.
+
+    The direct assertion that the mechanism works, rather than that the literal
+    looks right - it catches a typo'd table name as well as the duplicate-key
+    bug above.
+    """
+    db.init_db()
+    conn = db.get_conn()
+    for table, columns in db._ADDED_COLUMNS.items():  # noqa: SLF001
+        present = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        assert present, f"{table} does not exist"
+        missing = {name for name, _ in columns} - present
+        assert not missing, f"{table} is missing declared columns: {missing}"

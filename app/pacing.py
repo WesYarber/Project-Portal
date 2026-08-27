@@ -31,7 +31,7 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from app import cadence, config, db, limits, quickreplies, spawnauth
+from app import cadence, config, db, headroom, limits, quickreplies, spawnauth
 
 log = logging.getLogger("portal.pacing")
 
@@ -187,22 +187,46 @@ def scheduled_hold(snapshot: Optional[dict] = None, threshold: Optional[float] =
     While the portal is deliberately spending (a spend-down window or the
     ahead-of-pace boost), the *session* window is held at the tighter guard
     instead - that pause is what spreads a burst across five-hour windows.
+
+    The session window is held at whichever is tighter still of that and the
+    measured headroom reserve: enough of the window has to be left for the run
+    about to start to finish inside it, or it gets killed part-way through with
+    its work half done. See app/headroom.py for the seven runs that taught us.
     """
     snapshot = limits.cached() if snapshot is None else snapshot
     if not snapshot.get("ok") or snapshot.get("stale"):
         return None
     threshold = hold_percent() if threshold is None else threshold
     guard = session_guard() if spend_mode(snapshot) else None
+    # Only asked for once, and only after the snapshot has been accepted: a
+    # missing or stale reading must not hold anything, and must not pay for a
+    # history query to find that out.
+    reserve = headroom.reserve()
     full = []
     for entry in snapshot.get("windows") or []:
         limit = threshold
-        if guard is not None and entry.get("key") == "five_hour" and guard < limit:
-            limit = guard
+        reserved = False
+        if entry.get("key") == headroom.SESSION_KEY:
+            if guard is not None and guard < limit:
+                limit = guard
+            # `100 - reserve` is the meter reading at which the gap to the wall
+            # stops being big enough for a run. Applied as a floor on the limit
+            # rather than replacing it, so it can only ever tighten the hold.
+            floor = 100.0 - reserve
+            if floor < limit:
+                limit, reserved = floor, True
         percent = entry.get("percent", 0.0)
         if percent >= limit:
-            # "guarded" only when the guard is what is holding it - a window
-            # past the ordinary threshold is a plain hold whatever mode is on.
-            full.append(dict(entry, hold_at=limit, guarded=percent < threshold))
+            # "guarded" and "reserved" name which rule is doing the holding, and
+            # only when it is the one that made the difference: a window past
+            # the ordinary threshold is a plain hold whatever mode is on.
+            full.append(dict(
+                entry,
+                hold_at=limit,
+                guarded=percent < threshold and not reserved,
+                reserved=reserved and percent < threshold,
+                reserve=round(reserve, 1),
+            ))
     if not full:
         return None
     # The fullest one, because that is the one a run would actually hit first.
@@ -212,6 +236,14 @@ def scheduled_hold(snapshot: Optional[dict] = None, threshold: Optional[float] =
 def hold_reason(hold: dict) -> str:
     resets = hold.get("resets_in") or ""
     tail = f" and resets in {resets}" if resets else ""
+    if hold.get("reserved"):
+        left = max(0.0, 100.0 - float(hold.get("percent") or 0.0))
+        return (
+            f"holding scheduled runs - your {hold['label']} window is at "
+            f"{hold['percent']:g}%{tail}, and {left:g} points left is under the "
+            f"{hold['reserve']:g} a run needs to finish without being killed "
+            f"part-way through (run now to spend it anyway)"
+        )
     if hold.get("guarded"):
         return (
             f"pausing the burst - your {hold['label']} window is at "

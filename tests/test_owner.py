@@ -103,6 +103,13 @@ def test_an_old_config_files_pronouns_key_still_answers_the_question(tmp_path):
     Honoring it is what stops every existing install silently reverting to
     they/them at the next boot - the failure would be invisible in the config
     file, which still says what it always said.
+
+    This key is NOT the `people.pronouns` column, which `_drop_pronouns` took
+    off on 2026-08-16. They are different things and only the column went: the
+    migration skips the owner's row precisely because this config route carries
+    their answer, so a later cleanup reading "drop the pronouns thing" and
+    taking this out too would reset the owner on every install still on the old
+    key. That is what this test is here to make loud.
     """
     path = tmp_path / "portal.toml"
     path.write_text('pronouns = "he"\n')

@@ -12,12 +12,107 @@ document.addEventListener("submit", function (ev) {
   }
 });
 
+// --- One press, one action -------------------------------------------------
+// Wes, 2026-08-27:
+//
+//   "when I click a button to answer a question, add a note, etc, it often
+//    hangs a bit before completing the task I clicked the button for. There is
+//    no feedback that anything was done when clicking the button, though, and
+//    clicking it again multiple times will repeat the action a few times."
+//
+// Three complaints, one gap: from the press until the page changes, a submitted
+// form looks exactly like an unsubmitted one. Nothing here makes the round trip
+// faster - it makes the wait visible and makes the second press free.
+//
+// It covers BOTH kinds of form, because both of the things he named are one
+// each: answering a question is [data-inplace] (fetch, then a patch - two round
+// trips, and until today up to a whole poll interval of nothing on top), and
+// adding a note is an ordinary navigation. The navigating one has no browser
+// spinner to lean on either: he reads this from a Home Screen install, where
+// there is no tab and no chrome to show one.
+//
+// Registered FIRST, ahead of the scroll stash and the in-place poster below,
+// because a repeat press has to die before either of them acts on it. The stash
+// would write a scroll position for a navigation that is not going to happen,
+// and the next ordinary navigation here would then eat it and scroll a page the
+// reader had only just opened. The poster would send the second copy of the
+// answer that this section exists to stop.
+//
+// Behind the confirm handler above, though: a canceled delete never happened,
+// and marking it busy would leave a dead button until the page was reloaded.
+
+// A `data-*` attribute rather than a class, and that is load-bearing rather
+// than a style choice. The live-refresh morph refuses to REMOVE a data-*
+// attribute the server did not render (preservedAttr), because those are
+// script-set markers it knows nothing about - so the mark survives a background
+// patch landing mid-press. A class does not: the fresh HTML has no busy form in
+// it, the morph syncs `class` from it, and the guard would come off a press
+// that is still in flight. That is not theoretical; the browser check in
+// scripts/press_feedback_shot.py found it, with the 2.5s version poll as the
+// thing that stripped it.
+var BUSY_ATTR = "data-busy";
+
+function formIsBusy(form) {
+  return !!(form && form.hasAttribute && form.hasAttribute(BUSY_ATTR));
+}
+
+// The pulse goes on the button that was PRESSED, not on the form: the note form
+// carries three submit buttons ("add note", "queue note", "add & run now") and
+// only one of them was asked for. The guard, though, is the class on the FORM -
+// so a browser that names no submitter (Safari before 15.4) still gets the
+// double-press protection even where there is nothing to aim the pulse at.
+function markBusy(form, submitter) {
+  if (!form || !form.setAttribute) return;
+  form.setAttribute(BUSY_ATTR, "");
+  if (submitter && submitter.setAttribute) {
+    submitter.setAttribute(BUSY_ATTR, "");
+    // aria-busy, and deliberately NOT `disabled`. Disabling a submit button
+    // from inside its own submit event is the classic way to drop its
+    // name/value from the payload that is still being serialized - which on the
+    // note form is the whole difference between "add & run now" and a note that
+    // quietly queues, and on a question card between answering and deleting.
+    submitter.setAttribute("aria-busy", "true");
+  }
+}
+
+function clearBusy(form) {
+  if (!form || !form.removeAttribute) return;
+  form.removeAttribute(BUSY_ATTR);
+  if (!form.querySelectorAll) return;
+  Array.prototype.forEach.call(form.querySelectorAll("[" + BUSY_ATTR + "]"), function (el) {
+    el.removeAttribute(BUSY_ATTR);
+    el.removeAttribute("aria-busy");
+  });
+}
+
+document.addEventListener("submit", function (ev) {
+  if (ev.defaultPrevented) return;
+  var form = ev.target;
+  if (!form || !form.hasAttribute) return;
+  if (formIsBusy(form)) {
+    // Already on its way. Swallowing the press is the point - this is the
+    // "clicking it again multiple times will repeat the action" half.
+    ev.preventDefault();
+    return;
+  }
+  markBusy(form, ev.submitter || null);
+});
+
+// A navigating form stays busy until its page goes away, which is the honest
+// end of the press. `pageshow` rather than `load`, because the way back to a
+// page you submitted from is the back button, and that restores it from the
+// bfcache with every class exactly as it was left - a form frozen busy, with no
+// load event coming to thaw it.
+window.addEventListener("pageshow", function () {
+  Array.prototype.forEach.call(document.querySelectorAll("form[" + BUSY_ATTR + "]"), clearBusy);
+});
+
 // Ctrl/Cmd+Enter - and, on a real keyboard, Shift+Enter - submits the textarea
 // you're typing in, so answering a question or dropping a note never needs a
 // trip to the mouse. Plain Enter always inserts a newline.
 //
 // The pointer test is not decoration. iOS turns its shift key on by itself for
-// auto-capitalisation, which is exactly the state a note box is in when you
+// auto-capitalization, which is exactly the state a note box is in when you
 // start typing, and the return key then arrives as a keydown with
 // shiftKey === true. That made every Enter on a phone submit the note
 // mid-sentence. Shift+Enter stays for anything with a fine pointer (a mouse,
@@ -104,86 +199,6 @@ document.addEventListener("click", function (ev) {
   }
 });
 
-// The "+tag" button on a todo row swaps itself for a tiny input. Delegated so
-// rows inserted by a live-refresh morph work without re-enhancement, and the
-// swap lives in `hidden`, which the morph treats as JS-owned state.
-function closeTagAdd(form) {
-  form.hidden = true;
-  var wrap = form.closest(".tag-add");
-  var btn = wrap && wrap.querySelector(".tag-add-btn");
-  if (btn) btn.hidden = false;
-}
-
-document.addEventListener("click", function (ev) {
-  // Clicking anywhere else while an opened input is still empty puts its +
-  // back. Deliberately not focusout-based: blur events do not fire at all in
-  // an unfocused (e.g. headless) window, and a click is what actually says
-  // "I moved on".
-  document.querySelectorAll(".tag-add-form:not([hidden])").forEach(function (form) {
-    var wrap = form.closest(".tag-add");
-    if (wrap && wrap.contains(ev.target)) return;
-    var input = form.querySelector("input");
-    if (input && input.value.trim()) return;
-    closeTagAdd(form);
-  });
-
-  // Same idea for the "whose?" re-file menu: any click outside an open one
-  // closes it. Unlike the tag input there is nothing half-typed to protect, so
-  // it closes unconditionally.
-  var opened = ev.target.closest ? ev.target.closest(".todo-who") : null;
-  document.querySelectorAll(".todo-who-menu:not([hidden])").forEach(function (menu) {
-    if (menu.closest(".todo-who") === opened) return;
-    closeWhoMenu(menu);
-  });
-
-  var whoBtn = ev.target.closest ? ev.target.closest('[data-act="who"]') : null;
-  if (whoBtn) {
-    var menu = whoBtn.parentElement.querySelector(".todo-who-menu");
-    if (menu) {
-      whoBtn.hidden = true;
-      menu.hidden = false;
-      var first = menu.querySelector(".todo-who-pick");
-      if (first) first.focus();
-    }
-    return;
-  }
-
-  var btn = ev.target.closest ? ev.target.closest('[data-act="tag-add"]') : null;
-  if (!btn) return;
-  var form = btn.parentElement.querySelector(".tag-add-form");
-  if (!form) return;
-  btn.hidden = true;
-  form.hidden = false;
-  var input = form.querySelector("input");
-  if (input) input.focus();
-});
-
-// The "whose?" menu on a todo row. Same `hidden`-as-JS-owned-state contract as
-// the tag input above, so a live-refresh morph cannot slam it shut mid-choice.
-function closeWhoMenu(menu) {
-  menu.hidden = true;
-  var wrap = menu.closest(".todo-who");
-  var btn = wrap && wrap.querySelector(".todo-who-btn");
-  if (btn) btn.hidden = false;
-}
-
-// Escape clears and closes.
-document.addEventListener("keydown", function (ev) {
-  if (ev.key !== "Escape") return;
-  var menu = ev.target.closest ? ev.target.closest(".todo-who-menu") : null;
-  if (menu) {
-    closeWhoMenu(menu);
-    var back = menu.closest(".todo-who").querySelector(".todo-who-btn");
-    if (back) back.focus();
-    return;
-  }
-  var form = ev.target.closest ? ev.target.closest(".tag-add-form") : null;
-  if (!form) return;
-  var input = form.querySelector("input");
-  if (input) input.value = "";
-  closeTagAdd(form);
-});
-
 function selectText(el) {
   var range = document.createRange();
   range.selectNodeContents(el);
@@ -193,9 +208,77 @@ function selectText(el) {
 }
 
 // Grow textareas to fit their content instead of showing an inner scrollbar.
+//
+// Wes, 2026-08-18: "at some point when typing a paragraph into the add note
+// field, the page starts jumping around any time there is an auto-correct
+// suggestion or an auto-correct that just happens... might start happening
+// once the text box is at its maximum allowed height. Selecting text also
+// becomes a bit buggy at this point."
+//
+// The mechanism was the measurement, not the growing. `height: auto` on a
+// <textarea> does NOT resolve to the content height - it resolves to the
+// `rows` attribute, three lines - so the old first line collapsed a note box
+// from its 60vh cap down to about 88px, and reading scrollHeight back forced
+// layout at that size. The document lost 400-odd pixels for the length of one
+// statement, the browser clamped the page scroll to the shorter document, and
+// restoring the height did not restore the scroll. iOS fires an `input` event
+// for every autocorrect suggestion it draws, so a long note paid that on every
+// keystroke - and worst at the cap, where the collapse is biggest and the
+// height it computes cannot change anything anyway.
+//
+// So: measure by collapsing only when a collapse can tell us something new.
+var SIZED_AT = "_autosizeChars";
+
+// The used max-height in pixels (getComputedStyle resolves the 60vh), or 0
+// when the box is uncapped. parseFloat("none") is NaN and NaN > 0 is false, so
+// the uncapped case needs no test of its own.
+function heightCap(el) {
+  var px = parseFloat(window.getComputedStyle(el).maxHeight);
+  return px > 0 ? px : 0;
+}
+
 function autosize(el) {
-  el.style.height = "auto";
-  el.style.height = el.scrollHeight + 2 + "px";
+  var cap = heightCap(el);
+  var overflowing = el.scrollHeight > el.clientHeight;
+  var chars = el.value.length;
+  var shrank = el[SIZED_AT] === undefined || chars < el[SIZED_AT];
+  el[SIZED_AT] = chars;
+
+  var target;
+  if (overflowing) {
+    // Content already spills out of the box, so scrollHeight IS the height it
+    // wants - no collapse needed to find that out. This is the ordinary
+    // typing-a-new-line case.
+    target = el.scrollHeight + 2;
+  } else if (shrank) {
+    // Only a deletion can leave the box taller than its content, and a
+    // collapse is the only way to measure how much shorter it should be. The
+    // height goes back before anything paints, and the page scroll goes back
+    // with it: the document was briefly short enough to clamp it, and the page
+    // owes the reader only the height the box actually lost.
+    //
+    // The box's own scrollTop is deliberately NOT saved here. Collapsing to
+    // three rows only ever makes its scrollable range larger, so there is no
+    // clamp to undo - a restore would be a line no test could ever fail.
+    var keptY = window.scrollY;
+    var was = el.style.height;
+    el.style.height = "auto";
+    target = el.scrollHeight + 2;
+    el.style.height = was;
+    if (window.scrollY !== keptY) window.scrollTo(window.scrollX, keptY);
+  } else {
+    // It fits and it did not get shorter: nothing about the height can have
+    // changed. An autocorrect that swaps one word for another of the same
+    // length lands here, which is the point.
+    return;
+  }
+
+  if (cap && target > cap) target = cap;
+  var next = target + "px";
+  // Never write a height that is already set. A no-op assignment still
+  // invalidates layout, and on a focused textarea that is enough for WebKit to
+  // re-run its scroll-the-caret-into-view pass over both the box and the page.
+  if (next !== el.style.height) el.style.height = next;
 }
 document.addEventListener("input", function (ev) {
   if (ev.target.tagName === "TEXTAREA") autosize(ev.target);
@@ -205,6 +288,11 @@ document.addEventListener("DOMContentLoaded", function () {
     if (el.value) autosize(el);
   });
   startLiveRunPoll();
+  // The fold before the poller: on a finished run the poller fetches once and
+  // there is a beat where the whole unfolded transcript is on screen, and this
+  // costs nothing when the poller then replaces it.
+  initConsoleFoldToggle();
+  foldServerConsole();
   startConsolePoll();
   pinConsole();
   restoreDrafts();
@@ -313,6 +401,13 @@ document.addEventListener("submit", function (ev) {
   // where it was would fire on whatever page loads next instead.
   if (ev.defaultPrevented) return;
   var form = ev.target;
+  // Nor does a [data-inplace] form, which is handled below by fetch and never
+  // leaves the page. This listener runs FIRST (registered earlier in the file),
+  // so it cannot lean on defaultPrevented for that one and has to name it: a
+  // stashed position nothing consumes would fire on the next ordinary
+  // navigation here instead, scrolling a page the reader had just opened.
+  // Both listeners ask the same function, so they cannot disagree about it.
+  if (inPlaceAction(ev)) return;
   if (!form || !form.method || form.method.toLowerCase() !== "post") return;
   var y = window.scrollY || document.documentElement.scrollTop || 0;
   if (!y) return;
@@ -364,6 +459,120 @@ window.addEventListener("load", function () {
   }
 });
 
+// --- Acting on a row without leaving the page -------------------------------
+// Wes, 2026-08-04: "Checking a todo task jumps to the top of the page, but it
+// shouldn't."
+//
+// It did, and the stash-and-restore above was never going to fix it. The todo
+// section is a <details> the server always renders CLOSED - initFoldMemory()
+// reopens it from localStorage a moment later, because the server cannot know
+// what you last had open - so at the instant restoreScroll() asks for a
+// position the fresh document is short by the entire height of the list. The
+// browser clamps to as far as the page can reach, which on a long list is
+// nowhere near where you were, and the list then unfolds underneath a scroll
+// position that has already been decided.
+//
+// A one-click action on a row does not need a navigation at all, so these no
+// longer do one: the form is posted with fetch and the page is patched in place
+// by the same live-refresh morph a running agent uses, which already holds the
+// reader's line of text still. Nothing ever sets the scroll position, so
+// nothing can set it wrong.
+//
+// Opt-in per form (`data-inplace`) rather than "every POST on this page". The
+// rule for what may carry it is that submitting CONSUMES the form - a ticked
+// row, an answered question, a dismissed banner. A compose box you keep typing
+// into (add a todo, write a note) stays an ordinary navigating form, because
+// there the fields are still yours after the post and releaseFocus() below
+// would take the cursor out from under you.
+function canPostInPlace() {
+  return !!(window.fetch && window.DOMParser && window.FormData);
+}
+
+// Where an in-place submit should post, or null if this submit is not ours.
+//
+// One function rather than a copy of the test in each listener, because the
+// scroll stash above and the handler below must never disagree: a position
+// stashed for a submit that then never navigates is eaten by the NEXT ordinary
+// navigation to this page, scrolling a page the reader had only just opened.
+//
+// The submitter decides the answer on a question card, whose one form has three
+// destinations hung off its buttons as `formaction` - answer, save for later,
+// delete. Reading `form.action` there would send every one of them to the first.
+function inPlaceAction(ev) {
+  var form = ev.target;
+  if (!form || !form.matches || !form.matches("form[data-inplace]")) return null;
+  // No fetch means no morph; falling through to a normal submit is a worse
+  // experience, not a broken one.
+  if (!canPostInPlace()) return null;
+  var submitter = ev.submitter || null;
+  if (submitter && submitter.getAttribute && submitter.getAttribute("formaction")) {
+    return submitter.getAttribute("formaction");
+  }
+  // Safari before 15.4 reports no submitter at all. On a single-destination
+  // form that costs nothing, but on one with `formaction` buttons there is no
+  // way to tell a delete from an answer - so it navigates the old way rather
+  // than guessing, and posting a delete to the answer route.
+  if (!submitter && form.querySelector && form.querySelector("[formaction]")) return null;
+  return form.getAttribute("action");
+}
+
+// Let go of whatever inside the just-posted form had focus.
+//
+// refreshBlocked() holds a live patch back while a text field has focus, so a
+// form you typed into would post and then appear to do nothing until you
+// clicked somewhere else. That used to be a ban on text fields in an in-place
+// form; it is a two-line release instead, because what was in those fields went
+// out with the post and the form itself is about to be replaced. On a phone it
+// also puts the keyboard away, which is what answering a question means.
+function releaseFocus(form) {
+  var el = document.activeElement;
+  if (!el || el === document.body) return;
+  if (!form || !form.contains || !form.contains(el)) return;
+  if (el.blur) el.blur();
+}
+
+// The one trap in the whole mechanism, and it is silent: form.submit() does NOT
+// fire a submit event. The templates' `onchange="this.form.submit()"` idiom
+// therefore walks straight past every listener in this file, including the one
+// below - so a checkbox using it would have gone on doing a full navigation
+// while the markup said data-inplace. requestSubmit() is the one that behaves
+// like a person pressing the button. Where it does not exist (Safari before 16)
+// the plain submit is the old behavior, which is worse and not broken.
+function submitForm(form) {
+  if (form.requestSubmit) form.requestSubmit();
+  else form.submit();
+}
+window.submitForm = submitForm;
+
+document.addEventListener("submit", function (ev) {
+  // Behind [data-confirm]: that handler is registered at the top of this file,
+  // so by the time this runs a canceled delete has already prevented itself.
+  if (ev.defaultPrevented) return;
+  var action = inPlaceAction(ev);
+  if (!action) return;
+  ev.preventDefault();
+  var form = ev.target;
+  var fields = {};
+  new FormData(form).forEach(function (value, name) { fields[name] = value; });
+  // The pressed button's own name and value. `new FormData(form)` leaves it
+  // out - only the browser's own submission carries it - so without this a
+  // tapped quick option posts an empty `choice` and answers the question blank.
+  if (ev.submitter && ev.submitter.name) fields[ev.submitter.name] = ev.submitter.value;
+  releaseFocus(form);
+  // Forced: the patch that follows is the answer to a button this reader just
+  // pressed, so it does not wait behind a text box they left focused somewhere
+  // else on the page. See refreshHeld().
+  //
+  // The busy mark comes off when the patch has landed, not when the POST
+  // returned - between those two the page still shows the old state, and a
+  // button that looks live over stale text is the double-press this whole
+  // section is here to stop. The morph would strip the class anyway (the fresh
+  // HTML has no busy form in it); this is what covers a post that was REFUSED,
+  // where there is no morph at all and the control has to come back.
+  postForm(action, fields, function () { return liveReload(true); })
+    .then(function () { clearBusy(form); });
+});
+
 // --- Attachments: drop, paste, record --------------------------------------
 // Everything here funnels into the form's own <input type=file>. Nothing is
 // uploaded on drop; the file rides along when the note is submitted. That keeps
@@ -405,6 +614,19 @@ function addFiles(input, files) {
   for (var j = 0; j < files.length; j++) dt.items.add(files[j]);
   input.files = dt.files;
   return true;
+}
+
+// The inverse, by name: deleting one voice memo must not throw away the
+// screenshot picked alongside it. Names are unique here - recordings carry a
+// millisecond timestamp.
+function removeFile(input, name) {
+  if (typeof DataTransfer === "undefined") return;
+  var dt = new DataTransfer();
+  var existing = input.files || [];
+  for (var i = 0; i < existing.length; i++) {
+    if (existing[i].name !== name) dt.items.add(existing[i]);
+  }
+  input.files = dt.files;
 }
 
 function initDropzones() {
@@ -456,6 +678,13 @@ function initDropzones() {
 // Voice memos, mainly for phones. getUserMedia only exists in a secure context,
 // so over plain http on a LAN hostname the button stays hidden rather than
 // being present and throwing when pressed.
+//
+// The full recorder Wes asked for (2026-08-04): a waveform responding to the
+// mic in real time, the running length, pause/resume, playback of a take
+// before it is sent, and delete. Each finished take becomes a row in the shelf
+// with its own player and delete button, and the file itself rides in the
+// form's <input type=file> like any other attachment - the server never hears
+// about a recording that was thrown away.
 function initRecorder(form, input, refresh) {
   var btn = form.querySelector("[data-record]");
   if (!btn) return;
@@ -472,49 +701,294 @@ function initRecorder(form, input, refresh) {
     // you want it.
     return;
   }
+  var panel = form.querySelector("[data-rec-panel]");
+  var shelf = form.querySelector("[data-rec-shelf]");
+  var timeEl = form.querySelector("[data-rec-time]");
+  var pauseBtn = form.querySelector("[data-rec-pause]");
+  var doneBtn = form.querySelector("[data-rec-done]");
+  var cancelBtn = form.querySelector("[data-rec-cancel]");
+  var canvas = panel ? panel.querySelector("canvas") : null;
+  if (!panel || !shelf || !timeEl || !pauseBtn || !doneBtn || !cancelBtn || !canvas) return;
   btn.hidden = false;
 
-  var recorder = null;
+  var recorder = null; // a MediaRecorder while a take is open, else null
+  var stream = null;
   var chunks = [];
+  var discard = false; // set by the discard button before stop()
+  var audioCtx = null;
+  var meter = null;
+  var raf = 0;
+  var timer = 0;
+  var running = false; // this closure's own "is the clock ticking"
+  var startedAt = 0; // performance.now() when recording last (re)started
+  var accumulated = 0; // ms of recording banked before the current stretch
+  var bars = []; // recent mic peak levels, newest last
 
-  btn.addEventListener("click", function () {
-    if (recorder && recorder.state === "recording") {
-      recorder.stop();
-      return;
+  // Recorded time excludes pauses: bank the stretch on pause, restart the
+  // clock on resume. MediaRecorder itself offers no elapsed-time reading.
+  // `running` is tracked here rather than read from recorder.state because by
+  // the time onstop fires the state is already "inactive" - a state-based
+  // clock reads 0:00 on any take that was never paused. Caught in a real
+  // browser; pinned by tests/js/recorder.mjs.
+  function recordedMs() {
+    var ms = accumulated;
+    if (running) ms += performance.now() - startedAt;
+    return ms;
+  }
+  function fmt(ms) {
+    var s = Math.floor(ms / 1000);
+    return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+  }
+
+  // The canvas is styled with `color`; reading it back means the waveform
+  // follows the theme without this code knowing any palette.
+  function sizeCanvas() {
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(60, Math.floor(canvas.clientWidth * dpr));
+    canvas.height = Math.floor(canvas.clientHeight * dpr) || 36;
+  }
+  function drawWave() {
+    var g = canvas.getContext("2d");
+    if (!g) return;
+    var w = canvas.width;
+    var h = canvas.height;
+    g.clearRect(0, 0, w, h);
+    g.fillStyle = getComputedStyle(canvas).color;
+    g.globalAlpha = recorder && recorder.state === "paused" ? 0.35 : 0.9;
+    var dpr = window.devicePixelRatio || 1;
+    var step = 3 * dpr; // 2px bar + 1px gap, in device pixels
+    var max = Math.floor(w / step);
+    if (bars.length > max) bars.splice(0, bars.length - max);
+    for (var i = 0; i < bars.length; i++) {
+      // sqrt lifts quiet speech into the visible range; a linear map reads
+      // as a flatline for anything but shouting.
+      var level = Math.sqrt(bars[i]);
+      var bh = Math.max(2 * dpr, level * h);
+      var x = w - (bars.length - i) * step;
+      g.fillRect(x, (h - bh) / 2, 2 * dpr, bh);
     }
+    g.globalAlpha = 1;
+  }
+  function meterLoop() {
+    raf = requestAnimationFrame(meterLoop);
+    if (meter && recorder && recorder.state === "recording") {
+      var data = new Uint8Array(meter.fftSize);
+      meter.getByteTimeDomainData(data);
+      var peak = 0;
+      for (var i = 0; i < data.length; i++) {
+        var v = Math.abs(data[i] - 128) / 128;
+        if (v > peak) peak = v;
+      }
+      bars.push(peak);
+    }
+    drawWave();
+  }
+
+  // A navigation while the mic is hot would lose the take silently, so the
+  // form's submit buttons sleep until the recording is finished or discarded.
+  function setSubmits(disabled) {
+    form.querySelectorAll('button[type="submit"], button:not([type])').forEach(function (b) {
+      b.disabled = disabled;
+    });
+  }
+
+  function finishTake() {
+    // Read the clock before stopping it - recordedMs owns the pause
+    // arithmetic; this function only has to take the final reading.
+    var length = fmt(recordedMs());
+    running = false;
+    if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+    stream = null;
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (e) { /* already closed */ }
+      audioCtx = null;
+      meter = null;
+    }
+    cancelAnimationFrame(raf);
+    clearInterval(timer);
+    panel.hidden = true;
+    btn.classList.remove("recording");
+    setSubmits(false);
+    var take = chunks;
+    chunks = [];
+    var rec = recorder;
+    recorder = null;
+    if (discard || !take.length) return;
+    var type = rec.mimeType || "audio/webm";
+    var blob = new Blob(take, { type: type });
+    var ext = type.indexOf("ogg") >= 0 ? "ogg" : type.indexOf("mp4") >= 0 ? "m4a" : "webm";
+    var name = "voice-memo-" + new Date().toISOString().replace(/[:.]/g, "-") + "." + ext;
+    var file = new File([blob], name, { type: type });
+    if (!addFiles(input, [file])) return;
+    refresh();
+    addTakeRow(file, blob, length);
+  }
+
+  // One row per finished take: play it back, or delete it (which pulls the
+  // file back out of the input - nothing of it ever reaches the server).
+  function addTakeRow(file, blob, length) {
+    var row = document.createElement("div");
+    row.className = "rec-row";
+    var audio = document.createElement("audio");
+    audio.controls = true;
+    var url = URL.createObjectURL(blob);
+    audio.src = url;
+    var meta = document.createElement("span");
+    meta.className = "small muted";
+    meta.textContent = length + " voice note";
+    var del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn danger small";
+    del.textContent = "delete";
+    del.addEventListener("click", function () {
+      removeFile(input, file.name);
+      URL.revokeObjectURL(url);
+      row.remove();
+      refresh();
+    });
+    row.appendChild(audio);
+    row.appendChild(meta);
+    row.appendChild(del);
+    shelf.appendChild(row);
+  }
+
+  function start() {
     navigator.mediaDevices
       .getUserMedia({ audio: true })
-      .then(function (stream) {
+      .then(function (s) {
+        stream = s;
         chunks = [];
-        recorder = new MediaRecorder(stream);
+        bars = [];
+        discard = false;
+        accumulated = 0;
+        recorder = new MediaRecorder(s);
         recorder.ondataavailable = function (ev) {
           if (ev.data && ev.data.size) chunks.push(ev.data);
         };
-        recorder.onstop = function () {
-          // Always release the microphone, even if the blob turns out empty -
-          // a live mic indicator left on after recording is alarming.
-          stream.getTracks().forEach(function (t) {
-            t.stop();
-          });
-          btn.textContent = "record audio";
-          btn.classList.remove("recording");
-          if (!chunks.length) return;
-          var type = recorder.mimeType || "audio/webm";
-          var blob = new Blob(chunks, { type: type });
-          var ext = type.indexOf("ogg") >= 0 ? "ogg" : type.indexOf("mp4") >= 0 ? "m4a" : "webm";
-          var name = "voice-memo-" + new Date().toISOString().replace(/[:.]/g, "-") + "." + ext;
-          if (addFiles(input, [new File([blob], name, { type: type })])) refresh();
-        };
+        // Always through finishTake, even if the browser stops the recorder
+        // itself (the mic being unplugged) - the mic must be released and the
+        // buttons woken on every path.
+        recorder.onstop = finishTake;
         recorder.start();
-        btn.textContent = "stop recording";
+        running = true;
+        startedAt = performance.now();
+        // The meter is a side-chain: mic -> AnalyserNode, connected onward to
+        // nothing, so it can never change what is recorded. Losing it (an
+        // exotic browser without AudioContext) loses the waveform, not the
+        // recording.
+        try {
+          var AC = window.AudioContext || window.webkitAudioContext;
+          audioCtx = new AC();
+          meter = audioCtx.createAnalyser();
+          meter.fftSize = 1024;
+          audioCtx.createMediaStreamSource(s).connect(meter);
+        } catch (e) {
+          meter = null;
+        }
+        // pause/resume shipped later than MediaRecorder itself; a browser
+        // without them gets a recorder without that one button.
+        pauseBtn.hidden = typeof recorder.pause !== "function";
+        pauseBtn.textContent = "pause";
+        timeEl.textContent = "0:00";
+        panel.hidden = false;
         btn.classList.add("recording");
+        setSubmits(true);
+        sizeCanvas();
+        // no-poll-gate: a display clock for the recording in progress. It
+        // makes no requests, and it is cleared when the recorder stops.
+        timer = setInterval(function () {
+          timeEl.textContent = fmt(recordedMs());
+        }, 200);
+        raf = requestAnimationFrame(meterLoop);
       })
       .catch(function () {
-        btn.textContent = "microphone unavailable";
         btn.disabled = true;
+        btn.title = "microphone unavailable";
+        var status = form.querySelector("[data-attach-status]");
+        if (status) status.textContent = "microphone unavailable";
       });
+  }
+
+  btn.addEventListener("click", function () {
+    // While a take is open the mic button is a second "done" - the familiar
+    // toggle - and the panel's own buttons are the finer controls.
+    if (recorder) {
+      recorder.stop();
+      return;
+    }
+    start();
+  });
+  pauseBtn.addEventListener("click", function () {
+    if (!recorder) return;
+    if (recorder.state === "recording") {
+      accumulated += performance.now() - startedAt;
+      running = false;
+      recorder.pause();
+      pauseBtn.textContent = "resume";
+    } else if (recorder.state === "paused") {
+      recorder.resume();
+      running = true;
+      startedAt = performance.now();
+      pauseBtn.textContent = "pause";
+    }
+  });
+  doneBtn.addEventListener("click", function () {
+    if (recorder) recorder.stop();
+  });
+  cancelBtn.addEventListener("click", function () {
+    if (!recorder) return;
+    discard = true;
+    recorder.stop();
   });
 }
+
+// --- Folds that remember whether you opened them ---------------------------
+// A `<details data-fold-remember id="...">` keeps its open/shut state on this
+// browser, per page path and id.
+//
+// This exists because of the todo list. Wes, 2026-08-01: "have the todo section
+// be collapsed by default" - and every tick, tag, refile and add in that list
+// is a POST that redirects back to the project page. Without a memory, each one
+// would shut the list you were working in, so "collapsed by default" would read
+// as "collapsed no matter what you do".
+//
+// So the server's `open` attribute is the state a page STARTS in, and this is
+// the state a person put it in. A live refresh needs none of this: the morph
+// already preserves `open` on any <details> (see preservedAttr).
+//
+// Deliberately opt-in. Three folds on the project page have their open state
+// decided by the server from live facts - the console opens while a run is
+// going, the ask box opens when there is a question pending, sub-projects open
+// when there are some - and remembering those would be overruling a fact with
+// a stale click.
+var FOLD_PREFIX = "portal-fold:";
+
+function foldKey(el) {
+  return el.id ? FOLD_PREFIX + location.pathname + "|" + el.id : null;
+}
+
+function initFoldMemory() {
+  document.querySelectorAll("details[data-fold-remember]").forEach(function (el) {
+    var key = foldKey(el);
+    if (!key) return;
+    if (!el._foldBound) {
+      el._foldBound = true;
+      el.addEventListener("toggle", function () {
+        try {
+          localStorage.setItem(key, el.open ? "1" : "0");
+        } catch (e) {}
+      });
+    }
+    var saved = null;
+    try {
+      saved = localStorage.getItem(key);
+    } catch (e) {}
+    if (saved === "1") el.open = true;
+    else if (saved === "0") el.open = false;
+  });
+}
+
+document.addEventListener("DOMContentLoaded", initFoldMemory);
 
 // --- Unsaved drafts --------------------------------------------------------
 // Anything typed into a note, answer or idea box is kept in localStorage until
@@ -605,6 +1079,11 @@ function watchForOffline() {
   var timer = null;
 
   function tick() {
+    // The heaviest of the lot, and the one the diagnosis missed: this runs on
+    // EVERY page, every 3 seconds, and never stops. An overlay saying the
+    // server is down is worth nothing in a tab nobody is looking at, and the
+    // tab learns the moment it is looked at again (listener below).
+    if (document.hidden) return;
     fetch("/api/ping", { cache: "no-store" })
       .then(function (r) {
         if (!r.ok) throw new Error("bad status");
@@ -645,6 +1124,9 @@ function watchForOffline() {
   }
 
   schedule(IDLE_MS);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) tick();
+  });
 }
 
 // --- Live agent activity ---------------------------------------------------
@@ -690,6 +1172,11 @@ function startLiveRunPoll() {
   }
 
   function tick() {
+    // Same rule as the console poller and initLiveRefresh: a tab nobody is
+    // looking at does not poll. This one never stops on its own - there is
+    // always a next run to notice - so without the gate an open background tab
+    // fetches every 5 seconds for as long as the browser is running.
+    if (document.hidden) return;
     fetch("/api/active-run", { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(paint)
@@ -697,6 +1184,9 @@ function startLiveRunPoll() {
   }
   tick();
   setInterval(tick, 5000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) tick();
+  });
 }
 
 // --- Reading a transcript --------------------------------------------------
@@ -722,6 +1212,40 @@ function consoleKind(line) {
   return "say";
 }
 
+// The agent's prose is markdown, and drawing it as raw source text is what
+// Wes reported (2026-08-04): "**My own 540→550 change was wrong.**" reading as
+// asterisks rather than bold. This renders the inline half of markdown - bold,
+// `code` and a # heading line - because those are what agent summaries are
+// actually full of. Block constructs (lists, quotes, fences) stay as source:
+// the console draws line by line so a chunk split across two polls redraws
+// correctly, and per-line statelessness is what makes that work. Built as DOM
+// nodes, never innerHTML - the transcript is untrusted text.
+var MD_INLINE = /(`+)([^`]+?)\1|\*\*([^*\s](?:[^*]*[^*\s])?)\*\*/g;
+
+function mdAppend(el, text) {
+  // A FRESH regex per call, not the shared one: mdAppend recurses for the
+  // inside of a bold span, and a recursive call resetting the shared object's
+  // lastIndex mid-iteration turns the outer loop into an infinite one.
+  var re = new RegExp(MD_INLINE.source, "g");
+  var at = 0;
+  var m;
+  while ((m = re.exec(text))) {
+    if (m.index > at) el.appendChild(document.createTextNode(text.slice(at, m.index)));
+    var span = document.createElement("span");
+    if (m[2] != null) {
+      span.className = "cl-md-c";
+      span.textContent = m[2];
+    } else {
+      span.className = "cl-md-b";
+      // One level of nesting: bold around a `path` is common in summaries.
+      mdAppend(span, m[3]);
+    }
+    el.appendChild(span);
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) el.appendChild(document.createTextNode(text.slice(at)));
+}
+
 // Thinking is the one marked kind that is drawn WITHOUT its marker.
 //
 // A marker earns its place when it carries something the styling does not.
@@ -740,13 +1264,194 @@ function consoleLine(line) {
   var kind = consoleKind(line);
   var el = document.createElement("span");
   el.className = "cl cl-" + kind;
-  // A marked line is exactly "<marker> <text>", so dropping two characters is
-  // lossless. Prose is never touched: its leading space may be the escape from
-  // runlog.escape_prose or may be a fenced code block's own indentation, and
-  // nothing here can tell those apart.
-  el.textContent = kind === "think" ? line.slice(2) : line;
+  if (kind === "say") {
+    // A heading line loses its hashes and gains the weight they meant. Only
+    // prose is markdown-rendered: machinery and errors are quoted verbatim,
+    // and thinking keeps its plain italic.
+    var head = /^(#{1,6}) (.*)$/.exec(line);
+    if (head) {
+      el.className += " cl-md-h";
+      mdAppend(el, head[2]);
+    } else {
+      mdAppend(el, line);
+    }
+  } else {
+    // A marked line is exactly "<marker> <text>", so dropping two characters
+    // is lossless. Escaped prose is never touched: its leading space may be
+    // the escape from runlog.escape_prose or may be a fenced code block's own
+    // indentation, and nothing here can tell those apart.
+    el.textContent = kind === "think" ? line.slice(2) : line;
+  }
+  // The line as the LOG holds it, which is not always what is drawn: thinking
+  // loses its "~ " here (one marker per source line draws a column of tildes
+  // down the page). Without this, reading a console back out to redraw it - what
+  // the show/hide toggle does - would quietly reclassify a paragraph of
+  // reasoning as something the agent said out loud.
+  el._raw = line;
   return el;
 }
+
+// --- Folding the machinery -------------------------------------------------
+// Wes, 2026-08-01: "on the top line where it says 'last run transcript' or
+// whatever it says when active, have an option that compressed down/hides and
+// prints a sort of summary (but not using AI to summarize) of what commands
+// have been run and whatnot in between the white text it sends. It could say
+// something like '10 tools called' or '5 commands run' or whatever it is that
+// happens. Have this option on by default where these are compressed down."
+//
+// So a run of consecutive tool calls and their results collapses to one line
+// that COUNTS them. Not summarizes - counts. The numbers come from the same
+// per-line classification the coloring already uses, so the fold can never
+// claim something the transcript does not say.
+//
+// Deliberately NOT folded, at either setting:
+//
+//   - prose and thinking, which are the thing you are reading;
+//   - `*` status, which is four lines a run (session start, run complete) and
+//     each of them is a fact about the run rather than machinery.
+//
+// `!` errors DO fold, as of Wes, 2026-08-06: "hide these errored lines from
+// the agent inside the tool call collapsed sections". They used to stay in the
+// clear under "nothing fails quietly", but the 2026-08-06 triage of 201 run
+// logs showed 82% of them are the agent's own try/read-the-error/adjust loop
+// (a test failing before the fix, a grep with no match) - noise wearing alarm
+// colors. The compromise that keeps a real failure visible: the fold's head
+// counts them ("3 commands run · 1 error"), so a collapsed console still says
+// an error happened without showing it.
+var CONSOLE_FOLD_KEY = "portal-console-tools";
+
+function consoleFolded() {
+  try {
+    return localStorage.getItem(CONSOLE_FOLD_KEY) !== "0";
+  } catch (e) {
+    return true; // on by default, and a browser refusing storage does not change that
+  }
+}
+
+// The name out of "> Bash(pytest -q)". A tool line is written by runlog.py as
+// exactly `> <Name>(<summary>)`, so this is a parse of a format this repo
+// owns, not a guess at free text.
+function consoleToolName(line) {
+  var open = line.indexOf("(");
+  return (open > 2 ? line.slice(2, open) : line.slice(2)).trim();
+}
+
+function consoleFoldLabel(counts) {
+  var bits = [];
+  // Bash on its own line, because "ran a command" is the thing Wes named first
+  // and is a different act from reading a file.
+  if (counts.bash) {
+    bits.push(counts.bash + (counts.bash === 1 ? " command run" : " commands run"));
+  }
+  if (counts.tool) {
+    bits.push(counts.tool + (counts.tool === 1 ? " tool called" : " tools called"));
+  }
+  if (!bits.length) {
+    // Results with no call in front of them: a chunk that begins mid-exchange,
+    // which is what the first poll of a run already in progress looks like.
+    // Errors are not "tool output", so a fold holding only an error says
+    // nothing here and lets the error count be its whole label.
+    var output = counts.lines - (counts.error || 0);
+    if (output) bits.push(output + (output === 1 ? " line" : " lines") + " of tool output");
+  }
+  return bits.join(" · ");
+}
+
+// The head is text plus, when the fold holds errors, a count of them in its
+// own span - tinted its own quiet red so a collapsed console still says a
+// failure happened without drawing the failure.
+function consoleFoldHeadPaint(fold) {
+  var label = consoleFoldLabel(fold.counts);
+  fold.head.textContent = "";
+  fold.head.appendChild(document.createTextNode(label));
+  if (fold.counts.error) {
+    var err = document.createElement("span");
+    err.className = "cl-fold-err";
+    err.textContent =
+      (label ? " · " : "") +
+      fold.counts.error + (fold.counts.error === 1 ? " error" : " errors");
+    fold.head.appendChild(err);
+  }
+}
+
+function consoleFoldNew(out) {
+  var wrap = document.createElement("span");
+  wrap.className = "cl cl-fold";
+  var head = document.createElement("button");
+  head.type = "button";
+  head.className = "cl-fold-head";
+  var body = document.createElement("span");
+  body.className = "cl-fold-body";
+  body.hidden = true;
+  wrap.appendChild(head);
+  wrap.appendChild(body);
+  out.appendChild(wrap);
+  // `lines` is the total and is its own bucket. It used to double as the bucket
+  // for anything that is not a tool call, which meant a result line incremented
+  // it twice and one line reported itself as "2 lines of tool output".
+  return {
+    wrap: wrap,
+    head: head,
+    body: body,
+    counts: { bash: 0, tool: 0, other: 0, error: 0, lines: 0 },
+  };
+}
+
+// Append one line, into the open fold if it belongs there. Returns the element
+// so the caller can take it back off again when a split line arrives whole.
+function consoleAppend(out, line) {
+  var kind = consoleKind(line);
+  var foldable =
+    consoleFolded() && (kind === "tool" || kind === "result" || kind === "error");
+  if (!foldable) {
+    out._fold = null;
+    var plain = consoleLine(line);
+    out.appendChild(plain);
+    return plain;
+  }
+  if (!out._fold) out._fold = consoleFoldNew(out);
+  var fold = out._fold;
+  var el = consoleLine(line);
+  fold.body.appendChild(el);
+  el._foldCount =
+    kind === "error" ? "error"
+      : kind !== "tool" ? "other"
+      : consoleToolName(line) === "Bash" ? "bash" : "tool";
+  fold.counts[el._foldCount] += 1;
+  fold.counts.lines += 1;
+  consoleFoldHeadPaint(fold);
+  el._fold = fold;
+  return el;
+}
+
+// Undo the last append. The poller reads by BYTE offset, so a chunk can end
+// mid-line; that partial line is drawn (it is the newest thing on screen) and
+// then taken back when the rest of it arrives.
+function consoleUnappend(out, el) {
+  if (!el || !el.parentNode) return;
+  el.parentNode.removeChild(el);
+  var fold = el._fold;
+  if (!fold) return;
+  fold.counts[el._foldCount] -= 1;
+  fold.counts.lines -= 1;
+  if (!fold.counts.lines) {
+    if (fold.wrap.parentNode) fold.wrap.parentNode.removeChild(fold.wrap);
+    if (out._fold === fold) out._fold = null;
+    return;
+  }
+  consoleFoldHeadPaint(fold);
+}
+
+// Opening a fold is per-fold and sticky: you opened THAT group to read it, and
+// a later patch appending to a different group must not shut it again.
+document.addEventListener("click", function (ev) {
+  var head = ev.target.closest ? ev.target.closest(".cl-fold-head") : null;
+  if (!head) return;
+  var body = head.nextSibling;
+  if (!body) return;
+  body.hidden = !body.hidden;
+  head.classList.toggle("open", !body.hidden);
+});
 
 // Draw a chunk into the box, one element per line so each can be styled by
 // what it is. `replace` starts the transcript over.
@@ -761,29 +1466,144 @@ function renderConsole(out, text, replace) {
   if (replace) {
     out.textContent = "";
     out.dataset.tail = "";
+    out._fold = null;
+    out._tailEl = null;
   }
-  if (out.dataset.tail) out.removeChild(out.lastChild);
+  if (out.dataset.tail) consoleUnappend(out, out._tailEl);
+  out._tailEl = null;
   var lines = ((out.dataset.tail || "") + (text || "")).split("\n");
   var tail = lines.pop();
-  for (var i = 0; i < lines.length; i++) out.appendChild(consoleLine(lines[i]));
+  for (var i = 0; i < lines.length; i++) consoleAppend(out, lines[i]);
   out.dataset.tail = tail;
-  if (tail) out.appendChild(consoleLine(tail));
+  if (tail) out._tailEl = consoleAppend(out, tail);
+}
+
+// The transcript the server rendered into the <pre> is plain text; run it back
+// through the folder so the box does not sit unfolded until the first poll -
+// which on a finished run (where the poller fetches once) would be the whole
+// point of the setting missed by a second, and on a shut <details> forever.
+function foldServerConsole() {
+  var out = document.getElementById("console-out");
+  if (!out || out._folded) return;
+  var text = out.textContent || "";
+  if (!text || text.charAt(0) === "(") return; // "(nothing yet)" / "(empty)"
+  out._folded = true;
+  renderConsole(out, text, true);
+}
+
+function initConsoleFoldToggle() {
+  var btn = document.getElementById("console-fold-toggle");
+  if (!btn) return;
+  function paint() {
+    var folded = consoleFolded();
+    btn.textContent = folded ? "[ show tool calls ]" : "[ hide tool calls ]";
+    btn.setAttribute("aria-pressed", folded ? "true" : "false");
+  }
+  paint();
+  // Only now: the folding happens in the browser, so with scripting off this
+  // control would be a button that does nothing.
+  btn.hidden = false;
+  if (btn._bound) return;
+  btn._bound = true;
+  btn.addEventListener("click", function () {
+    try {
+      localStorage.setItem(CONSOLE_FOLD_KEY, consoleFolded() ? "0" : "1");
+    } catch (e) {}
+    paint();
+    // Redraw from the text we already have rather than re-fetching: the
+    // transcript is in the DOM, and the setting only changes how it is drawn.
+    var out = document.getElementById("console-out");
+    if (out) {
+      var text = consoleText(out);
+      out._folded = true;
+      renderConsole(out, text, true);
+      out.scrollTop = out.scrollHeight;
+    }
+  });
+}
+
+// The transcript as text, folds and all. `textContent` on the <pre> would run
+// the fold headings ("12 tools called") in with the lines they stand for, so
+// the headings are skipped and the bodies are read.
+//
+// `_raw` before `textContent` throughout: the drawn text of a thinking line is
+// missing the "~ " the log holds, and reading that back would turn reasoning
+// into prose on every toggle.
+function lineText(node) {
+  return node._raw != null ? node._raw : node.textContent || "";
+}
+
+function consoleText(out) {
+  var parts = [];
+  Array.prototype.forEach.call(out.childNodes, function (node) {
+    if (node.nodeType !== 1) {
+      parts.push(node.textContent || "");
+      return;
+    }
+    if (node.classList.contains("cl-fold")) {
+      var body = node.querySelector(".cl-fold-body");
+      if (body) {
+        Array.prototype.forEach.call(body.childNodes, function (line) {
+          parts.push(lineText(line));
+        });
+      }
+      return;
+    }
+    parts.push(lineText(node));
+  });
+  return parts.join("\n") + "\n";
+}
+
+// Exactly one console poller at a time, and it knows which run it is watching.
+//
+// Wes, 2026-08-13, relaying a diagnosis from his Mac: an open portal tab kept
+// fetching /api/run/N/log every 2 seconds forever, on a run that had finished
+// hours earlier, in a background tab. Two reasons it never stopped: the
+// interval handle was thrown away, so clearInterval was impossible; and the
+// end of a run calls liveReload(), which patches the DOM in place instead of
+// navigating, so the page never unloads and nothing tears the timer down.
+// That kept one HTTP/2 connection alive indefinitely over Tailscale, which is
+// eventually what wedged Safari's networking process at 99% CPU.
+//
+// Keyed on the run because the box is REUSED: project.html morphs the same
+// #agent-console to whichever run is current, so a poller left running after a
+// run ends is not merely wasteful, it is chasing the wrong run's transcript.
+var consolePoll = null; // { runId, live, tick, timer }
+
+function stopConsolePoll() {
+  if (consolePoll && consolePoll.timer) clearInterval(consolePoll.timer);
+  if (consolePoll) consolePoll.timer = null;
 }
 
 function startConsolePoll() {
   var box = document.getElementById("agent-console");
-  if (!box) return;
-  var runId = box.getAttribute("data-run-id");
-  if (!runId) return;
+  var runId = box ? box.getAttribute("data-run-id") : null;
+  var live = !!box && box.getAttribute("data-live") === "1";
+  if (!box || !runId) {
+    stopConsolePoll();
+    consolePoll = null;
+    return;
+  }
+  // Already watching exactly this run in exactly this state. reinit() calls
+  // this on every live patch, and restarting would re-fetch the whole
+  // transcript from offset 0 and jump the reader back to the bottom.
+  if (consolePoll && consolePoll.runId === runId && consolePoll.live === live) return;
+  stopConsolePoll();
   var out = document.getElementById("console-out");
   var offset = null; // null until the first fetch replaces the server-rendered tail
-  var live = box.getAttribute("data-live") === "1";
+  var state = { runId: runId, live: live, tick: tick, timer: null };
+  consolePoll = state;
 
   function tick() {
+    // A hidden tab is not being read, so it has no reason to hold a connection
+    // open. Coming back to the tab ticks immediately (see the listener below),
+    // so nothing is stale by the time anybody looks at it.
+    if (document.hidden) return;
     var url = "/api/run/" + runId + "/log?offset=" + (offset === null ? 0 : offset);
     fetch(url, { cache: "no-store" })
       .then(function (r) { return r.json(); })
       .then(function (data) {
+        if (consolePoll !== state) return; // superseded mid-flight by a newer run
         var first = offset === null;
         var atBottom = out.scrollTop + out.clientHeight >= out.scrollHeight - 30;
         if (first) {
@@ -796,18 +1616,25 @@ function startConsolePoll() {
         // The first paint replaces the whole transcript, so it lands at the
         // end regardless of where the box happened to be scrolled.
         if (atBottom || first) out.scrollTop = out.scrollHeight;
-        if (live && !data.running) {
+        if (state.live && !data.running) {
           // Once, not every tick: the page refreshed in place still says
           // data.running is false on every later poll.
-          live = false;
+          state.live = false;
+          stopConsolePoll();
           liveReload();
         }
       })
       .catch(function () {});
   }
   tick();
-  if (live) setInterval(tick, 2000);
+  if (live) state.timer = setInterval(tick, 2000);
 }
+
+// Registered once, at module scope. Inside startConsolePoll it would stack a
+// fresh listener on every live patch - the same leak in a different coat.
+document.addEventListener("visibilitychange", function () {
+  if (!document.hidden && consolePoll) consolePoll.tick();
+});
 
 // A transcript is read from the end: the last thing the agent did is the thing
 // you opened it for. The server renders the tail into the <pre>, which then
@@ -838,6 +1665,9 @@ function pinConsole() {
 // morph resets the tabs' classes and the panels' hidden state to the server's
 // render (which shows everything) and the user's chosen panel must win.
 var subtabsApply = null;
+// Open a panel by name, from outside this section. jumpTo uses it so a rail
+// chapter can reach a section on a tab you are not looking at.
+var subtabsShow = null;
 
 function initSubtabs() {
   var bar = document.getElementById("settings-tabs");
@@ -869,13 +1699,21 @@ function initSubtabs() {
     if (current) show(current);
   };
 
+  // replaceState, not a hash assignment: changing location.hash pushes a
+  // history entry per tab click, which turns Back into "walk every tab you
+  // looked at" instead of "leave this page". A save redirects with
+  // #<section>, so keeping the hash current is also what lands you back on the
+  // panel you were editing.
+  function selectPanel(name) {
+    var chosen = show(name);
+    history.replaceState(null, "", "#" + chosen);
+    return chosen;
+  }
+  subtabsShow = selectPanel;
+
   tabs.forEach(function (t) {
     t.addEventListener("click", function () {
-      var name = show(t.dataset.panel);
-      // replaceState, not a hash assignment: changing location.hash pushes a
-      // history entry per tab click, which turns Back into "walk every tab
-      // you looked at" instead of "leave this page".
-      history.replaceState(null, "", "#" + name);
+      selectPanel(t.dataset.panel);
     });
   });
 
@@ -904,8 +1742,25 @@ document.addEventListener("DOMContentLoaded", initSubtabs);
 // after one would call an unsaved preview clean and drop the marker.
 var appearanceSaved = null;
 
+// The same, for the one appearance setting that is not a dropdown. Seeded
+// beside `appearanceSaved` and for the same reason: a live patch re-renders
+// the panel from the SAVED order, so re-reading it after one would call an
+// unsaved rearrangement clean and drop the "not saved yet" marker.
+var sectionOrderSaved = null;
+
 function appearanceSelects() {
   return document.querySelectorAll("select[data-appearance-prefix]");
+}
+
+// Whether the page arrangement in the panel differs from what is stored.
+// Module-scoped rather than local to either initializer, because both of them
+// need the answer: the arrange buttons to light the marker the moment a row
+// moves, and the appearance preview so that repainting for a theme change does
+// not clear a marker the arrangement is still earning.
+function arrangementDirty() {
+  var field = document.getElementById("section-order");
+  if (!field || sectionOrderSaved === null) return false;
+  return field.value !== sectionOrderSaved;
 }
 
 function initAppearancePreview() {
@@ -927,17 +1782,23 @@ function initAppearancePreview() {
     var field = document.querySelector(".theme-field");
     var chrome = {};
     var stock = {};
+    var favicons = {};
     try {
       chrome = JSON.parse((field && field.dataset.themeChrome) || "{}");
       stock = JSON.parse((field && field.dataset.themeStock) || "{}");
+      favicons = JSON.parse((field && field.dataset.themeFavicon) || "{}");
     } catch (e) {
       /* a malformed table costs the browser chrome its tint, not the preview */
     }
     var dirty = false;
     appearanceSelects().forEach(function (sel) {
+      // Dirty first, prefix second. A setting the browser cannot preview - one
+      // the server renders from, like which projects the rail lists - carries
+      // an empty prefix and returns below, and it still has to count as an
+      // unsaved change or the "not saved yet" line lies about it.
+      if (sel.value !== appearanceSaved[sel.name]) dirty = true;
       var prefix = sel.dataset.appearancePrefix;
       if (!prefix) return;
-      if (sel.value !== appearanceSaved[sel.name]) dirty = true;
       // Remove whatever class this layer currently contributes, whatever it
       // is: matching on the prefix means the class list cannot accumulate two
       // themes if a value is renamed server-side.
@@ -955,6 +1816,19 @@ function initAppearancePreview() {
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute("content", tint);
       }
+      // The tab icon is drawn per theme too, and it is the one part of the
+      // preview that lives outside the page - so without this the tab keeps
+      // the old theme's mark while everything under it has changed. EVERY
+      // themed link moves, not just the PNG: Chrome prefers the SVG one, so
+      // swapping the PNG alone would leave the tab on the old mark in the
+      // browser most likely to be looking at it. Each link says which file it
+      // is the themed form of, rather than the name being parsed back out of
+      // an href that already carries a version and a boot id.
+      var marks = favicons[sel.value] || {};
+      document.querySelectorAll("link[data-icon-base]").forEach(function (link) {
+        var url = marks[link.dataset.iconBase];
+        if (url && link.getAttribute("href") !== url) link.setAttribute("href", url);
+      });
       // The stock class, which is the half a preview cannot skip: the light
       // themes get all their structure from it (no scanlines, no glow, the
       // chrome re-faced, the terminal's borrowed punctuation emptied). Without
@@ -972,7 +1846,7 @@ function initAppearancePreview() {
         }
       });
     });
-    document.body.classList.toggle("appearance-previewing", dirty);
+    document.body.classList.toggle("appearance-previewing", dirty || arrangementDirty());
   }
 
   // Re-runnable: reinit() calls this after every patch, so a select the morph
@@ -991,6 +1865,91 @@ function initAppearancePreview() {
 }
 
 document.addEventListener("DOMContentLoaded", initAppearancePreview);
+
+// --- Where the sections of a project page sit -------------------------------
+// Wes, 2026-07-28, on Karli's own theme: "all of the functional pieces are
+// still there, but she can change how they appear, where they appear, how they
+// look." Themes cover the two "how"s; this is the "where".
+//
+// The list here IS the value: the hidden input is rewritten from the row order
+// after every nudge, so the form posts a full permutation and the server never
+// has to reconstruct one from a sequence of moves. That also makes the panel
+// its own preview - the order you can see in the list is the order the page
+// will be in - without a request or a re-render.
+//
+// Arrows rather than drag, deliberately. Wes reads this page on his phone, and
+// dragging a row inside a page that is itself scrolling is the worst gesture on
+// a touch screen: it fights the scroll, it has no keyboard equivalent, and it
+// can half-happen. Two buttons cannot.
+function arrangeRows(list) {
+  return Array.prototype.slice.call(list.querySelectorAll("[data-arrange-row]"));
+}
+
+function syncArrangeOrder(list, field) {
+  var names = arrangeRows(list).map(function (row) {
+    return row.getAttribute("data-arrange-row");
+  });
+  field.value = names.join(",");
+  markArrangementUnsaved();
+}
+
+// A hidden input assigned from a script fires no event, so the "previewing -
+// not saved yet" marker has to be told. Only ever turns the marker ON: the
+// dropdowns can be earning it too, and `paint()` is the one place that decides
+// it is off.
+function markArrangementUnsaved() {
+  if (arrangementDirty()) document.body.classList.add("appearance-previewing");
+}
+
+function initSectionArrange() {
+  var list = document.getElementById("arrange-list");
+  var field = document.getElementById("section-order");
+  if (!list || !field) return;
+  if (sectionOrderSaved === null) sectionOrderSaved = field.value;
+  // Re-runnable, like initAppearancePreview: reinit() calls this after a live
+  // patch, and the flag makes re-binding a no-op for a list the morph left
+  // alone while a replaced one gets its listener back.
+  if (list._arrangeBound) return;
+  list._arrangeBound = true;
+
+  list.addEventListener("click", function (ev) {
+    var button = ev.target.closest && ev.target.closest(".arrange-up, .arrange-down");
+    if (!button) return;
+    var row = button.closest("[data-arrange-row]");
+    if (!row) return;
+    var up = button.classList.contains("arrange-up");
+    // insertBefore with a null reference appends, which would wrap the last
+    // row round to the end of the list on a "down" - a no-op that reads as a
+    // control that did nothing. Both ends are checked instead.
+    var neighbor = up ? row.previousElementSibling : row.nextElementSibling;
+    if (!neighbor) return;
+    if (up) list.insertBefore(row, neighbor);
+    else list.insertBefore(neighbor, row);
+    syncArrangeOrder(list, field);
+    // The row has moved out from under the thumb (and, for a keyboard, out
+    // from under the focus ring), so the focus goes with it. Without this,
+    // pressing "up" three times moves three different sections.
+    var moved = row.querySelector(up ? ".arrange-up" : ".arrange-down");
+    if (moved) moved.focus();
+  });
+
+  var reset = document.getElementById("arrange-reset");
+  if (reset) {
+    reset.addEventListener("click", function () {
+      // Blank is what the server reads as "follow the shipped page", which is
+      // not the same as posting today's default order back - see
+      // sections.clean. The rows are left where they are until the save
+      // reloads the page: silently re-sorting the list under the tap would be
+      // movement nobody asked for, and the hint says the save is what applies.
+      field.value = "";
+      markArrangementUnsaved();
+      reset.disabled = true;
+      reset.textContent = "will follow the page again when you save";
+    });
+  }
+}
+
+document.addEventListener("DOMContentLoaded", initSectionArrange);
 
 // --- The "i" bubbles --------------------------------------------------------
 // Wes, 2026-07-28: "There is a lot of texts on the settings pages defining what
@@ -1300,10 +2259,15 @@ function enhanceSelect(sel) {
 // there is no separate API, so the drag and the picker can never disagree
 // about what "move to review" means.
 
+// Returns a promise that settles when the action is DONE - including the patch
+// that shows it, because onDone/liveReload are chained rather than fired and
+// forgotten. That is what lets a caller hold a busy control until the page has
+// actually caught up. It never rejects: every branch here ends in an alert or a
+// patch, so a caller can chain a cleanup with a plain .then().
 function postForm(action, fields, onDone) {
   var body = new URLSearchParams();
   Object.keys(fields || {}).forEach(function (k) { body.append(k, fields[k]); });
-  fetch(action, {
+  return fetch(action, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: body.toString(),
@@ -1318,8 +2282,8 @@ function postForm(action, fields, onDone) {
           function () { alert("That didn't work."); }
         );
       }
-      if (onDone) onDone();
-      else liveReload();
+      if (onDone) return onDone();
+      return liveReload();
     })
     .catch(function () { alert("The portal didn't answer - is it restarting?"); });
 }
@@ -1509,8 +2473,285 @@ function initProjectMenu() {
   });
 }
 
+// The right-click menu on a todo row. Wes, 2026-08-04: "compress the +tag,
+// whose? and x buttons into a right click menu for a todo list item. Also,
+// fold the tags into this menu, aside from the 'blocked' tag. Too many tags
+// can be present and restrict the space available for the todo item itself."
+//
+// So the row itself is a checkbox, the text, and at most a [blocked] chip;
+// the tags, add-tag, re-file and delete all live here. On a phone there is no
+// right click, so a long press (the platform's own analog) opens the same
+// menu - and .todo-item suppresses text selection under coarse pointers so
+// the press does not fight the OS over the words.
+//
+// Everything posts through postForm, which is fetch + the live-refresh morph:
+// no navigation, so acting on a row never moves the scroll - the same promise
+// the checkbox already makes.
+function initTodoMenu() {
+  var menu = null;
+  var openedAt = 0;
+
+  function close() {
+    if (menu) { menu.remove(); menu = null; }
+  }
+  document.addEventListener("click", function (ev) {
+    // A long press ends in a click on the row under the finger; closing on
+    // that click would shut the menu the instant it opened.
+    if (menu && menu.contains(ev.target)) return;
+    if (Date.now() - openedAt < 600) return;
+    close();
+  });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") close(); });
+  window.addEventListener("scroll", close, true);
+
+  function item(label, cls, onPick) {
+    var li = document.createElement("li");
+    li.className = "ctx-item " + (cls || "");
+    li.textContent = label;
+    li.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      onPick(li);
+    });
+    return li;
+  }
+
+  function label(text) {
+    var li = document.createElement("li");
+    li.className = "ctx-label";
+    li.textContent = text;
+    return li;
+  }
+
+  function build(row) {
+    var id = row.getAttribute("data-todo");
+    var textEl = row.querySelector(".todo-text");
+    var title = "#" + id + " " + (textEl ? textEl.textContent : "");
+    var done = row.classList.contains("done");
+    var tags = (row.getAttribute("data-tags") || "").split(",").filter(Boolean);
+    var list = row.closest(".todo-list");
+    var here = list ? list.getAttribute("data-here") || "" : "";
+    var card = row.closest(".todo-card");
+    var choices = [];
+    try {
+      choices = JSON.parse((card && card.getAttribute("data-refile")) || "[]");
+    } catch (e) { /* a menu without move-to beats no menu */ }
+
+    var el = document.createElement("ul");
+    el.className = "ctx-menu";
+    var head = document.createElement("li");
+    head.className = "ctx-head";
+    head.textContent = title;
+    el.appendChild(head);
+
+    if (tags.length) {
+      el.appendChild(label("tags - pick to remove"));
+      tags.forEach(function (tag) {
+        el.appendChild(item("× " + tag, "ctx-tag", function () {
+          close();
+          postForm("/todo/" + id + "/tag", { remove: tag });
+        }));
+      });
+    }
+    if (!done) {
+      el.appendChild(item("add a tag...", "", function () {
+        // The menu becomes the input, the way the project menu's rename does.
+        el.innerHTML = "";
+        el.appendChild(head);
+        var rowEl = document.createElement("li");
+        rowEl.className = "ctx-rename";
+        var input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 24;
+        input.placeholder = "tag";
+        input.setAttribute("aria-label", "new tag for: " + title);
+        rowEl.appendChild(input);
+        el.appendChild(rowEl);
+        input.focus();
+        input.addEventListener("keydown", function (ev) {
+          if (ev.key === "Enter") {
+            ev.preventDefault();
+            var tag = input.value.trim();
+            close();
+            if (tag) postForm("/todo/" + id + "/tag", { add: tag });
+          }
+          // Escape bubbles to the document handler, which closes the menu.
+        });
+        input.addEventListener("click", function (ev) { ev.stopPropagation(); });
+      }));
+      if (choices.length) {
+        el.appendChild(label("move to"));
+        choices.forEach(function (c) {
+          if (c.value === here) return; // where it already is
+          el.appendChild(item(c.label, "", function () {
+            close();
+            postForm("/todo/" + id + "/person", { person: c.value });
+          }));
+        });
+      }
+    }
+    el.appendChild(item("delete...", "ctx-danger", function () {
+      close();
+      if (confirm("Delete this todo? “" + title + "”")) {
+        postForm("/todo/" + id + "/delete", {});
+      }
+    }));
+    return el;
+  }
+
+  function open(row, x, y) {
+    close();
+    menu = build(row);
+    document.body.appendChild(menu);
+    openedAt = Date.now();
+    var r = menu.getBoundingClientRect();
+    if (x + r.width > window.innerWidth - 8) x = Math.max(8, window.innerWidth - r.width - 8);
+    if (y + r.height > window.innerHeight - 8) y = Math.max(8, window.innerHeight - r.height - 8);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+  }
+
+  document.addEventListener("contextmenu", function (ev) {
+    var row = ev.target.closest ? ev.target.closest(".todo-item[data-todo]") : null;
+    if (!row) return;
+    ev.preventDefault();
+    open(row, ev.clientX, ev.clientY);
+  });
+
+  // The long press. Pointer events rather than touch events so one code path
+  // covers pens too; canceled by lifting, by the browser taking the gesture
+  // (scrolling does exactly that), or by drifting more than a few px.
+  var pressTimer = null;
+  var pressX = 0;
+  var pressY = 0;
+  function cancelPress() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }
+  document.addEventListener("pointerdown", function (ev) {
+    if (ev.pointerType === "mouse") return;
+    var row = ev.target.closest ? ev.target.closest(".todo-item[data-todo]") : null;
+    if (!row) return;
+    pressX = ev.clientX;
+    pressY = ev.clientY;
+    pressTimer = setTimeout(function () {
+      pressTimer = null;
+      open(row, pressX, pressY);
+    }, 500);
+  });
+  document.addEventListener("pointermove", function (ev) {
+    if (!pressTimer) return;
+    if (Math.abs(ev.clientX - pressX) + Math.abs(ev.clientY - pressY) > 12) cancelPress();
+  });
+  document.addEventListener("pointerup", cancelPress);
+  document.addEventListener("pointercancel", cancelPress);
+}
+
+// --- The note form's held-down submit menu ---------------------------------
+// On a phone the note form's three submit choices were a messy second row;
+// Wes, 2026-08-04: shrink to three buttons on one line and put the alternates
+// ("add & run now", "queue note") behind a press-and-hold on the green
+// button. Under 560px CSS hides the alternate buttons and this menu is how
+// they are reached. A mouse never arms the press - on a desktop all three
+// buttons are visible anyway - and the same drift/scroll rules as the todo
+// menu apply: moving your finger means scrolling, not holding.
+function initNoteMenu() {
+  var menu = null;
+  var openedAt = 0;
+  var suppressUntil = 0;
+
+  function close() {
+    if (menu) { menu.remove(); menu = null; }
+  }
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") close(); });
+  window.addEventListener("scroll", close, true);
+  document.addEventListener("click", function (ev) {
+    if (menu && menu.contains(ev.target)) return;
+    if (Date.now() - openedAt < 600) return;
+    close();
+  });
+  // The click that ends the long press lands on a SUBMIT button: unless it is
+  // swallowed, holding for the menu would also add the note the plain way.
+  // Capture phase, so it dies before the browser's own submit behavior.
+  document.addEventListener(
+    "click",
+    function (ev) {
+      if (Date.now() >= suppressUntil) return;
+      if (ev.target.closest && ev.target.closest(".note-form button.go")) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+    },
+    true
+  );
+
+  function open(btn, x, y) {
+    close();
+    var form = btn.closest("form");
+    if (!form) return;
+    // Read off the form rather than hardcoded: which alternates exist is a
+    // server-side decision now ("add & run now" is only rendered when the green
+    // button would not run anyway), and a menu item pointing at a button that
+    // is not there would silently do nothing when tapped.
+    var alts = form.querySelectorAll('button[name="then"]');
+    if (!alts.length) return;
+    menu = document.createElement("ul");
+    menu.className = "ctx-menu";
+    Array.prototype.forEach.call(alts, function (alt) {
+      var li = document.createElement("li");
+      li.className = "ctx-item";
+      li.textContent = (alt.textContent || "").trim();
+      li.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        close();
+        // requestSubmit with the (display:none) button as submitter carries
+        // its then=... exactly as if it had been pressed; the fallback click()
+        // does the same on the odd browser without it.
+        if (form.requestSubmit) form.requestSubmit(alt);
+        else alt.click();
+      });
+      menu.appendChild(li);
+    });
+    document.body.appendChild(menu);
+    openedAt = Date.now();
+    suppressUntil = openedAt + 600;
+    var r = menu.getBoundingClientRect();
+    if (x + r.width > window.innerWidth - 8) x = Math.max(8, window.innerWidth - r.width - 8);
+    // Above the finger by default: the button lives near the bottom of its
+    // card and a thumb covers whatever sits under it.
+    var top = y - r.height - 10;
+    if (top < 8) top = Math.min(y + 10, window.innerHeight - r.height - 8);
+    menu.style.left = x + "px";
+    menu.style.top = top + "px";
+  }
+
+  var pressTimer = null;
+  var pressX = 0;
+  var pressY = 0;
+  function cancelPress() {
+    if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+  }
+  document.addEventListener("pointerdown", function (ev) {
+    if (ev.pointerType === "mouse") return;
+    var btn = ev.target.closest ? ev.target.closest(".note-form button.go") : null;
+    if (!btn) return;
+    pressX = ev.clientX;
+    pressY = ev.clientY;
+    pressTimer = setTimeout(function () {
+      pressTimer = null;
+      open(btn, pressX, pressY);
+    }, 500);
+  });
+  document.addEventListener("pointermove", function (ev) {
+    if (!pressTimer) return;
+    if (Math.abs(ev.clientX - pressX) + Math.abs(ev.clientY - pressY) > 12) cancelPress();
+  });
+  document.addEventListener("pointerup", cancelPress);
+  document.addEventListener("pointercancel", cancelPress);
+}
+
 document.addEventListener("DOMContentLoaded", initProjectDrag);
 document.addEventListener("DOMContentLoaded", initProjectMenu);
+document.addEventListener("DOMContentLoaded", initTodoMenu);
+document.addEventListener("DOMContentLoaded", initNoteMenu);
 
 // --------------------------------------------------------------------------
 // Live refresh: patch the page in place when the data changes
@@ -1531,7 +2772,7 @@ document.addEventListener("DOMContentLoaded", initProjectMenu);
 
 // Live nodes that exist only client-side and must survive a morph.
 var MORPH_KEEP = ".draft-note, .ctx-menu, #pull-refresh, #img-lightbox, " +
-  "#sel-actions, .quote-chip";
+  "#sel-actions, .quote-chip, .rec-row";
 
 function isKeepNode(node) {
   return node.nodeType === 1 && node.matches && node.matches(MORPH_KEEP);
@@ -1548,8 +2789,15 @@ function preservedAttr(live, name, removing) {
   // A fold the user opened (or shut) stays that way.
   if (live.tagName === "DETAILS" && name === "open") return true;
   // Field state: the value/checked/selected attributes would stomp the live
-  // properties back to the server's defaults mid-edit.
-  if (isFormField(live) && (name === "value" || name === "checked" || name === "selected")) return true;
+  // properties back to the server's defaults mid-edit. A type=hidden input is
+  // the exception and has to be: nobody is mid-edit in one, it is pure server
+  // state, and the todo checkbox posts its TARGET state out of one
+  // (`done=0|1`). Preserved, that value went stale the moment the row was
+  // patched, so unticking an item you had just ticked posted "done" a second
+  // time and the row would not come back.
+  if (isFormField(live) && (name === "value" || name === "checked" || name === "selected")) {
+    if (!(live.tagName === "INPUT" && live.getAttribute("type") === "hidden")) return true;
+  }
   // autosize()'s work on textareas.
   if (live.tagName === "TEXTAREA" && name === "style") return true;
   // hidden is JS-owned everywhere it is dynamic here (settings panels, the
@@ -1687,17 +2935,31 @@ function morphChildren(live, next) {
 }
 
 // True while a patch would fight the user for the page.
-function refreshBlocked() {
+// Somebody is part-way through a sentence. A patch nobody asked for waits for
+// them; a patch they asked for by pressing a button does not (see refreshHeld).
+// Interrupting a sentence is all a patch can do to a text box - it cannot eat
+// one, because preservedAttr refuses to write a field's value across a morph.
+function typingBlocked() {
   var ae = document.activeElement;
-  if (ae) {
-    if (ae.tagName === "TEXTAREA" || ae.isContentEditable) return true;
-    if (ae.tagName === "INPUT" && SUBMIT_ON_CHORD.test(ae.type)) return true;
-  }
+  if (!ae) return false;
+  if (ae.tagName === "TEXTAREA" || ae.isContentEditable) return true;
+  return !!(ae.tagName === "INPUT" && SUBMIT_ON_CHORD.test(ae.type));
+}
+
+// Transient state a patch DESTROYS rather than merely interrupts: an open
+// dropdown and a context menu are rebuilt by reinit() and lose their open-ness,
+// a drag loses the card in flight, a selection is gone the moment its text node
+// is replaced. Honored even for a patch the reader asked for - being right
+// about what they pressed is no reason to throw away what they were holding.
+function interactionBlocked() {
   if (document.querySelector(".sel.open, .ctx-menu, [data-record].recording")) return true;
   if (document.body.classList.contains("dragging-project")) return true;
   var sel = window.getSelection && window.getSelection();
-  if (sel && !sel.isCollapsed) return true;
-  return false;
+  return !!(sel && !sel.isCollapsed);
+}
+
+function refreshBlocked() {
+  return typingBlocked() || interactionBlocked();
 }
 
 // --- Holding the view still across a patch ---------------------------------
@@ -1860,6 +3122,20 @@ function reinit() {
   // The footer hint is written by the client, so the server's copy of that
   // span - empty and hidden - would blank it on every live patch.
   if (typeof jumpHintSync === "function") jumpHintSync();
+  // Same reason as the hint above it: the rail's chapter list is written by
+  // the client, so the server's copy of that element - empty and hidden -
+  // blanks it on every live patch unless it is rebuilt here.
+  if (typeof railChapters === "function") railChapters();
+  // The console box is reused: on a project page the morph repoints
+  // #agent-console at whichever run is current. Without this the poller keeps
+  // watching the run it was born with, so a newly started run's transcript
+  // never appears - and it is also what starts a poller for that new run,
+  // since the previous one stopped itself when its run ended.
+  if (typeof startConsolePoll === "function") startConsolePoll();
+  // The morph replaces the console head (its text carries the elapsed time), so
+  // the toggle needs its label and its listener back.
+  if (typeof initConsoleFoldToggle === "function") initConsoleFoldToggle();
+  initFoldMemory();
   if (subtabsApply) subtabsApply();
   // The morph resets <body>'s class attribute to the server's render, so an
   // unsaved theme preview has to be re-applied or it snaps back on the next
@@ -1868,18 +3144,63 @@ function reinit() {
   // replace needs its change listener again, and re-binding the survivors is
   // a no-op.
   initAppearancePreview();
+  initSectionArrange();
+  syncAppBadge();
 }
+
+// The number on the Home Screen icon of an installed portal.
+//
+// A web push paints it from the server (`app_badge` in the declarative
+// payload), which is the only thing that can reach the icon while the app is
+// closed. But nothing pushes when you answer the last question in the browser,
+// so without this the icon would keep the old number until some unrelated
+// notification happened along. Re-run after every live patch, because <body>'s
+// data attribute is re-rendered by the same morph.
+//
+// Guarded rather than assumed: setAppBadge is iOS 16.4+/Chrome-only, and in a
+// browser tab (as opposed to an installed app) it is a no-op or a rejection
+// neither of which is worth reporting.
+function syncAppBadge() {
+  if (!navigator.setAppBadge) return;
+  var raw = document.body.getAttribute("data-open-questions");
+  var count = parseInt(raw, 10);
+  if (isNaN(count) || count < 0) return;
+  try {
+    var done = count > 0 ? navigator.setAppBadge(count) : navigator.clearAppBadge();
+    if (done && done.catch) done.catch(function () {});
+  } catch (err) {
+    /* not installed, or permission withheld - the badge is decoration */
+  }
+}
+
+document.addEventListener("DOMContentLoaded", syncAppBadge);
 
 var refreshQueued = false;
 var refreshing = false;
 
-function liveRefreshNow() {
-  if (refreshing || refreshBlocked()) {
+// A patch the reader ASKED for by pressing a button, rather than one a poller
+// noticed. Sticky rather than an argument, because a forced patch that has to
+// queue behind one already in flight is drained by a site that has long since
+// forgotten who asked for it - and arriving a poll interval late is exactly the
+// "it often hangs a bit before completing the task I clicked" that made this
+// distinction necessary (Wes, 2026-08-27). Cleared by the patch it forces.
+var refreshForced = false;
+
+// Whether a patch has to wait. Everything waits on the transient UI a patch
+// would destroy; only an unforced one also waits on a sentence in progress.
+function refreshHeld() {
+  return refreshForced ? interactionBlocked() : refreshBlocked();
+}
+
+function liveRefreshNow(force) {
+  if (force) refreshForced = true;
+  if (refreshing || refreshHeld()) {
     refreshQueued = true;
     return;
   }
+  refreshForced = false;
   refreshing = true;
-  fetch(location.href, { cache: "no-store", headers: { "X-Live-Refresh": "1" } })
+  return fetch(location.href, { cache: "no-store", headers: { "X-Live-Refresh": "1" } })
     .then(function (r) {
       if (!r.ok) throw new Error("bad status");
       return r.text();
@@ -1920,17 +3241,18 @@ function liveRefreshNow() {
     })
     .then(function () {
       refreshing = false;
-      if (refreshQueued && !refreshBlocked()) {
+      if (refreshQueued && !refreshHeld()) {
         refreshQueued = false;
-        liveRefreshNow();
+        return liveRefreshNow();
       }
     });
 }
 
 // The older pollers call this where they used to call location.reload().
-function liveReload() {
-  if (window.fetch && window.DOMParser) liveRefreshNow();
-  else window.location.reload();
+// `force` means the reader pressed something and this patch is the answer.
+function liveReload(force) {
+  if (window.fetch && window.DOMParser) return liveRefreshNow(force);
+  window.location.reload();
 }
 
 function initLiveRefresh() {
@@ -1972,7 +3294,7 @@ function initLiveRefresh() {
       .then(function (r) { return r.json(); })
       .then(function (d) {
         if (d && d.v) apply(d.v);
-        else if (refreshQueued && !refreshBlocked()) {
+        else if (refreshQueued && !refreshHeld()) {
           refreshQueued = false;
           liveRefreshNow();
         }
@@ -1980,7 +3302,7 @@ function initLiveRefresh() {
       .catch(function () {});
     // A patch held back by an interaction gets applied on a later tick even
     // if the version has not moved again since.
-    if (refreshQueued && !refreshing && !refreshBlocked()) {
+    if (refreshQueued && !refreshing && !refreshHeld()) {
       refreshQueued = false;
       liveRefreshNow();
     }
@@ -2528,7 +3850,9 @@ var JUMP_KEYS_DEFAULT = {
   // journal (which renders no box) has instead.
   j: ["journal-box", "journal"],
   t: ["todo"],
-  p: ["project"]
+  p: ["project"],
+  s: ["summary"],
+  f: ["files"]
 };
 
 // An absent attribute means a page that predates the setting (a cached tab, a
@@ -2598,6 +3922,15 @@ function jumpBehavior() {
 }
 
 function jumpTo(el) {
+  // A target inside a settings tab that is not the open one. Same idea as the
+  // <details> unfold below, and the reason it is here rather than in the rail:
+  // the settings page is the one place in the portal where a section that
+  // exists is not on screen, so a chapter pointing into a closed tab would be a
+  // link that scrolls to nothing at all. Wes asked for "one click access to any
+  // given tab/section" - the tab half is this line.
+  var panel = el.closest ? el.closest(".settings-panel[hidden]") : null;
+  if (panel && subtabsShow) subtabsShow(panel.getAttribute("data-panel"));
+
   // A target folded inside a <details> would otherwise scroll to a summary
   // with nothing under it.
   var fold = el.closest ? el.closest("details") : null;
@@ -2675,6 +4008,258 @@ function jumpHintSync() {
 document.addEventListener("DOMContentLoaded", jumpHintSync);
 
 // ---------------------------------------------------------------------------
+// A digit goes to a project on the rail.
+//
+// Wes, 2026-08-01: "Allow me to press number keys to jump to the projects over
+// there based on their order on the list."
+//
+// A navigation, not a scroll - the rows are links to other pages - so this is a
+// separate handler from the jump keys above rather than another entry in their
+// table. It also could not be one: jumpkeys.py bans digits from a binding on
+// purpose (a JS object puts integer-like keys first whatever order they were
+// inserted in, which would silently reorder the footer hint), and these are
+// positions in a list rather than names of sections.
+//
+// Only when the rail is actually on screen. Below its placement's breakpoint
+// (1400px on `use existing space`, 1100px on `interface shift`), and on the
+// `off` setting, `#side-rail` is display:none - and a digit that navigated
+// somewhere invisible would be a key that teleports you for no reason you can
+// see. Asked of the layout rather than of the window width, so this can never
+// drift from the CSS.
+//
+// getClientRects().length, and NOT offsetParent: the spec says offsetParent is
+// null whenever the element's own computed position is `fixed`, which the rail
+// always is. So the test that was here answered "not on screen" at every width
+// on every setting, and the number keys Wes asked for had in fact never once
+// worked. Found by probing a real browser (offsetParent null, offsetWidth 183,
+// one client rect) while checking something else. No DOM test could have shown
+// it: a stub DOM has no layout, so whatever it answers here is whatever the
+// stub was written to answer.
+function railDigitTarget(key) {
+  var rail = document.getElementById("side-rail");
+  if (!rail || !rail.getClientRects().length) return null;
+  return rail.querySelector('[data-rail-digit="' + key + '"]');
+}
+
+document.addEventListener("keydown", function (ev) {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.shiftKey) return;
+  if (typingInto(ev.target)) return;
+  var lightbox = document.getElementById("img-lightbox");
+  if (lightbox && !lightbox.hidden) return;
+  if (!ev.key || ev.key.length !== 1 || ev.key < "0" || ev.key > "9") return;
+  var link = railDigitTarget(ev.key);
+  if (!link) return;
+  ev.preventDefault();
+  window.location.href = link.getAttribute("href");
+});
+
+// ---------------------------------------------------------------------------
+// The side rail's chapter list.
+//
+// Wes, 2026-08-01: "Would also be good to have one click access to any given
+// tab/section in the project I'm in. Like click the 'Journal' sort of chapter
+// on the side bar to jump to the journal view."
+//
+// Built here rather than on the server for the same reason the footer hint is:
+// base.html renders around a content block and cannot see what that block
+// declared.
+//
+// Two kinds of chapter, merged in document order because to a reader they are
+// the same thing - a place on this page to go:
+//
+//   - every `[data-jump]` target, which is also what the keyboard jumps use, so
+//     one attribute makes a section reachable by click and by key;
+//   - every plain `<h2>` in the content body, with no attribute at all.
+//
+// The second kind is Wes's follow-up of 2026-08-01: "I want the option to jump
+// to sections from the side-bar even if they are not sections I can jump to
+// with a hot-key." Before it, /activity, /settings and /memory - four, eight and
+// ten headings respectively - listed no chapters whatsoever, because none of
+// them had ever been annotated. There are only eight jump keys and there are
+// far more sections than that, so a list built only from bound targets can
+// never be a table of contents; it is a list of the shortcuts.
+//
+// A chapter's label comes from `data-jump-label` when the element's own text is
+// wrong for a nav (a whole card, a <details> with a sentence in its summary),
+// and from the element's own text otherwise, minus any badge or count riding
+// along in it. `data-jump-nav="off"` leaves a target out, which is how the
+// journal declares two targets - the scrolling box and its heading, so the J key
+// still works on an empty project - and gets one chapter.
+// ---------------------------------------------------------------------------
+
+// The letter bound to this target, or "". Read off the live bindings, so a
+// rebound or unbound key is right here without this function knowing anything
+// about the settings page.
+function chapterKey(name) {
+  var keys = Object.keys(JUMP_KEYS);
+  for (var i = 0; i < keys.length; i++) {
+    if (JUMP_KEYS[keys[i]].indexOf(name) !== -1) return keys[i];
+  }
+  return "";
+}
+
+// A count or a status badge inside a heading is part of the page, not part of
+// the heading's name: "phone push 1 device" and "questions 2" both read as a
+// chapter whose title keeps changing under the reader.
+var CHAPTER_NOISE = "badge,nav-count,rail-count,work-summary-count";
+
+function chapterLabel(el) {
+  var given = el.getAttribute("data-jump-label");
+  if (given) return given;
+  // A <details> section names itself in its summary, and a summary is
+  // "<label> <a sentence of muted detail>" - the label is the chapter, the
+  // sentence is the page. Read the label span when there is one rather than
+  // running the whole fold's contents through the trimmer below.
+  if (el.tagName === "DETAILS") {
+    var sum = el.querySelector("summary");
+    var lab = sum ? sum.querySelector(".fold-section-label") : null;
+    el = lab || sum || el;
+  }
+  var text = "";
+  var kids = el.childNodes || [];
+  for (var i = 0; i < kids.length; i++) {
+    var kid = kids[i];
+    if (kid.nodeType === 1 && kid.className) {
+      var classes = (" " + kid.className + " ").replace(/\s+/g, " ");
+      var noisy = false;
+      CHAPTER_NOISE.split(",").forEach(function (name) {
+        if (classes.indexOf(" " + name + " ") !== -1) noisy = true;
+      });
+      if (noisy) continue;
+    }
+    text += kid.textContent || "";
+  }
+  // One line, trimmed: a heading is one line, but a <details> summary can run
+  // to a sentence and a card contains a whole page section.
+  text = text.replace(/\s+/g, " ").trim();
+  if (text.length <= 28) return text;
+  // Cut on a word boundary when there is one to cut on: "What we've learned
+  // about…" is a chapter title, "What we've learned about eac…" looks like a
+  // rendering fault. A single 28-character word still gets cut mid-word,
+  // because the alternative is an empty label.
+  var cut = text.slice(0, 28);
+  var space = cut.lastIndexOf(" ");
+  return (space > 12 ? cut.slice(0, space) : cut).trim() + "…";
+}
+
+function railChapters() {
+  var slot = document.getElementById("rail-chapters");
+  if (!slot) return;
+  // Scoped to the content body, which is what excludes the rail's own links
+  // (they would be chapters pointing at themselves), the nav tabs and the
+  // footer. One selector with a comma, so the browser returns both kinds in
+  // document order and the list reads down the page the way the page does.
+  var body = document.querySelector(".terminal-body");
+  var targets = body
+    ? body.querySelectorAll("[data-jump], h2, details.fold-section")
+    : [];
+  var rows = [];
+  var seen = {};
+  for (var i = 0; i < targets.length; i++) {
+    var el = targets[i];
+    if (el.getAttribute("data-jump-nav") === "off") continue;
+    // Headings inside rendered markdown are somebody's prose, not this page's
+    // structure. Wes, 2026-08-01: "When on the dashboard, the left tab bar
+    // should not show the recent activity entries as individual items as it
+    // currently does." Every agent progress entry opens with an `##` heading,
+    // and the dashboard's activity feed renders a dozen of them - so the
+    // chapter list was a list of other pages' journal entries. `.content` is
+    // the wrapper every markdown render in the portal goes into, and nothing
+    // else uses it.
+    if (el.closest && el.closest(".content")) continue;
+    var name = el.getAttribute("data-jump");
+    if (name) {
+      if (seen[name]) continue;
+      seen[name] = true;
+    } else if (el.closest && el.closest("[data-jump]")) {
+      // A heading inside a block that already declared itself a target is that
+      // block's own title, not a second place to go.
+      continue;
+    } else if (
+      el.tagName !== "DETAILS" &&
+      el.closest &&
+      el.closest("details.fold-section")
+    ) {
+      // Same rule one level down: a heading inside a fold is that fold's
+      // content. "Files" is the chapter; "Uploaded" and "Workspace" are what
+      // is in it.
+      continue;
+    }
+    var label = chapterLabel(el);
+    if (!label) continue;
+    rows.push({ el: el, name: name || "", label: label, key: name ? chapterKey(name) : "" });
+  }
+  // One chapter is not a table of contents, it is a link - and on the
+  // dashboard, whose only target is the new-idea form, a "Sections" heading
+  // over a single row would be chrome carrying no information.
+  if (rows.length < 2) {
+    slot.hidden = true;
+    return;
+  }
+
+  var head = document.createElement("h3");
+  head.className = "rail-head";
+  head.textContent = "This page";
+  var list = document.createElement("ul");
+  rows.forEach(function (row) {
+    var li = document.createElement("li");
+    var a = document.createElement("a");
+    // A real href, so the row is a link a person can middle-click or read in
+    // the status bar; the click handler below is what makes it a scroll rather
+    // than a navigation.
+    a.href = "#";
+    if (row.name) a.setAttribute("data-jump-to", row.name);
+    // The element itself, not a name to look up later. A heading discovered by
+    // tag has no name to look up, and holding the node means the anchor and its
+    // target are built in the same pass and cannot drift apart. This whole list
+    // is rebuilt after every live patch, so the reference is never stale for
+    // longer than the patch that replaced it.
+    a._chapterEl = row.el;
+    if (row.key) {
+      var key = document.createElement("span");
+      key.className = "rail-chapter-key";
+      key.textContent = row.key;
+      a.appendChild(key);
+    }
+    var name = document.createElement("span");
+    name.className = "rail-name";
+    name.textContent = row.label;
+    a.appendChild(name);
+    li.appendChild(a);
+    list.appendChild(li);
+  });
+
+  // Replaced wholesale rather than diffed: this runs after every live patch
+  // (the morph resets this element to the server's empty copy), and the list is
+  // a handful of nodes nobody is interacting with mid-scroll.
+  slot.textContent = "";
+  slot.appendChild(head);
+  slot.appendChild(list);
+  slot.hidden = false;
+}
+
+// Delegated, so it survives the rebuild above without re-binding.
+document.addEventListener("click", function (ev) {
+  var link = ev.target.closest ? ev.target.closest("#rail-chapters a") : null;
+  if (!link) return;
+  // The node the list was built from, falling back to a lookup by name so an
+  // anchor that somehow outlived its build (a stray `data-jump-to` in a
+  // template, say) still goes somewhere.
+  var el = link._chapterEl;
+  if (!el || !el.isConnected) {
+    var named = link.getAttribute("data-jump-to");
+    el = named ? document.querySelector('[data-jump="' + named + '"]') : null;
+  }
+  if (!el) return;
+  // Only once we know there is somewhere to go: a preventDefault on a chapter
+  // whose section has gone would leave a link that does nothing at all.
+  ev.preventDefault();
+  jumpTo(el);
+});
+
+document.addEventListener("DOMContentLoaded", railChapters);
+
+// ---------------------------------------------------------------------------
 // Escape lets go of the field.
 //
 // Wes, 2026-07-28: "hitting escape should de-select whatever text field is
@@ -2690,7 +4275,7 @@ document.addEventListener("DOMContentLoaded", jumpHintSync);
 //
 // - It is the LAST keydown listener in this file, on purpose. Every other
 //   Escape handler here reads `ev.target` to find the thing it closes (the
-//   tag-add form, the context menu, the rename input), and blurring first would
+//   context menus, the rename input), and blurring first would
 //   not break that - the target is the field either way - but running last
 //   means those handlers decide first and this only ever adds to what they did.
 //   Each of them hides its field anyway, so letting go of it is never wrong.

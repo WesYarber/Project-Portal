@@ -150,14 +150,33 @@ def test_user_state_survives_a_patch():
 
 
 def test_interaction_defers_the_patch():
+    """Split in two on 2026-08-27, because only one half may be overridden.
+
+    A patch the reader ASKED for by pressing a button does not wait for a
+    sentence in progress (typingBlocked) - that wait was Wes's "it often hangs
+    a bit before completing the task I clicked the button for". It still waits
+    for the state a patch would destroy rather than interrupt
+    (interactionBlocked). refreshBlocked() is both, and is still what an
+    unasked-for patch and the server-restart reload ask.
+
+    Which half a given state lands in is driven for real in
+    tests/test_press_feedback.py; this is the standing check that neither half
+    quietly lost a state.
+    """
     src = js()
-    blocked = src.split("function refreshBlocked")[1]
-    blocked = blocked.split("\n}")[0]
-    assert "TEXTAREA" in blocked
-    assert "dragging-project" in blocked
-    assert ".sel.open" in blocked
-    assert ".ctx-menu" in blocked
-    assert "isCollapsed" in blocked
+    typing = src.split("function typingBlocked")[1].split("\n}")[0]
+    assert "TEXTAREA" in typing
+    assert "isContentEditable" in typing
+    assert "SUBMIT_ON_CHORD" in typing
+
+    interaction = src.split("function interactionBlocked")[1].split("\n}")[0]
+    assert "dragging-project" in interaction
+    assert ".sel.open" in interaction
+    assert ".ctx-menu" in interaction
+    assert "isCollapsed" in interaction
+
+    blocked = src.split("function refreshBlocked")[1].split("\n}")[0]
+    assert "typingBlocked() || interactionBlocked()" in blocked
     # ...and a held-back patch is applied later rather than dropped.
     assert "refreshQueued" in src
 

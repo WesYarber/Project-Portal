@@ -45,6 +45,60 @@
   {% endif %}
 </div>
 
+{% if undo_error %}
+{# A refusal renders here rather than on FastAPI's default error page, which is
+   a JSON blob - see main.revert_run_route. #}
+<div class="card" id="undo-error" style="border-color:var(--ansi-red);">
+  <p><strong style="color:var(--ansi-red);">Could not undo this run</strong></p>
+  <p class="small">{{ undo_error }}</p>
+</div>
+{% endif %}
+
+{% if landed %}
+<div class="card" id="landed">
+  <p><strong>what this run committed</strong>
+    <span class="badge">{{ landed.commits|length }}</span>
+    {% if landed.is_source %}
+    <span class="small muted">&mdash; into the portal's own source</span>
+    {% endif %}
+  </p>
+  <ul class="small" style="margin:0.4rem 0 0 1.1rem; padding:0;">
+    {% for c in landed.named %}
+    <li style="margin-bottom:0.25rem;"><code class="muted">{{ c.short }}</code> {{ c.subject }}</li>
+    {% endfor %}
+    {% if landed.unnamed %}
+    <li class="muted">... and {{ landed.unnamed }} more</li>
+    {% endif %}
+  </ul>
+
+  {% if landed.reverted_at %}
+  <p class="hint" style="margin-top:0.8rem;">
+    Undone {{ landed.reverted_at|timeago }}. The commits above are reverted, not
+    deleted &mdash; <code>git show</code> in the workspace still has them.
+  </p>
+  {% elif landed.blocker %}
+  <p class="hint" style="margin-top:0.8rem;">{{ landed.blocker }}</p>
+  {% else %}
+  {# Not data-inplace: this one is slow (it shells out to git), it can refuse
+     with a sentence worth reading, and it re-renders the whole page either way.
+     The in-place rule is that submitting CONSUMES the form - see app.js. #}
+  <form method="post" action="/run/{{ run.id }}/revert" style="margin-top:0.8rem;"
+        data-confirm="Undo the {{ landed.commits|length }} commit(s) this run made{% if landed.is_source %}, in the portal's own source{% endif %}? This adds a commit that puts the files back the way they were - nothing is deleted, and later runs' work is left alone.">
+    <button type="submit" class="btn danger">undo this run's commits</button>
+  </form>
+  <p class="hint">
+    Adds a revert commit rather than erasing history, so nothing is lost and
+    work committed after this run is left standing.
+    {% if landed.is_source %}
+    The portal restarts afterwards to load the reverted code.
+    {% endif %}
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% if diff %}{% include "_run_diff.html" %}{% endif %}
+
 {% if denials %}
 <div class="card">
   <p><strong>guardrail events</strong>
@@ -90,6 +144,9 @@
   <div class="console-head">
     <span class="dot {{ 'running' if run.status == 'running' }}"></span>
     <span class="muted">{{ 'live' if run.status == 'running' else 'finished' }} transcript</span>
+    {# The same fold toggle the project console carries; one setting, both
+       pages, because it is the same transcript in the same reader. #}
+    <button type="button" class="cl-fold-toggle" id="console-fold-toggle" hidden></button>
   </div>
   {% if log_pruned %}
   <p class="empty-state">Transcript no longer on disk &mdash; logs are pruned to the newest 200 runs.</p>

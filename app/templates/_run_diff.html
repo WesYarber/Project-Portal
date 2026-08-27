@@ -1,0 +1,99 @@
+{# What a run actually changed, line by line, with any line of it turnable into
+   the next run's instruction. See app/rundiff.py for why the quoted text is
+   pulled from the server rather than posted back from this form.
+
+   No JavaScript anywhere in here on purpose. Picking a line is a radio input
+   inside the file's own form, so a tap selects it and the browser's own submit
+   sends it - which means the diff reads and the comment posts on a phone with
+   a dead service worker, on the iPad, and in a browser with scripting off. #}
+<div class="card" id="rundiff">
+  <p><strong>the diff</strong>
+    <span class="badge">{{ diff.changed_files }} file{{ '' if diff.changed_files == 1 else 's' }}</span>
+    <span class="small"><span class="diff-plus">+{{ '{:,}'.format(diff.insertions) }}</span>
+      <span class="diff-minus">&minus;{{ '{:,}'.format(diff.deletions) }}</span></span>
+  </p>
+
+  {% if comment_error %}
+  <p class="small" style="color:var(--ansi-red);">{{ comment_error }}</p>
+  {% endif %}
+  {% if comment_filed %}
+  <p class="small" style="color:var(--ansi-green);">
+    Filed on <a href="/project/{{ run.project_slug }}">{{ run.project_title }}</a>
+    as a note &mdash; the next run reads it before it decides anything.
+  </p>
+  {% endif %}
+
+  {% if diff.note %}
+  <p class="hint">{{ diff.note }}</p>
+  {% endif %}
+
+  {% for f in diff.files %}
+  <details class="diff-file" id="file-{{ f.slug }}" {{ 'open' if diff.open_by_default }}>
+    <summary>
+      <code class="diff-path">{{ f.path }}</code>
+      <span class="diff-counts small">
+        {% if f.binary %}<span class="muted">binary</span>
+        {% else %}<span class="diff-plus">+{{ f.insertions }}</span>
+        <span class="diff-minus">&minus;{{ f.deletions }}</span>{% endif %}
+      </span>
+    </summary>
+    {% if f.renamed %}
+    <p class="hint">renamed from <code>{{ f.old_path }}</code></p>
+    {% endif %}
+    {% if f.lines %}
+    <form method="post" action="/run/{{ run.id }}/comment" class="diff-body">
+      <input type="hidden" name="path" value="{{ f.path }}">
+      <div class="diff-lines">
+        {% for line in f.lines %}
+        {% if line.commentable %}
+        <label class="diff-line diff-{{ line.kind }}">
+          <input type="radio" name="index" value="{{ loop.index0 }}" class="diff-pick">
+          <span class="diff-ln">{{ line.new if line.new is not none else line.old }}</span>
+          <span class="diff-mark">{{ line.marker }}</span><span class="diff-code">{{ line.text }}</span>
+        </label>
+        {% else %}
+        <div class="diff-line diff-hunk"><span class="diff-code">{{ line.text }}</span></div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% if f.truncated %}
+      <p class="hint">... and {{ f.truncated }} more line{{ '' if f.truncated == 1 else 's' }} not shown.</p>
+      {% endif %}
+      {# The box is folded away until a line in THIS file is picked (CSS
+         `:has`), so a twelve-file diff is twelve file names rather than twelve
+         empty text boxes. Where `:has` is unsupported it simply stays open,
+         which is the same page as before rather than a broken one. #}
+      <div class="diff-comment">
+        <label for="c-{{ f.slug }}" class="small diff-comment-hint">
+          Tap a line above, then say what should change about it.
+        </label>
+        <div class="diff-comment-open">
+          <textarea id="c-{{ f.slug }}" name="comment" rows="2"
+                    placeholder="this should handle the empty case"></textarea>
+          <button type="submit" class="btn">send this line to the agent</button>
+        </div>
+      </div>
+    </form>
+    {% elif f.binary %}
+    <p class="hint">A binary file &mdash; there are no lines to read or comment on.</p>
+    {% else %}
+    <p class="hint">Not shown &mdash; this run's diff is too large to render here.</p>
+    {% endif %}
+  </details>
+  {% endfor %}
+
+  {% if diff.unlisted %}
+  <p class="hint">... and {{ diff.unlisted }} more file{{ '' if diff.unlisted == 1 else 's' }} changed.</p>
+  {% endif %}
+
+  {# Only where there is something to comment on: on an oversized diff no line
+     is offered, and explaining what a comment does would be describing a
+     control that is not on the page. #}
+  {% if diff.any_body %}
+  <p class="hint">
+    A comment lands on the project as a note, quoting the line, and wakes the
+    project up &mdash; so the next run reads the code you were looking at and
+    what you said about it, in that order.
+  </p>
+  {% endif %}
+</div>

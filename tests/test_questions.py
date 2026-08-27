@@ -10,6 +10,8 @@ Three of Wes's notes converge here:
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
 from starlette.testclient import TestClient
 
@@ -358,14 +360,63 @@ def test_a_deleted_question_is_not_in_the_answered_list(client, project):
 def test_a_deleted_question_can_never_be_asked_again(project):
     # The whole point of deleting rather than dismissing. An answered question
     # is only settled for QUESTION_SETTLED_HOURS; a deleted one is settled for
-    # good, including against a rewording - which is the failure that would
-    # make deleting worthless.
+    # as long as its row exists (seven days, until the daily prune), including
+    # against a rewording - which is the failure that would make deleting
+    # worthless.
     q = db.create_question(project["id"], "Should I use Postgres or SQLite?")
     db.delete_question(q["id"])
 
     filing = db.file_question(project["id"], "Should I use Postgres or SQLite?")
     assert not filing.created
     assert filing.duplicate_of["id"] == q["id"]
+
+
+# Wes, 2026-08-06: "Deleted questions should fully delete after 7 days."
+
+def _age_question(question_id: int, days: int) -> None:
+    old = (
+        datetime.now(timezone.utc) - timedelta(days=days)
+    ).isoformat(timespec="seconds")
+    conn = db.get_conn()
+    conn.execute(
+        "UPDATE questions SET answered_at = ?, ts = ? WHERE id = ?",
+        (old, old, question_id),
+    )
+    conn.commit()
+
+
+def test_a_deleted_question_ages_out_after_seven_days(project):
+    old = db.create_question(project["id"], "Old and thrown away?")
+    fresh = db.create_question(project["id"], "Freshly thrown away?")
+    db.delete_question(old["id"])
+    db.delete_question(fresh["id"])
+    _age_question(old["id"], db.DELETED_QUESTION_RETENTION_DAYS + 1)
+
+    assert db.prune_deleted_questions() == 1
+    left = [row["id"] for row in db.deleted_questions(project["id"])]
+    assert left == [fresh["id"]]
+
+
+def test_the_prune_only_touches_deleted_rows(project):
+    answered = db.create_question(project["id"], "Decided long ago?")
+    db.answer_question_and_resume(answered["id"], "yes")
+    _age_question(answered["id"], db.DELETED_QUESTION_RETENTION_DAYS + 30)
+
+    assert db.prune_deleted_questions() == 0
+    assert db.get_question(answered["id"])["status"] == "answered"
+
+
+def test_after_the_prune_the_question_may_be_asked_again(project):
+    # The knowing tradeoff in prune_deleted_questions: the deleted row IS the
+    # bar on re-asking, so aging it out re-opens the door. Wes chose seven
+    # days of "stop asking me this" over forever.
+    q = db.create_question(project["id"], "Should I use Postgres or SQLite?")
+    db.delete_question(q["id"])
+    _age_question(q["id"], db.DELETED_QUESTION_RETENTION_DAYS + 1)
+    db.prune_deleted_questions()
+
+    filing = db.file_question(project["id"], "Should I use Postgres or SQLite?")
+    assert filing.created
 
 
 def test_deleting_does_not_journal_an_answer(client, project):
@@ -481,10 +532,10 @@ def test_saved_for_later_is_folded_at_the_bottom_of_the_questions(client, projec
     html = client.get("/project/dice-tower").text
 
     assert "<h2>Saved for later</h2>" not in html
-    assert '<details class="fold-section saved-questions">' in html
+    assert 'class="fold-section saved-questions"' in html
     # Folded, and below the open ones - the order is the claim.
     assert html.index("The open one?") < html.index("The saved one?")
-    assert html.index("Open questions") < html.index("saved-questions")
+    assert html.index(">Questions<") < html.index("saved-questions")
     assert str(live["id"]) in html
 
 

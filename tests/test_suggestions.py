@@ -65,6 +65,21 @@ def test_accepting_a_missing_suggestion_is_a_404_not_a_500(client):
     assert r.status_code == 404
 
 
+def test_an_accepted_suggestion_belongs_to_whoever_accepted_it(client):
+    # Same rule as the idea form (Wes, 2026-08-06): a project someone creates
+    # goes on their board, and pressing accept is creating it.
+    from app import people
+
+    karli = people.add(name="Karli", gender="female")
+    s = db.add_suggestion("A dice roller", "Roll dice on the phone.")
+
+    client.cookies.set(people.COOKIE, "karli")
+    r = client.post(f"/suggestions/{s['id']}/accept", follow_redirects=False)
+
+    project = db.get_project_by_slug(r.headers["location"].rsplit("/", 1)[-1])
+    assert people.member_ids(project["id"]) == {karli}
+
+
 # --- undoing a dismissal --------------------------------------------------
 
 def test_a_dismissal_can_be_undone(client):

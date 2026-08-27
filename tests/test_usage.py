@@ -93,7 +93,12 @@ def test_project_cap_does_not_block_a_manual_run(client, project):
 def test_a_capped_project_does_not_starve_the_others(client, project):
     other = db.create_project("Other", stage="active", build_approved=True, slug="other")
     client.post(f"/project/{project['slug']}/run-cap", data={"max_runs_per_day": "1"})
-    db.update_project(project["id"], priority=9)  # would otherwise be picked first
+    # Touched last, so `other` is the NEWEST row and the queue - which is least
+    # recently touched first - puts the capped project at its head. Without
+    # this the assertion below could pass on queue order alone and prove
+    # nothing about the cap. (It used to be `priority=9` on the capped one,
+    # which said the same thing through the ranking that has since gone.)
+    db.update_project(other["id"], kind="software")
     db.finish_run(db.create_run(project["id"], "build", "opus"), "ok")
     picked, _ = worker._pick_project(None)
     assert picked["id"] == other["id"]
@@ -107,8 +112,19 @@ def test_empty_run_cap_clears_the_override(client, project):
 
 
 def test_zero_run_cap_means_no_limit(client, project):
+    """0 is stored as 0, not folded to NULL.
+
+    It used to become NULL, and once the board-wide default existed that made
+    the name of this test a lie: the project inherited the default and was
+    capped after all. 0 now means what it says - this one project runs as much
+    as the portal-wide budget allows.
+    """
+    db.set_setting("project_max_runs_per_day", "2")
     client.post(f"/project/{project['slug']}/run-cap", data={"max_runs_per_day": "0"})
-    assert db.get_project(project["id"])["max_runs_per_day"] is None
+    assert db.get_project(project["id"])["max_runs_per_day"] == 0
+    for _ in range(5):
+        db.finish_run(db.create_run(project["id"], "build", "opus"), "ok")
+    assert worker.project_at_daily_cap(db.get_project(project["id"])) is False
 
 
 def test_non_numeric_run_cap_is_rejected(client, project):

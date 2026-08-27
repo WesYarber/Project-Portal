@@ -30,9 +30,19 @@
    PNG links beside the svg/ico because they are the one form every browser
    agrees on - Safari ignores SVG favicons entirely, and some ico handling
    is fussy about multi-frame files. #}
-<link rel="icon" type="image/png" sizes="32x32" href="{{ icon_url('favicon-32.png') }}">
-<link rel="icon" type="image/png" sizes="16x16" href="{{ icon_url('favicon-16.png') }}">
-<link rel="icon" type="image/svg+xml" sizes="any" href="{{ icon_url('favicon.svg') }}">
+{# favicon_url, not icon_url: the tab mark is drawn once per theme (a tile and
+   two rings, all three colors read out of the theme's own palette block), so a
+   paper tab wears the printed blue on cream rather than the CRT's on
+   near-black. It falls back to the shipped terminal file for any theme with no
+   set of its own, because a 404 on an icon is a blank tab, not a retry. The
+   .ico stays unthemed on purpose - it is also what /favicon.ico answers at the
+   origin root, where there is no page and so no reader to have a theme. #}
+{# data-icon-base names the shipped file each link is the themed form of, so
+   the settings page's live preview can move all three without parsing a name
+   back out of an href that carries a version and a boot id. #}
+<link rel="icon" type="image/png" sizes="32x32" data-icon-base="favicon-32.png" href="{{ favicon_url('favicon-32.png') }}">
+<link rel="icon" type="image/png" sizes="16x16" data-icon-base="favicon-16.png" href="{{ favicon_url('favicon-16.png') }}">
+<link rel="icon" type="image/svg+xml" sizes="any" data-icon-base="favicon.svg" href="{{ favicon_url('favicon.svg') }}">
 <link rel="icon" type="image/x-icon" sizes="16x16 32x32 48x48" href="{{ icon_url('favicon.ico') }}">
 <link rel="apple-touch-icon" href="{{ icon_url('apple-touch-icon.png') }}">
 {# Added to the home screen this runs chromeless, which means no browser
@@ -52,7 +62,14 @@
    keyboard jumps). It rides on every page because app.js must know the
    bindings before the first keystroke, not after a fetch. Single-quoted: the
    value is JSON and contains double quotes. #}
-<body class="{{ body_classes() }}" data-jump-keys='{{ jump_keys_json() }}'{% if secure_url() %} data-secure-url="{{ secure_url() }}"{% endif %}>
+{# data-open-questions is what the home-screen icon's badge should read while
+   this page is open. A push sets that badge from the server (app_badge), but
+   only a push can - answering the last question in the browser would otherwise
+   leave a number on the icon until the next unrelated notification. Rendered
+   on <body> rather than in <head> so the live refresh's morph keeps it current
+   without a reload. See setAppBadge in app.js. #}
+{% set nav_questions = open_question_total() %}
+<body class="{{ body_classes() }}" data-jump-keys='{{ jump_keys_json() }}' data-open-questions="{{ nav_questions }}"{% if secure_url() %} data-secure-url="{{ secure_url() }}"{% endif %}>
 {# Shown only when the server stops answering - typically because it is
    restarting itself to load new code. Beats the browser's "can't reach this
    site" page, and reloads on its own the moment the portal is back. #}
@@ -76,7 +93,189 @@
   </div>
 </div>
 {% set path = request.url.path %}
-{% set nav_questions = open_question_total() %}
+{# The portal's own sections, computed once and drawn twice: in the side rail
+   below and in the tabs across the top of the content. See main.nav_links. #}
+{% set nav = nav_links(path) %}
+{# The desktop side rail. Wes, 2026-08-01: "When on desktop with extra unused
+   horizontal space, let's add a nav bar to the side."
+
+   Rendered on every page and hidden by CSS on every window too narrow to hold
+   it (see `#side-rail` in style.css) rather than rendered conditionally: the
+   breakpoint is a fact about the window, which the server cannot know, and a
+   rail that appeared only after a page load would be missing every time he
+   resized. It costs one query pass per render and nothing at all below the
+   breakpoint.
+
+   Server-rendered, so "they should update in real time" needs no code: the
+   live refresh re-fetches this URL on any database commit and morphs the whole
+   <body>, and everything in here carries an id so the morph keeps the nodes
+   rather than rebuilding them under the pointer. #}
+{% set rail = side_rail(path) %}
+<aside id="side-rail" aria-label="projects and sections">
+  <div class="rail-inner">
+    {# The compressed status widget he asked for, and the only part of the rail
+       that is ever moving. It states the count in words because "2" alone in a
+       narrow column reads as a badge for something else. #}
+    <div class="rail-status" id="rail-status">
+      {% if rail.running %}
+      <div class="rail-status-head"><span class="rail-dot working"></span>
+        {{ rail.running }} agent{{ 's' if rail.running != 1 }} working</div>
+      <ul class="rail-runs">
+        {% for run in rail.runs %}
+        <li id="rail-run-{{ run.run_id }}"><a href="{{ run.href }}">
+          <span class="rail-run-name">{{ run.label }}</span>
+          {% if run.elapsed %}<span class="rail-run-elapsed">{{ run.elapsed }}</span>{% endif %}
+        </a></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <div class="rail-status-head idle"><span class="rail-dot"></span>no agents working</div>
+      {% endif %}
+    </div>
+
+    {# What is left of the Claude subscription the runs are spending. Wes,
+       2026-08-16: "It would be cool to see a very brief visualization or
+       writeup of current usage vs 5hr limit and current usage vs week limit +
+       when they reset / how close we are to when they reset on the side
+       nav-bar. ... it could show '5hr: 25%, o' where the o is a tiny pie chart
+       progression meter that is 4/5 full and 1/5 empty."
+
+       Two numbers per row, and they are answers to different questions: the
+       percentage is how much of the allowance is gone, the pie is how far
+       through the window we are. Together they say something neither says
+       alone - 25% spent with the pie nearly full is headroom about to expire
+       unused, and 90% spent with the pie barely started is a window that will
+       bite long before it comes back.
+
+       Directly under the status widget because both are "right now", and above
+       PORTAL because a nav is a place to go and this is a thing to know. The
+       rows link to /activity, which is where the same figures are drawn at
+       length - the rail's rule is that a row is a way to get somewhere.
+
+       Drawn only when there is a trustworthy reading (see
+       limits.compact_windows): an API-key install and a portal that has never
+       managed a fetch both get no group at all, rather than a heading over an
+       apology. #}
+    {% if rail.usage %}
+    <nav class="rail-section rail-usage" id="rail-usage" aria-label="Claude usage">
+      <h3 class="rail-head">Claude</h3>
+      <ul>
+        {% for w in rail.usage %}
+        <li id="rail-usage-{{ w.key }}">
+          <a href="/activity" title="{{ w.full }}: {{ w.percent }}% used{% if w.resets_in %}, resets in {{ w.resets_in }}{% endif %}">
+            <span class="rail-name">{{ w.label }}</span>
+            <span class="rail-used{{ ' hot' if w.hot }}">{{ w.used }}%</span>
+            {# The pie is the window's clock, not its spend. `--pie` is the one
+               number it takes; the conic-gradient in style.css does the rest,
+               so there is no SVG to keep in step with the theme's colors. A
+               window with no reported reset draws no pie rather than an empty
+               circle that would read as "just reset". #}
+            {% if w.elapsed is not none %}
+            <span class="rail-pie" style="--pie: {{ w.elapsed }}%"
+                  title="{{ w.elapsed|round|int }}% of the way through this window"></span>
+            {% endif %}
+            {% if w.resets_in %}<span class="rail-resets">{{ w.resets_in }}</span>{% endif %}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+    {% endif %}
+
+    {# The same tabs that run across the top of the content, in the rail that
+       does not scroll away. Wes, 2026-08-15: "I want the dashboard, tasks, etc
+       to show up on the nav bar on the side even when in project pages."
+
+       They were always ON a project page - at the top of it, above a page that
+       is often several thousand pixels long, so reaching /tasks from the todo
+       list meant scrolling back up first. Under the status widget rather than
+       above it, because "at the top, a compressed status widget" was his ask of
+       2026-08-01 and this does not take that place.
+
+       Fewer rows than the tabs above the content. Wes, 2026-08-16: "From the
+       side-bar on projects, remove the memory, everyone, and settings options."
+       Which rows those are is `sidebar.RAIL_OMIT`, so the filter here is one
+       flag on the row rather than a second list of section names in a template.
+       Nothing becomes unreachable: all three still have their tab at the top of
+       every page.
+
+       No digit and no jump key: the number keys belong to the project list
+       below (app.js: railDigitTarget) and the letters to the page's own
+       chapters, and a nav that quietly stole a digit would move a shortcut he
+       already has in his fingers.
+
+       The heading is the same .rail-head the chapter list and the shelves draw
+       (Wes, 2026-08-15: "Look at the inconsistent spacing and line separators
+       here"). This group used to be the odd one out - no label, and a rule of
+       its own along the bottom sitting a row above THIS PAGE's underline. One
+       kind of line in the rail, and PORTAL / THIS PAGE / RECENT reading as the
+       parallel things they are: the whole portal, this page, your projects. #}
+    <nav class="rail-section rail-nav" id="rail-nav" aria-label="portal sections">
+      <h3 class="rail-head">Portal</h3>
+      <ul>
+        {% for item in nav if item.rail %}
+        <li id="rail-nav-{{ item.key }}" class="{{ 'here' if item.current }}">
+          <a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}>
+            <span class="rail-name">{{ item.label }}</span>
+            {% if item.count %}<span class="rail-count-badge">{{ item.count }}</span>{% endif %}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+
+    {# Filled by app.js from the [data-jump] targets the page itself declares,
+       so this file never learns the shape of a template - the same rule the
+       keyboard jumps already follow. Empty and hidden here on purpose: the
+       server's copy is what a live patch would otherwise paste over the
+       client's, exactly as with the footer's jump hint. #}
+    <nav class="rail-section" id="rail-chapters" hidden></nav>
+
+    {# The project list. Wes, 2026-08-01: "have it show as many of the most
+       recent projects that have been worked on as will fit on the remainder of
+       the screen (without having to scroll). Allow this section to be scrolled
+       to view older ones."
+
+       "As many as will fit" is a fact about the window, so it is decided in CSS
+       and not here: this box flexes into whatever is left under the status
+       widget and the chapter list, and scrolls past that. The server sends up
+       to sidebar.RAIL_MAX_ROWS and never a cut list pretending to be a whole
+       one. #}
+    <div class="rail-projects scroll-cap" id="rail-projects">
+    {% for shelf in rail.shelves %}
+    <nav class="rail-section" id="rail-shelf-{{ shelf.name }}">
+      <h3 class="rail-head">{{ shelf.label }}<span class="rail-count">{{ shelf.rows|length }}</span></h3>
+      <ul>
+        {% for item in shelf.rows %}
+        {# `dim` is "not on a working shelf" - paused, or still an idea. In
+           recent mode those rows sit among the ones being worked, in date
+           order, so the dimming is per row rather than per group. #}
+        <li id="rail-p-{{ item.id }}" class="{{ 'here ' if item.current }}{{ 'dim' if item.dim }}">
+          <a href="{{ item.href }}"{% if item.current %} aria-current="page"{% endif %}
+             {% if item.digit %}data-rail-digit="{{ item.digit }}"{% endif %}>
+            {# The number key that jumps here, shown for the same reason the
+               chapter list shows its bound letter: a shortcut nobody can see is
+               a shortcut nobody uses. #}
+            {% if item.digit %}<span class="rail-digit">{{ item.digit }}</span>{% endif %}
+            <span class="rail-name">{{ item.title }}</span>
+            {# One fact per row, and never both: `status` is what is waiting on
+               somebody, and the fallback is how long it has been since anything
+               happened - which is the useful status for a row in review and
+               noise on a row being worked right now. #}
+            {% if item.status %}
+            <span class="rail-note {{ item.tone }}">{{ item.status }}</span>
+            {% elif item.since %}
+            <span class="rail-note muted">{{ item.since|timeago }}</span>
+            {% endif %}
+          </a>
+        </li>
+        {% endfor %}
+      </ul>
+    </nav>
+    {% endfor %}
+    </div>
+  </div>
+</aside>
 <div class="screen">
   <div class="terminal-window">
 
@@ -92,7 +291,15 @@
            more than one person it could be: on a single-person install the
            question has one answer and a control asking it would be clutter.
            A <select> that submits on change rather than a menu, because the
-           whole interaction is "no, I'm the other one" on a phone. #}
+           whole interaction is "no, I'm the other one" on a phone.
+
+           It REPLACES the per-page stat rather than sitting beside it - Wes's
+           ask on 2026-07-29, after the questions page showed him a picker and
+           "2 open" crowding the same corner. Nothing is lost by dropping the
+           stat: every page that sets one repeats it in the content (the run
+           status is a stat tile, the file size is in the file facts, the slug
+           is the heading), so the corner carries the one fact that appears
+           nowhere else on the page - which of them the portal thinks you are. #}
         {% set folk = everyone() %}
         {% if folk | length > 1 %}
         {% set current = me() %}
@@ -106,8 +313,9 @@
           </select>
           <noscript><button type="submit">switch</button></noscript>
         </form>
-        {% endif %}
+        {% else %}
         <span>{% block header_stat %}{{ SITE.handle }}{% endblock %}</span>
+        {% endif %}
       </div>
     </div>
 
@@ -116,21 +324,15 @@
          window, not the first item of the dashboard's content, so it should sit
          over the tabs rather than under them. Only the dashboard fills it. #}
       {% block masthead %}{% endblock %}
+      {# Drawn from `nav_links`, which the side rail's copy of this list also
+         reads (see #rail-nav above): one definition of what the sections are,
+         which one is current and what each badge counts, so the two can never
+         disagree. The everyone tab - the owner's door into other people's
+         boards - is in or out of that list rather than conditional here. #}
       <nav class="nav-tabs">
-        <a class="tab-btn {{ 'active' if path == '/' }}" href="/">dashboard</a>
-        {% set nav_oneoffs = open_oneoff_total() %}
-        <a class="tab-btn {{ 'active' if path.startswith('/tasks') }}" href="/tasks">tasks{% if nav_oneoffs %}<span class="nav-count">{{ nav_oneoffs }}</span>{% endif %}</a>
-        <a class="tab-btn {{ 'active' if path.startswith('/questions') }}" href="/questions">questions{% if nav_questions %}<span class="nav-count">{{ nav_questions }}</span>{% endif %}</a>
-        <a class="tab-btn {{ 'active' if path.startswith('/activity') or path.startswith('/run/') }}" href="/activity">activity</a>
-        <a class="tab-btn {{ 'active' if path.startswith('/memory') }}" href="/memory">memory</a>
-        {# The admin door into other people's boards. Only the owner has one,
-           and only once there is somebody else to look at - on a one-person
-           install it would be a tab onto a page listing the same projects the
-           dashboard already shows. #}
-        {% if me() and me().is_owner and everyone() | length > 1 %}
-        <a class="tab-btn {{ 'active' if path.startswith('/everyone') }}" href="/everyone">everyone</a>
-        {% endif %}
-        <a class="tab-btn {{ 'active' if path.startswith('/settings') }}" href="/settings">settings</a>
+        {% for item in nav %}
+        <a class="tab-btn {{ 'active' if item.current }}" href="{{ item.href }}">{{ item.label }}{% if item.count %}<span class="nav-count">{{ item.count }}</span>{% endif %}</a>
+        {% endfor %}
       </nav>
 
       {# Shown while a self-update is committed but not yet loaded: the restart
@@ -176,7 +378,10 @@
            declares, so the hint can never advertise a key that does nothing.
            Hidden until then, and hidden on touch, which has no keyboard. #}
         <span class="jump-hint" hidden></span>
-        <span class="cursor">&nbsp;</span>
+        {# No blinking cursor here: Wes asked for it gone on 2026-07-29. The
+           `.cursor` component itself stays in style.css and in the terminal
+           theme the style guide documents - other projects use that look, and
+           /style still shows the swatch. It is just not on a portal page. #}
       </div>
     </div>
 

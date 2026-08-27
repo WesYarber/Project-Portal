@@ -19,9 +19,13 @@ So an *ask* is deliberately not a run:
 - Its answer is journalled but nothing else is applied: no status change, no
   new questions, no report.json. There is no path from an ask to a mutation.
 
-Both halves land in the project journal (`user/ask` then `agent/answer`), which
-means the answer is part of the record the next real run reads - asking a
-question is also a way of telling the agent something.
+Both halves are written to the project journal (`user/ask` then `agent/answer`)
+so the exchange is on the permanent record, but neither is *shown* in the
+journal feed and neither goes into a run's prompt. They are a conversation of
+their own, read back by `db.ask_thread` - Wes, 2026-08-16: "For 'Asking' the
+project stuff, it should maintain the context of previously asked questions. I
+also want the questions to be asked and answered all up at the 'Ask' area
+instead of in line in the journal."
 """
 from __future__ import annotations
 
@@ -30,11 +34,12 @@ import json
 import logging
 import os
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Optional
+from typing import Optional, Sequence
 
-from app import config, db, notify
+from app import config, db, notify, promptbudget
 
 log = logging.getLogger("portal.ask")
 
@@ -72,6 +77,25 @@ ASK_INSTRUCTIONS = Template(_ASK_INSTRUCTIONS_TEMPLATE).safe_substitute(
     **config.SITE.template_vars()
 )
 
+# The ask thread's share of the prompt, in bytes. Sized against the run
+# prompt's journal budget (24 KB, config `prompt_journal_kb`): an answer is a
+# few paragraphs where a run's progress entry is a whole report, so ten
+# exchanges fit comfortably inside this and a longer history degrades to
+# headings the same way a journal tail does. See app/promptbudget.py.
+THREAD_BUDGET_BYTES = 12_000
+
+# How long after the last thing said in the thread the ask box still opens
+# itself on a fresh page load.
+#
+# The box is folded to a button the rest of the time (Wes, 2026-07-21) because
+# it is a thing you reach for. But the whole point of his 2026-08-16 note is
+# that an answer arrives where the question was asked - and an answer arrives
+# minutes later, usually while he is somewhere else. Coming back to the project
+# and having to open a box to find out what it said is the same "in line in the
+# journal" hunt in a different place. Half an hour covers "I asked, I went off,
+# I came back"; a day later the thread is history and the button is enough.
+OPEN_WITHIN = timedelta(minutes=30)
+
 
 def ask_model() -> str:
     """The model that answers asks.
@@ -89,6 +113,42 @@ def workspace(slug: str) -> Path:
     return config.PROJECTS_DIR / slug
 
 
+def thread_section(rows: Sequence[sqlite3.Row]) -> str:
+    """The ask conversation so far, rendered for the prompt under a budget.
+
+    Wes, 2026-08-16: "For 'Asking' the project stuff, it should maintain the
+    context of previously asked questions."
+
+    It used to hold that only by accident: the ask prompt read the last twenty
+    journal entries *including* the side thread, so on a busy project - twenty
+    entries being about two days of runs here - the question he asked yesterday
+    had already fallen out of the window, and a follow-up got answered as if it
+    were the first thing anyone had said. The thread is its own block now, and
+    it is the whole thread rather than whatever of it survived a journal tail.
+
+    `promptbudget.journal_for_prompt` is what keeps that bounded: past the
+    budget the oldest exchanges degrade to their first paragraph, the newest
+    stays whole, and nothing silently disappears.
+    """
+    if not rows:
+        return ""
+    entries = [
+        promptbudget.JournalEntry(
+            prefix=("- You asked: " if row["author"] == "user" else "- Answer: "),
+            body=row["content_md"] or "",
+        )
+        for row in rows
+    ]
+    body = promptbudget.journal_for_prompt(entries, THREAD_BUDGET_BYTES)
+    return (
+        "## This ask thread so far\n"
+        "Earlier questions on this project and the answers they got, oldest "
+        "first. A follow-up may be building on one of them - this is the "
+        "conversation you are continuing, and no agent run has seen any of "
+        f"it.\n{body}"
+    )
+
+
 def build_prompt(project: sqlite3.Row, question: str) -> str:
     """The whole prompt for an ask. Pure, so it can be asserted on in tests.
 
@@ -100,14 +160,26 @@ def build_prompt(project: sqlite3.Row, question: str) -> str:
 
     parts = [ASK_INSTRUCTIONS, agent_runner._project_section(project)]  # noqa: SLF001
 
-    # No `exclude` here, deliberately, unlike agent_runner: earlier asks and
-    # their answers ARE the side thread, so a follow-up question can build on
-    # the last one even though a run never sees either. See db.SIDE_THREAD.
-    journal = db.list_journal_asc(project["id"], limit=20)
+    # Excluded here for the same reason agent_runner excludes it, and to the
+    # opposite end: the side thread does not belong in a journal tail at all.
+    # A run must not read it, and an ask reads it in full below instead of in
+    # whatever fragment of it fits in the last twenty entries.
+    journal = db.list_journal_asc(project["id"], limit=20, exclude=db.SIDE_THREAD)
     journal_txt = "\n".join(
         f"- [{row['ts']}] {row['author']}/{row['kind']}: {row['content_md']}" for row in journal
     ) or "(no journal entries yet)"
     parts.append(f"## Recent journal (last {len(journal)})\n{journal_txt}")
+
+    # `start` journals the question before the answer is even attempted, so by
+    # the time this prompt is built the newest entry in the thread IS the
+    # question being asked. It is put at the end, under its own heading, and
+    # asking it twice would read as two questions.
+    history = list(db.ask_thread(project["id"]))
+    if history and (history[-1]["content_md"] or "") == question:
+        history = history[:-1]
+    thread = thread_section(history)
+    if thread:
+        parts.append(thread)
 
     qa = db.answered_qa(project["id"])
     if qa:
@@ -150,7 +222,16 @@ def build_command(prompt: str, model: str) -> list[str]:
 
 
 async def run_ask(prompt: str, cwd: Path, model: str) -> str:
-    """Run the read-only subprocess and return its answer text ("" on failure)."""
+    """Run the read-only subprocess and return its answer text ("" on failure).
+
+    Takes no workspace lease, and that is a decision rather than an oversight.
+    Every agent the portal spawns that can *write* to a shared directory leases
+    it (see app/worklock.py), but `build_command` denies Bash, Edit and Write,
+    so this one collides with nothing - and the lease is `--nonblock`, so giving
+    it one would turn "ask a question about a project that happens to be
+    mid-run" into a refusal. Reading a workspace while somebody writes it is
+    what a question about live work IS.
+    """
     cwd.mkdir(parents=True, exist_ok=True)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -187,6 +268,33 @@ def pending(project_id: int) -> bool:
 
 def pending_count() -> int:
     return len(_PENDING)
+
+
+def opens(rows: Sequence[sqlite3.Row], is_pending: bool, now: Optional[datetime] = None) -> bool:
+    """Whether the project page renders the ask box already unfolded.
+
+    Open while a question is in flight - the reader is standing there waiting
+    for it - and for `OPEN_WITHIN` after the last thing said in the thread, so
+    an answer that landed while he was elsewhere is on the page when he comes
+    back rather than behind a click. Folded again after that: the thread is
+    then history, and the button is the whole point of the box being folded.
+
+    A timestamp that cannot be read counts as old rather than as now. An
+    unparseable `ts` is not a reason to prise the box open on every page load
+    forever, which is what treating it as "recent" would do.
+    """
+    if is_pending:
+        return True
+    if not rows:
+        return False
+    stamp = str(rows[-1]["ts"] or "")
+    try:
+        last = datetime.fromisoformat(stamp)
+    except ValueError:
+        return False
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    return (now or datetime.now(timezone.utc)) - last <= OPEN_WITHIN
 
 
 FAILED_ANSWER = (

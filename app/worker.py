@@ -6,6 +6,7 @@ import logging
 import re
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -13,9 +14,11 @@ from string import Template
 from typing import Optional
 
 from app import (
-    agent_runner, config, crashloop, daycycle, db, hookguard, journalfile, limits, memory,
-    modelwatch, notify, oneoff, orphans, pacing, people, preview, proof, quickreplies,
-    report_schema, runlimit, runlog, selfreview, subprojects, todos, worklock,
+    agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
+    limits, memory, modelwatch, notes, notify, oneoff, orphans, pacing, people, portalmcp,
+    preview, proof, quiet,
+    quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
+    todos, worklock,
 )
 
 log = logging.getLogger("portal.worker")
@@ -49,7 +52,9 @@ def _in_backoff() -> bool:
     return datetime.now(timezone.utc) < dt
 
 
-async def _rate_limit_backoff() -> tuple[datetime, str]:
+async def _rate_limit_backoff(
+    quota: Optional[apiretry.Retry] = None,
+) -> tuple[datetime, str]:
     """Set `backoff_until` after a run hit a usage limit, and say why.
 
     The old rule was a flat hour, which was a guess made without asking. The
@@ -57,8 +62,21 @@ async def _rate_limit_backoff() -> tuple[datetime, str]:
     reading, not the cached one, because the cache may predate the run that
     just failed and would therefore still show headroom. A failed fetch falls
     back to the flat hour, so this is strictly better-informed, never worse.
+
+    `quota`, when the run's stream carried one (app/apiretry.py), beats both.
+    Its `resets_at` came out of Anthropic's own 429 headers on the request that
+    was actually refused, where the usage endpoint is a second opinion fetched
+    afterwards over a network call that can itself fail - and does, on exactly
+    the kind of bad afternoon that produces a rate limit in the first place.
+    Same ceiling, because a full weekly window would otherwise idle for days.
     """
     now = datetime.now(timezone.utc)
+    if quota is not None and quota.resets_at and quota.resets_at > now:
+        until = min(quota.resets_at, now + limits.MAX_BACKOFF)
+        why = f"{quota.limit_type} limit reached" if quota.limit_type \
+            else "usage limit reported by the API"
+        db.set_setting("backoff_until", until.isoformat(timespec="seconds"))
+        return until, why
     try:
         snapshot = await limits.refresh_async()
     except Exception:  # noqa: BLE001 - never let the limit reader break a run's teardown
@@ -154,16 +172,46 @@ def blocked_with_nothing_workable(project: db.sqlite3.Row) -> bool:
     return waiting or db.count_open_todos(project["id"], owner="agent") > 0
 
 
-def project_at_daily_cap(project: db.sqlite3.Row) -> bool:
-    """True if this project has its own runs/day cap and has hit it today.
-    A NULL/0 `projects.max_runs_per_day` means "no per-project limit"."""
+def effective_project_cap(project: db.sqlite3.Row) -> int:
+    """How many scheduled runs this project may take today. 0 means no cap.
+
+    Three states, and the whole point of this function is that the last two are
+    not the same:
+
+    - **A number on the project.** Wes typed it, so it binds in both directions
+      and a spend-down is not a license to ignore it.
+    - **0 on the project.** He lifted this one project off the board default by
+      hand: no cap at all, however busy the rest of the board is.
+    - **NULL.** Inherit the board-wide default (`project_max_runs_per_day`),
+      which exists because the global budget alone cannot stop one project
+      eating it: `list_schedulable_projects` hands over one order, so the
+      project at its head is picked every tick until it has nothing workable,
+      and Project Portal took 70 of 202 runs in the week to 2026-08-07 that way.
+
+    The default is lifted during a spend-down and the project's own number is
+    not. Wes has answered "yes, spend it" ten times to a weekly window about to
+    expire, and this default is about spreading work across the board rather
+    than about saving allowance - so with a window burning down it has nothing
+    to say. Quiet hours still applies to a spend-down, because that one IS
+    about him rather than about the money.
+    """
     try:
         cap = project["max_runs_per_day"]
     except (IndexError, KeyError):  # row from a pre-migration query
-        return False
+        return 0
+    if cap is not None:
+        return max(0, int(cap))
+    if pacing.spending_down():
+        return 0
+    return db.default_project_max_runs()
+
+
+def project_at_daily_cap(project: db.sqlite3.Row) -> bool:
+    """True if this project has taken all the runs it may take today."""
+    cap = effective_project_cap(project)
     if not cap:
         return False
-    return db.count_runs_today(project["id"]) >= int(cap)
+    return db.count_runs_today(project["id"]) >= cap
 
 
 def workspace_leased(slug: str) -> bool:
@@ -180,6 +228,21 @@ def workspace_leased(slug: str) -> bool:
     that changes between here and the spawn is therefore harmless.
     """
     return worklock.is_busy(config.PROJECTS_DIR / slug) is True
+
+
+def memory_leased() -> bool:
+    """Is an agent holding the shared memory directory right now?
+
+    The reflect and the compaction both work in `config.MEMORY_DIR` and both
+    rewrite files in it, so they are one resource; their two separate
+    `_inflight` slots have never expressed that, and neither slot survives the
+    restart this box performs several times an hour to load its own new code.
+
+    Same pre-flight rule as `workspace_leased`: only a definite yes counts, and
+    the lease the spawn itself takes is what actually makes a collision
+    impossible.
+    """
+    return worklock.is_busy(config.MEMORY_DIR) is True
 
 
 def _pick_project(manual_project_id: Optional[int]) -> tuple[Optional[db.sqlite3.Row], bool]:
@@ -303,6 +366,9 @@ def idle_reason() -> str:
     saturation = pacing.saturation_hold()
     if saturation is not None:
         return pacing.saturation_reason(saturation)
+    quiet_hours = quiet.quiet_hold()
+    if quiet_hours is not None:
+        return quiet.quiet_reason(quiet_hours)
     project, _ = _pick_project(None)
     if project is None:
         actionable = db.list_schedulable_projects()
@@ -318,7 +384,15 @@ def idle_reason() -> str:
             )
         if all(build_gated(p) or blocked_with_nothing_workable(p) for p in actionable):
             return "every active project is waiting on you (approval, an answer, or something only you can do)"
-        return "every actionable project has hit its own per-project daily cap"
+        # Not "its own" any more: the cap that stopped a project here is just
+        # as likely to be the board-wide default as a number set on the
+        # project. Worded to be true of both, and to say when it lifts, since
+        # otherwise this reads as a fault rather than as pacing working.
+        resets_in = daycycle.humanize_seconds(daycycle.seconds_until_reset())
+        return (
+            "every active project has taken all its runs for today - "
+            f"they reset in {resets_in}"
+        )
     wait = _seconds_until_scheduled()
     if wait:
         return (
@@ -350,9 +424,12 @@ _audit_pruned_day: Optional[str] = None
 
 
 def _daily_audit_prune() -> None:
-    """Age the PostToolUse audit trail out of hook_events once a day. Denials
-    and Stop bounces are kept; only the bulk 'what did this run do' rows age
-    (db.AUDIT_RETENTION_DAYS). Best-effort - a failed prune waits a day."""
+    """Daily aging, once per day: the PostToolUse audit trail out of
+    hook_events (denials and Stop bounces are kept; only the bulk 'what did
+    this run do' rows age, db.AUDIT_RETENTION_DAYS), and deleted questions out
+    of questions entirely (Wes, 2026-08-06: "Deleted questions should fully
+    delete after 7 days"). Best-effort - a failed prune waits a day, and each
+    prune fails alone."""
     global _audit_pruned_day
     today = datetime.now(timezone.utc).date().isoformat()
     if _audit_pruned_day == today:
@@ -364,6 +441,12 @@ def _daily_audit_prune() -> None:
             log.info("Aged %d hook-audit rows out of hook_events", removed)
     except Exception:  # noqa: BLE001
         log.exception("Hook-audit prune failed")
+    try:
+        removed = db.prune_deleted_questions()
+        if removed:
+            log.info("Aged %d deleted question(s) out for good", removed)
+    except Exception:  # noqa: BLE001
+        log.exception("Deleted-question prune failed")
 
 
 _model_checked_day: Optional[str] = None
@@ -396,6 +479,7 @@ async def _tick() -> None:
         # not even the reflect or the compaction, which are runs like any other.
         return
     _reap_adopted()
+    await _sweep_strays()
     _daily_audit_prune()
     await _daily_model_check()
     if _pending_restart is not None:
@@ -476,6 +560,12 @@ async def _start_one() -> bool:
         # the clock. Scheduled only, and exempt during an explicit spend-down.
         if pacing.saturation_hold() is not None:
             return False
+        # Don't work through the night. Unlike every guard above this one, it
+        # is not about how much allowance is left - it is about whether anyone
+        # is awake to read the result. See app/quiet.py for the overnight that
+        # taught us. Not exempt during a spend-down, deliberately.
+        if quiet.quiet_hold() is not None:
+            return False
         # A queued research burst outranks the ordinary rotation *and* the
         # pacing interval: the whole point is to fill the free slots at once
         # while there is allowance about to expire. It is still under the hold
@@ -525,6 +615,59 @@ ADOPTED_SUMMARY = (
     "started it, so nothing was watching when it finished."
 )
 
+STRANDED_SUMMARY = (
+    "Ended after a service restart, leaving something running: the agent itself "
+    "had exited - its lease on the workspace was free - but a process it "
+    "detached was still holding its container open. The leftover is listed "
+    "under Settings > agent > Left running, where it can be stopped."
+)
+
+# How long a workspace lease must read free before that is taken as proof the
+# agent has exited.
+#
+# The lease is recorded the instant the process is spawned, and `flock` takes it
+# a moment later, so there is a brief window where the row claims a lease that
+# nobody holds yet. A single free reading landing in that window would settle a
+# run that has not started working. Two readings this far apart cannot both, and
+# the cost of the wait is bounded: the run is already over, and its project is
+# unlocked two minutes later instead of never.
+LEASE_FREE_CONFIRM_S = 120.0
+
+# run id -> the monotonic time its lease was FIRST seen definitely free. Not
+# persisted on purpose: a portal restart should re-confirm from scratch rather
+# than trust a timestamp written by a process that is no longer here.
+_lease_free_since: dict[int, float] = {}
+
+
+def _lease_says_finished(run: "db.RunningRun") -> bool:
+    """Has this run's workspace lease read definitely free for long enough to
+    prove the agent has exited?
+
+    This is the signal that closes the one hole the scope signal cannot reach.
+    `worklock.wrap` passes `--close`, so the lease descriptor is NOT inherited
+    by anything the agent detaches - which is exactly what makes a free lease
+    mean "the agent is gone" even while a preview server it left behind holds
+    the run's scope active forever.
+
+    Three ways to answer no, and all three are load-bearing:
+
+    * **No lease recorded.** The run took none (a reflect, a compaction, a
+      one-off) and its workspace would read free the whole time it ran.
+    * **Busy.** The agent is alive and working. This is the normal answer.
+    * **`None` - could not ask.** A workspace that has been deleted, a
+      filesystem with no BSD locks. Unknown is not free; inventing "free" here
+      unlocks a workspace on a failed probe, which is the original defect.
+    """
+    if not run.lock_dir:
+        return False
+    if worklock.is_busy(Path(run.lock_dir)) is not False:
+        # Busy or unknowable: any earlier free reading is void, and a later one
+        # has to start its confirmation window over.
+        _lease_free_since.pop(run.run_id, None)
+        return False
+    first_seen = _lease_free_since.setdefault(run.run_id, time.monotonic())
+    return time.monotonic() - first_seen >= LEASE_FREE_CONFIRM_S
+
 
 def _reap_adopted() -> None:
     """Settle 'running' rows this process does not own once their scope is gone.
@@ -548,14 +691,108 @@ def _reap_adopted() -> None:
     exactly like orphans. Their scope also dies a few seconds before their row
     settles, in the window where the report is being parsed and journaled, which
     is precisely when this would have marked a healthy reflect as an error.
+
+    **Two completion signals, because the first one can be held open forever.**
+    The scope dying is the ordinary one. It fails in exactly one case, and that
+    case is routine here: the agent detaches a preview server on its way out, the
+    server keeps the scope active, and this run is never settled. The row stays
+    'running', so `running_project_ids()` lists the project forever and it can
+    never get another run - with nothing in the UI to say why. Worse, the stray
+    sweep cannot rescue it either: `_protected_scopes` reads the same 'running'
+    rows, so the leftover holding the scope open is the one thing protected from
+    being moved out of it. The two mechanisms deadlock, permanently.
+
+    The workspace lease breaks that. It is held by the agent alone and by
+    nothing it spawns, so a definitely-free lease proves the agent has exited
+    whatever its scope says. Settling the row here also releases the deadlock's
+    other half: the unit stops being protected, and the next sweep rehouses the
+    leftover rather than killing it.
     """
-    for run_id, project_id, unit in db.running_runs_with_scopes():
-        if run_id in _inflight or not unit or runlimit.minted_here(unit):
+    global _last_stray_sweep
+    seen: set[int] = set()
+    for run in db.running_run_handles():
+        seen.add(run.run_id)
+        if (
+            run.run_id in _inflight
+            or not run.scope_unit
+            or runlimit.minted_here(run.scope_unit)
+        ):
             continue
-        if runlimit.scope_is_active(unit) is not False:
-            continue
-        log.info("Adopted run %s has ended (scope %s is gone)", run_id, unit)
-        db.finish_run(run_id, "error", summary=ADOPTED_SUMMARY)
+        if runlimit.scope_is_active(run.scope_unit) is False:
+            log.info(
+                "Adopted run %s has ended (scope %s is gone)", run.run_id, run.scope_unit
+            )
+            db.finish_run(run.run_id, "error", summary=ADOPTED_SUMMARY)
+        elif _lease_says_finished(run):
+            log.warning(
+                "Adopted run %s has ended but left something running: %s is still "
+                "active with the workspace lease on %s already released",
+                run.run_id, run.scope_unit, run.lock_dir,
+            )
+            db.finish_run(run.run_id, "error", summary=STRANDED_SUMMARY)
+            # Now that the row is settled the scope is no longer protected, so
+            # the leftover can finally be moved out of it. Sweep on the next
+            # tick rather than up to ten minutes from now: we have just proved
+            # there is something in there to rehouse.
+            _last_stray_sweep = None
+    # Runs that settled by some other route (a cancel, a finished supervisor)
+    # must not leave a confirmation window behind for a future run to inherit -
+    # run ids are not reused, but a leaked entry per run is still a leak.
+    for stale in [run_id for run_id in _lease_free_since if run_id not in seen]:
+        _lease_free_since.pop(stale, None)
+
+
+# A stray sweep is not urgent and is not free - it shells out to systemd once
+# per scope - so it runs on its own slow timer rather than every tick. The
+# end-of-run sweep in `agent_runner.run_claude` is what actually keeps scopes
+# clean; this exists for the two cases that path cannot reach: scopes left by an
+# earlier portal process (including everything already leaked before this code
+# shipped), and runs adopted across a restart, where the process that must sweep
+# is not the one that spawned the agent.
+STRAY_SWEEP_INTERVAL_S = 600
+_last_stray_sweep: Optional[float] = None
+
+
+def _protected_scopes() -> set[str]:
+    """Scope units a sweep must not touch, from both sources on purpose.
+
+    The database half covers runs this process did not start. `known_scopes`
+    covers the window between spawning a run and recording its scope name, where
+    the database half alone would call a live run finished and move its agent
+    out of the cgroup containing it. Over-inclusive by design: a scope wrongly
+    protected is swept ten minutes later, a scope wrongly swept is a live run
+    losing its memory cap.
+    """
+    protected = set(runlimit.known_scopes())
+    for run in db.running_run_handles():
+        if run.scope_unit:
+            protected.add(run.scope_unit)
+    return protected
+
+
+async def _sweep_strays() -> None:
+    """Move helpers left behind by finished runs into scopes of their own.
+
+    Off the event loop: the sweep is several `systemctl` calls per scope, and
+    the tick has a whole board to get through. Never allowed to raise - a
+    housekeeping job that can stop the worker is worse than the leak.
+    """
+    global _last_stray_sweep
+    now = time.monotonic()
+    if _last_stray_sweep is not None and now - _last_stray_sweep < STRAY_SWEEP_INTERVAL_S:
+        return
+    _last_stray_sweep = now
+    try:
+        evictions = await asyncio.to_thread(strays.sweep, _protected_scopes())
+    except Exception:
+        log.exception("Stray sweep failed")
+        return
+    for ev in evictions:
+        if ev.moved:
+            log.info(
+                "Rehoused %s process(es) from %s into %s",
+                len(ev.moved), ev.unit, ev.stray_unit,
+            )
 
 
 def spawn_run(project: db.sqlite3.Row, task: str) -> int:
@@ -687,6 +924,18 @@ def _guard_settings(run_id: int, project: Optional[db.sqlite3.Row]) -> Optional[
         return None
 
 
+def _mcp_config(run_id: int, project: db.sqlite3.Row, task: str) -> Optional[str]:
+    """The `--mcp-config` that lets this run ask a question mid-flight.
+
+    Wrapped the same way `_guard_settings` is: an MCP server the CLI cannot
+    start is a warning in a log, never a reason a project stops getting runs."""
+    try:
+        return portalmcp.begin(run_id, int(project["id"]), task)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not build the MCP config for run %s", run_id)
+        return None
+
+
 async def run_project_task(
     project: db.sqlite3.Row,
     task: str,
@@ -724,12 +973,14 @@ async def run_project_task(
             on_event=_live_logger(run_id), run_id=run_id,
             json_schema=report_schema.schema_json(),
             settings_json=_guard_settings(run_id, project),
+            mcp_config=_mcp_config(run_id, project, task),
             # One agent per workspace, enforced by the kernel rather than by the
             # runs table. See app/worklock.py.
             lock_dir=workspace,
         )
     finally:
         hookguard.end(run_id)
+        portalmcp.end(run_id)
 
     if result.lock_conflict:
         # Nothing ran, so there is nothing to salvage and nothing to warn about:
@@ -737,11 +988,19 @@ async def run_project_task(
         # warning would point at the *other* agent's live edits and send the next
         # run to tidy up work that is still being written.
         log.warning("Run %s refused: %s is leased by another agent", run_id, project["slug"])
-        db.finish_run(run_id, "error", summary=worklock.refused_note(project["slug"]))
-        db.add_journal(project["id"], "system", "status", worklock.refused_note(project["slug"]))
+        note = worklock.refused_note(worklock.workspace_resource(project["slug"]))
+        db.finish_run(run_id, "error", summary=note)
+        db.add_journal(project["id"], "system", "status", note)
         return
 
+    # Where the workspace repo ended up, recorded before any of the branches
+    # below can return. A run that timed out, was canceled or errored may still
+    # have committed something first - those are exactly the runs whose work
+    # Wes is most likely to want undone - so this cannot live on the happy path.
+    _record_workspace_heads(project, run_id, ws_head_before)
+
     _note_memory_kill(project, task, result)
+    await _note_quota_wall(project, task, result)
 
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Canceled from the portal.")
@@ -750,7 +1009,9 @@ async def run_project_task(
         return
 
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff()
+        until, why = await _rate_limit_backoff(
+            result.retries.quota if result.retries else None
+        )
         db.finish_run(
             run_id, "error", result.session_id, result.cost_usd, result.num_turns,
             f"Rate limited; backing off until {until.isoformat(timespec='minutes')} ({why})",
@@ -784,7 +1045,13 @@ async def run_project_task(
 
     db.finish_run(run_id, "ok", result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
     _apply_report(project, result, run_id, task=task)
-    await _maybe_self_review(project, result, task, ws_head_before)
+    _note_unreadable_report(project, result, task)
+    # Before the critic, not after: the self-review asks "is this ready for Wes
+    # to look at", and that question is already answered when a note he wrote
+    # mid-run is still waiting to be read. Running it anyway would spend a model
+    # call to decide a shelf this project is not going to be on either way.
+    if not await _rerun_for_unseen_notes(project):
+        await _maybe_self_review(project, result, task, ws_head_before)
     _note_missing_proof(project, result, task, ws_head_before)
 
     if src_head_before is not None:
@@ -802,12 +1069,32 @@ async def run_project_task(
 # wall-clock time, and for that job 400 is as good a tripwire as 100.
 DEFAULT_MAX_TURNS = 400
 
+# The memory jobs (the daily reflect and the learnings compaction) get their own
+# ceiling because they are a different shape of work: one agent, one directory,
+# a handful of files it rewrites whole. It was hardcoded at 30 from when those
+# files were a few kilobytes, and on 2026-08-07 both jobs hit it on the same day
+# - the reflect part-way through profile.md, the compaction part-way through a
+# 59 KB learnings.md - each burning about $5 of allowance to finish nothing. The
+# files grow; a ceiling sized against their old size does not. 120 is roughly
+# five times the largest run either job has ever needed (24 turns), and the
+# 30-minute timeout remains the real backstop.
+DEFAULT_MEMORY_MAX_TURNS = 120
+
 
 def run_max_turns() -> int:
     try:
         return max(1, int(db.get_setting("run_max_turns") or DEFAULT_MAX_TURNS))
     except ValueError:
         return DEFAULT_MAX_TURNS
+
+
+def memory_max_turns() -> int:
+    try:
+        return max(
+            1, int(db.get_setting("memory_max_turns") or DEFAULT_MEMORY_MAX_TURNS)
+        )
+    except ValueError:
+        return DEFAULT_MEMORY_MAX_TURNS
 
 
 def _failure_detail(result: agent_runner.RunResult, max_turns: int) -> str:
@@ -824,7 +1111,7 @@ def _failure_detail(result: agent_runner.RunResult, max_turns: int) -> str:
             f"this keeps happening, raise `run_max_turns` on the settings page."
         )
     if result.oom_killed:
-        return runlimit.kill_note()
+        return runlimit.kill_note(peak=result.peak_memory_bytes)
     if result.subtype:
         return f"the CLI reported `{result.subtype}` with no message"
     return "(no output)"
@@ -853,7 +1140,41 @@ def _note_memory_kill(
     )
     db.add_journal(
         project["id"], "system", "status",
-        f"Run ({task}): {runlimit.kill_note()}{peak}",
+        f"Run ({task}): {runlimit.kill_note(peak=result.peak_memory_bytes)}{peak}",
+    )
+
+
+async def _note_quota_wall(
+    project: Optional[db.sqlite3.Row],
+    task: str,
+    result: agent_runner.RunResult,
+) -> None:
+    """Back off when a run met the usage limit and got through it anyway.
+
+    Deliberately on every path *except* the rate-limited one, which does its own
+    backing off and would otherwise do it twice. The case this exists for is the
+    run that succeeds: the CLI retries internally, so a run can sit against a
+    quota wall for ten minutes, get through on the far side of it, and finish
+    green. Nothing about that run's *outcome* records that the wall was there,
+    so today the scheduler launches the next one straight into it - and the one
+    after that - learning only from the bodies.
+
+    The reset time decides. It arrived on the 429's own headers, so if it is
+    still in the future the window is still shut and the next spawn is wasted;
+    if it has passed, the wall is what the run already climbed and there is
+    nothing to wait for. Only the first case holds anything back.
+    """
+    quota = result.retries.quota if result.retries else None
+    if result.is_rate_limited or quota is None:
+        return
+    if not quota.resets_at or quota.resets_at <= datetime.now(timezone.utc):
+        return
+    until, why = await _rate_limit_backoff(quota)
+    db.add_journal(
+        project["id"] if project is not None else None, "system", "status",
+        f"Run ({task}) hit a usage limit mid-run and retried through it "
+        f"({why}); holding new runs until {until.isoformat(timespec='seconds')} "
+        "rather than sending the next one into the same wall.",
     )
 
 
@@ -871,6 +1192,57 @@ def _note_orphaned_work(project: db.sqlite3.Row, task: str, how: str) -> None:
         return
     if note:
         db.add_journal(project["id"], "system", "status", note)
+
+
+def _record_workspace_heads(
+    project: db.sqlite3.Row, run_id: int, head_before: Optional[str]
+) -> None:
+    """Persist the repo's HEAD either side of the run, so app/revert.py can name
+    and undo exactly what this run committed.
+
+    Bare-excepted for the same reason as the proof check: this is bookkeeping
+    for a button, and a git call that fails must never turn a good run into a
+    recorded error. The cost of missing it is one run without an undo button.
+    """
+    try:
+        head_after = proof.head_sha(orphans.repo_for(project["slug"]))
+        if head_before == head_after:
+            return  # committed nothing; leave both NULL rather than store a no-op
+        db.set_run_workspace_heads(run_id, head_before, head_after)
+    except Exception:  # noqa: BLE001 - see docstring
+        log.exception("Recording workspace heads failed for run %s", run_id)
+
+
+def _note_unreadable_report(
+    project: db.sqlite3.Row,
+    result: agent_runner.RunResult,
+    task: str,
+) -> None:
+    """Say so when the CLI could not parse a run's StructuredOutput call.
+
+    A run that loses its report otherwise looks like an ordinary success: the
+    work is committed, the run row says `ok`, and only the blank-looking
+    journal entry hints that anything went wrong. That is the silent failure
+    this portal keeps promising not to have, so it gets its own line whether
+    the report was rescued or lost outright."""
+    if not result.report_unreadable:
+        return
+    if result.report is not None:
+        note = (
+            f"Run ({task}): the Claude CLI could not parse this run's report, so "
+            "the portal read it back out of the raw tool call instead. The entry "
+            "above is that recovered report and may be missing its later fields."
+        )
+    else:
+        note = (
+            f"Run ({task}): the Claude CLI could not parse this run's report and "
+            "none of it could be recovered, so its summary, journal entry and any "
+            "todo or stage changes are lost. The work itself is committed."
+        )
+    try:
+        db.add_journal(project["id"], "system", "status", note)
+    except Exception:  # noqa: BLE001 - a diagnostic must never fail a finished run
+        log.exception("Could not journal an unreadable report on %s", project["slug"])
 
 
 def _note_missing_proof(
@@ -899,6 +1271,67 @@ def _note_missing_proof(
         db.add_journal(project["id"], "system", "status", proof.missing_proof_note(files))
     except Exception:  # noqa: BLE001 - see docstring
         log.exception("Proof-shot check failed for %s", project["slug"])
+
+
+async def _rerun_for_unseen_notes(project: db.sqlite3.Row) -> bool:
+    """A note that arrived while this run was working is not a note this run
+    read - so hold the project off the review shelf and put another run on it.
+
+    Wes, 2026-08-17: *"When a project finishes running if it has queued notes
+    that haven't been seen by the model yet don't switch it to a review yet,
+    run it again with a new queued notes."*
+
+    The deferral this completes is `note_arrived`'s. Typing a note while an
+    agent is in the workspace deliberately queues nothing - two agents in one
+    workspace is the 2026-07-29 double-run - so the request is simply dropped
+    on the floor, and until now the only thing that could pick it back up was
+    the ordinary rotation, which never comes for a project the finishing run
+    has just parked in review. The note then sat unread behind a green "ready
+    for you to look at" badge, which is the last place anybody goes looking for
+    unfinished business.
+
+    "No model has seen it" is not a second copy of that idea: `notes.deliver`
+    stamps `delivered_at` at the moment the text is rendered into a prompt, so
+    the predicate here is exactly the one the edit window already uses. A note
+    the finished run *did* read is stamped and does not count.
+
+    Which shelves this acts on is `reactivate_on_note`'s rule, on purpose:
+    review and a pause both wake, and backlog/done/abandoned do not - on those
+    three a note is stored and waits for a person, and a run happening as a
+    side effect of writing one down would resurrect a project Wes had filed.
+
+    Returns True if another run was queued.
+    """
+    project_id = int(project["id"])
+    try:
+        pending = notes.pending(project_id)
+    except Exception:  # noqa: BLE001 - a bad read must not eat the run's report
+        log.exception("Could not check for unseen notes on %s", project["slug"])
+        return False
+    if not pending:
+        return False
+    fresh = db.get_project(project_id)
+    if fresh is None:
+        return False
+
+    parked = db.is_paused(fresh) or fresh["stage"] == "review"
+    if parked:
+        db.update_project(project_id, stage="active", paused=None)
+    elif fresh["stage"] not in RUNNABLE_STAGES:
+        return False
+
+    count = len(pending)
+    what = "A note" if count == 1 else f"{count} notes"
+    them = "it" if count == 1 else "them"
+    shelf = "held on **active**" if parked else "kept **active**"
+    db.add_journal(
+        project_id, "system", "status",
+        f"{what} arrived while this run was working, so no model has read {them} "
+        f"yet - {shelf} rather than surfacing for review, and queued another run "
+        f"to act on {them}.",
+    )
+    await queue_manual_run(project_id)
+    return True
 
 
 async def _maybe_self_review(
@@ -1040,6 +1473,18 @@ def _schedule_self_restart(project_id: int, new_head: str, current_run_id: Optio
     _fire_restart(project_id, new_head)
 
 
+def schedule_source_restart(project_id: int, new_head: str) -> None:
+    """Public entry to the self-update restart, for a source change the portal
+    made itself rather than one an agent committed.
+
+    Today that is exactly one caller: reverting a meta-project run's commits from
+    the run page (see main.revert_run_route). `current_run_id` is deliberately
+    None - no run is making this change, so every in-flight run counts and the
+    restart waits behind all of them.
+    """
+    _schedule_self_restart(project_id, new_head, current_run_id=None)
+
+
 def _fire_restart(project_id: int, new_head: str) -> None:
     """Actually schedule the service restart, detached (systemd-run), because
     this process is the service being restarted.
@@ -1138,7 +1583,7 @@ def _sync_skills(workspace: Path) -> None:
             if dest.exists():
                 shutil.rmtree(dest)
             shutil.copytree(src, dest)
-            _localise_skill(dest / "SKILL.md")
+            _localize_skill(dest / "SKILL.md")
         for stale in dest_root.iterdir():
             if stale.is_dir() and stale.name not in sources:
                 shutil.rmtree(stale)
@@ -1149,7 +1594,7 @@ def _sync_skills(workspace: Path) -> None:
     _exclude_from_git(workspace, ".claude/")
 
 
-def _localise_skill(skill_md: Path) -> None:
+def _localize_skill(skill_md: Path) -> None:
     """Fill this installation's host and owner into a skill as it is shipped.
 
     A skill is only useful if it can say where things actually are - "the
@@ -1172,7 +1617,7 @@ def _localise_skill(skill_md: Path) -> None:
         try:
             skill_md.write_text(filled, encoding="utf-8")
         except OSError as exc:  # pragma: no cover - unwritable fresh copy
-            log.warning("could not localise %s: %s", skill_md, exc)
+            log.warning("could not localize %s: %s", skill_md, exc)
 
 
 def _exclude_from_git(workspace: Path, pattern: str) -> None:
@@ -1295,12 +1740,21 @@ def _apply_report(
         updates["kind"] = kind
 
     # Title and description are the two fields Wes may be holding a pen over
-    # himself, so each has its own lock. A locked field is dropped silently
-    # rather than journalled: an agent proposing a title every run would
-    # otherwise fill the journal with rejections.
+    # himself, so each has its own lock.
+    #
+    # A locked title is not a gag. Wes, 2026-07-29: "if a title is defined, do
+    # not change it. If you want to suggest alternative titles, feel free to,
+    # but do not change a title that the user set themselves." So the proposal
+    # is parked on the project page as a one-click offer instead of being
+    # dropped - and `db.propose_title` throws away the re-proposals (same as the
+    # current title, same as the one he already turned down) so the offer stays
+    # rare enough to be worth reading. Still not journalled: the suggestion is a
+    # live offer, not an event.
     title = report.get("title")
     if title and not project["title_locked"]:
         updates["title"] = title
+    elif title:
+        db.propose_title(project, title)
 
     # Descriptions are meant to drift. What Wes typed at the start is the idea;
     # the description is what the project has actually turned into, and after a
@@ -1694,6 +2148,52 @@ async def reactivate_on_note(project: db.sqlite3.Row) -> bool:
     return True
 
 
+# The shelves a run belongs on. Backlog means "no model yet" (his words), and
+# done/abandoned are finished - on those three, a run happens only because
+# somebody explicitly asked for one, never as a side effect of writing a note.
+RUNNABLE_STAGES = {"active", "review"}
+
+
+def can_run_now(project: db.sqlite3.Row) -> bool:
+    """Would a run queued this second actually start on this project?
+
+    Only the two things that genuinely stop a manual run: the shelf the project
+    is on, and whether an agent is already in its workspace. Manual runs bypass
+    the daily cap, quiet hours, the saturation gap and the crash-loop hold by
+    design (`_pick_project`, `_start_one`), so consulting those here would
+    answer a different, more pessimistic question than the one asked.
+
+    Paused counts as runnable: a pause lives beside the stage rather than
+    replacing it, and a note on a parked project has always woken it up.
+    """
+    if str(project["stage"]) not in RUNNABLE_STAGES:
+        return False
+    if db.is_project_running(int(project["id"])):
+        return False
+    return not workspace_leased(str(project["slug"]))
+
+
+async def note_arrived(project: db.sqlite3.Row) -> bool:
+    """The plain green "add note" button: store the note, then put an agent on
+    it if one could start right now.
+
+    Wes, 2026-08-10: "Make the 'Add note' button automatically run now if the
+    project can be run now." Writing a note IS the request - the separate
+    press for it was a second door onto the same room. It is deliberately NOT
+    a build approval (unlike "add & run now", which is Wes putting the project
+    on the working shelf): a gated project gets a planning pass, and opening
+    the gate stays its own click.
+
+    Returns True if a run was queued.
+    """
+    if await reactivate_on_note(project):
+        return True
+    if not can_run_now(project):
+        return False
+    await queue_manual_run(int(project["id"]))
+    return True
+
+
 CANCEL_RESULTS = {"cancelled", "orphaned", "not_running", "missing"}
 
 
@@ -1787,6 +2287,20 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
     ws.mkdir(parents=True, exist_ok=True)
     _sync_skills(ws)
 
+    # Before the messages are spent, and that ordering is the whole point of
+    # checking here rather than only reading `result.lock_conflict` below.
+    # `mark_oneoff_delivered` is one-way - there is no undeliver - so a refusal
+    # discovered after it would burn the person's message on a run that never
+    # read it. Left pending, the messages are picked up by whichever agent is
+    # holding the workspace when it finishes: its own `_continue_if_messages_
+    # waiting` is what re-spawns. Deliberately no re-spawn from here, which
+    # would be a tight loop against a lease that is still held.
+    if worklock.is_busy(ws) is True:
+        note = worklock.refused_note(worklock.oneoff_resource(task_id))
+        log.warning("One-off run %s refused: task %s workspace is leased", run_id, task_id)
+        db.finish_run(run_id, "error", summary=note)
+        return
+
     pending = db.pending_oneoff_messages(task_id)
     prompt = oneoff.build_prompt(task, pending)
     # Spent the moment they are in a prompt, exactly like project notes: from
@@ -1799,9 +2313,31 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
             prompt, ws, model, timeout_min, max_turns=max_turns,
             on_event=_live_logger(run_id), run_id=run_id, resume_session=resume,
             settings_json=_guard_settings(run_id, None),
+            # One agent per task workspace. `db.oneoff_running` is a SELECT on
+            # runs.status, which is the derived answer this module exists to
+            # stop trusting alone; and two agents resuming one CLI session fork
+            # the conversation as well as the checkout.
+            lock_dir=ws,
         )
     finally:
         hookguard.end(run_id)
+
+    if result.lock_conflict:
+        # The backstop for the pre-flight above, for the window between the two.
+        # The messages are already marked delivered by this point and cannot be
+        # un-marked, so this says plainly that they need sending again rather
+        # than leaving somebody waiting on an agent that never read them.
+        db.finish_run(
+            run_id, "error", summary=worklock.refused_note(worklock.oneoff_resource(task_id))
+        )
+        db.add_oneoff_message(
+            task_id, "system",
+            "Another agent is still working in this task's workspace, so this run "
+            "stopped without reading your message rather than putting two agents in "
+            "one directory. Send it again once the other run has finished.",
+            run_id=run_id,
+        )
+        return
 
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Canceled from the portal.")
@@ -1809,7 +2345,9 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
         return
 
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff()
+        until, why = await _rate_limit_backoff(
+            result.retries.quota if result.retries else None
+        )
         db.finish_run(
             run_id, "error", result.session_id, result.cost_usd, result.num_turns,
             f"Rate limited; backing off until {until.isoformat(timespec='minutes')} ({why})",
@@ -1935,6 +2473,11 @@ async def _maybe_reflect() -> None:
     # for a genuinely quiet moment rather than running alongside a build.
     if db.is_run_running() or REFLECT_SLOT in _inflight:
         return
+    # The slot above dies with the portal process; the lease does not. A reflect
+    # adopted across a restart is invisible to `_inflight` and would otherwise
+    # get a second agent rewriting profile.md beside it.
+    if memory_leased():
+        return
     # Reflect once per portal day, and only once the day has actually turned
     # over - the reflect summarizes the day that just ended, so it runs just
     # after the boundary rather than just before it.
@@ -1948,6 +2491,32 @@ async def _maybe_reflect() -> None:
     # can take as long as any other run. It holds a slot under a fixed key,
     # since its real run id only exists once the coroutine starts.
     _inflight[REFLECT_SLOT] = asyncio.create_task(run_reflect())
+
+
+def _memory_failure_note(
+    result: agent_runner.RunResult, job: str, max_turns: int
+) -> str:
+    """Why a memory run stopped without finishing, in one line fit for the journal.
+
+    Both memory jobs rewrite Wes's files in place, so a run killed part-way
+    through leaves a half-made edit on disk. Saying which failure it was is the
+    difference between "restore the revision" and "leave it alone".
+    """
+    if result.hit_max_turns:
+        return (
+            f"The {job} hit the {max_turns}-turn ceiling and was stopped mid-work. "
+            f"Whatever it had already written is on disk, and the version from "
+            f"before it ran is on /memory under revisions. If this keeps "
+            f"happening, raise `memory_max_turns` on the settings page."
+        )
+    if result.oom_killed:
+        return f"The {job} was killed for memory. {runlimit.kill_note(peak=result.peak_memory_bytes)}"
+    detail = (result.result_text or "").strip()
+    if detail:
+        return f"The {job} failed before it finished: {detail[:300]}"
+    if result.subtype:
+        return f"The {job} failed before it finished; the CLI reported `{result.subtype}` with no message."
+    return f"The {job} failed before it finished, with no message from the CLI."
 
 
 async def run_reflect() -> None:
@@ -1971,20 +2540,36 @@ async def run_reflect() -> None:
     except Exception:  # noqa: BLE001 - a failed backup must not stop the run
         log.exception("Could not snapshot profile.md before the reflect")
 
+    before_profile = _profile_size()
     run_id = db.create_run(None, "reflect", model)
     prompt = agent_runner.build_prompt("reflect", None)
     log.info("Running daily reflect (run_id=%s)", run_id)
+    max_turns = memory_max_turns()
     result = await agent_runner.run_claude(
-        prompt, cwd, model, timeout_min, max_turns=30, on_event=_live_logger(run_id),
+        prompt, cwd, model, timeout_min, max_turns=max_turns,
+        on_event=_live_logger(run_id),
         run_id=run_id, json_schema=report_schema.schema_json(),
+        # One agent in the memory directory, enforced by the kernel. The
+        # compaction leases the same path - see worklock's module docstring.
+        lock_dir=cwd,
     )
+
+    if result.lock_conflict:
+        # Deliberately without stamping `last_reflect_date`: nothing ran, so the
+        # day has not been reflected on and the next quiet tick should try again.
+        note = worklock.refused_note(worklock.MEMORY_RESOURCE)
+        db.finish_run(run_id, "error", summary=note)
+        db.add_journal(None, "system", "status", note)
+        return
 
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Reflect canceled from the portal.")
         return
 
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff()
+        until, why = await _rate_limit_backoff(
+            result.retries.quota if result.retries else None
+        )
         db.finish_run(run_id, "error", summary=f"Rate limited during reflect; back at {until.isoformat(timespec='minutes')} ({why})")
         return
 
@@ -1993,17 +2578,78 @@ async def run_reflect() -> None:
         db.add_journal(None, "system", "status", "Daily reflect timed out.")
         return
 
-    status = "ok" if result.ok else "error"
-    db.finish_run(run_id, status, result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
+    if not result.ok:
+        # A catch-all, deliberately guarding on `ok` rather than naming another
+        # failure mode: every specific guard above returns, and anything that
+        # reaches here used to fall straight through to the success path and
+        # journal "Daily reflect ran" over a run that had been killed. That is
+        # what happened on 2026-08-07 - run 892 died at the turn ceiling and the
+        # journal recorded a clean reflect of a profile.md it had only half
+        # rewritten. Enumerating failures leaves the next new one silent; asking
+        # whether the run succeeded does not.
+        note = _memory_failure_note(result, "daily reflect", max_turns)
+        db.finish_run(
+            run_id, "error", result.session_id, result.cost_usd,
+            result.num_turns, note,
+        )
+        db.add_journal(None, "system", "status", note)
+        # Stamped even though it failed, for the reason the compaction gives at
+        # its own kick point: this is a real agent run that spends allowance, and
+        # a reflect that ran out of turns will run out of them again on the same
+        # input. At most one attempt a day. The transient failures above
+        # (rate limit, lock conflict, cancel) deliberately do not stamp.
+        db.set_setting("last_reflect_date", daycycle.current_day())
+        return
+
+    db.finish_run(run_id, "ok", result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
     db.set_setting("last_reflect_date", daycycle.current_day())
 
-    summary = "profile.md reviewed and updated."
+    # Measured off disk rather than taken from the report, for the reason the
+    # compaction path states: the agent describing its own edit is the one
+    # source that cannot be checked, and this file is 31% of every prompt.
+    after_profile = _profile_size()
+    summary = (
+        f"profile.md reviewed and updated: {before_profile[1]} -> {after_profile[1]} "
+        f"chars (cap {profile_cap_bytes() // 1024} KB)."
+        if profile_cap_bytes() else
+        f"profile.md reviewed and updated: {before_profile[1]} -> {after_profile[1]} chars."
+    )
+    if profile_over_cap():
+        summary += (
+            " Still over its cap - it is pasted whole into every run's prompt, so the "
+            "next reflect is told again, and a prompt drops whole sections off the "
+            "bottom past twice the cap."
+        )
     if result.report:
         suggestion = result.report.get("suggestion")
         if suggestion and suggestion.get("title"):
             db.add_suggestion(suggestion["title"], suggestion.get("description", ""))
             summary += f" New suggestion: {suggestion['title']}."
     db.add_journal(None, "system", "reflect", f"Daily reflect ran. {summary}")
+
+
+def _profile_size() -> tuple[int, int]:
+    try:
+        text = config.PROFILE_MD.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return (0, 0)
+    return (len(text.splitlines()), len(text))
+
+
+def profile_cap_bytes() -> int:
+    """The size profile.md is meant to stay under. 0 disables it.
+
+    Unlike learnings.md this has no compaction job of its own: the daily reflect
+    already rewrites the whole file every day, so the cap is enforced by telling
+    that run about it (`agent_runner._profile_target_section`). One knob, one
+    mechanism, no second agent run to pay for.
+    """
+    return agent_runner.profile_cap_bytes()
+
+
+def profile_over_cap() -> bool:
+    cap = profile_cap_bytes()
+    return cap > 0 and _profile_size()[1] > cap
 
 
 # --------------------------------------------------------------------------
@@ -2022,7 +2668,7 @@ def start_compaction() -> bool:
     """Kick off a learnings-compaction run now. False if one is already going.
 
     Pressed from /memory, and now also fired automatically by `_maybe_compact`
-    once the file crosses `learnings_cap_lines`. The original reason this was a
+    once the file crosses `learnings_cap_kb`. The original reason this was a
     button and not a timer - a background job silently rewriting Wes's memory is
     what lost his profile text once - is answered by `run_compaction` snapshotting
     the file into /memory revisions before the agent touches it, so nothing the
@@ -2032,22 +2678,36 @@ def start_compaction() -> bool:
     _reap_inflight()
     if compaction_running():
         return False
+    # And the half `compaction_running` cannot see: a reflect working in the
+    # same directory, or a compaction started by a portal process that has since
+    # restarted. Both leave `_inflight` empty and the directory occupied.
+    if memory_leased():
+        return False
     _inflight[COMPACT_SLOT] = asyncio.create_task(run_compaction())
     return True
 
 
-def learnings_cap() -> int:
-    """The line count past which learnings.md auto-compacts. 0 disables it."""
-    try:
-        return max(0, int(db.get_setting("learnings_cap_lines") or "200"))
-    except (TypeError, ValueError):
-        return 200
+# The cap, its target and the reach measurement live in `app.memory` - the
+# compaction prompt in agent_runner needs all three and cannot import this
+# module (worker imports agent_runner). Re-exported here because the worker is
+# where the trigger lives and every existing caller reads them from it.
+learnings_cap_kb = memory.learnings_cap_kb
+learnings_target_kb = memory.learnings_target_kb
+learnings_reach = memory.learnings_reach
 
 
 def learnings_over_cap() -> bool:
-    """True when learnings.md is past its cap and the cap is enabled."""
-    cap = learnings_cap()
-    return cap > 0 and _learnings_size()[0] > cap
+    """True when learnings.md is past its cap and the cap is enabled.
+
+    "KB" here means `len(text)` against `kb * 1024`, which for a file with any
+    non-ASCII in it is characters rather than bytes - and deliberately so,
+    because that is exactly what `agent_runner._budget_bytes` and every prompt
+    budget beside it measure. A cap has to be in the same unit as the thing it
+    protects; making this one a true byte count would silently desync it from
+    the budget it exists to keep the file inside.
+    """
+    cap = learnings_cap_kb()
+    return cap > 0 and _learnings_size()[1] > cap * 1024
 
 
 async def _maybe_compact() -> None:
@@ -2070,7 +2730,7 @@ async def _maybe_compact() -> None:
     """
     if not scheduled_work_enabled():  # see _maybe_reflect
         return
-    if learnings_cap() == 0:
+    if learnings_cap_kb() == 0:
         return
     if db.is_run_running() or compaction_running():
         return
@@ -2081,15 +2741,28 @@ async def _maybe_compact() -> None:
         return
     if not learnings_over_cap():
         return
-    lines = _learnings_size()[0]
-    log.info("learnings.md is %d lines (cap %d); auto-compacting", lines, learnings_cap())
+    kb = _learnings_size()[1] / 1024
+    reach = learnings_reach()
+    log.info(
+        "learnings.md is %.1f KB (cap %d KB); %d of %d entries never reach a prompt; "
+        "auto-compacting", kb, learnings_cap_kb(), reach.entries_out, reach.entries_total,
+    )
     db.set_setting("last_auto_compact_date", today)
+    # The journal line names the reach, not just the size, because the size on
+    # its own reads as housekeeping. "43 KB of it never reaches a prompt" is the
+    # sentence that says why this run is worth its allowance.
+    unread = (
+        f" {reach.entries_out} of its {reach.entries_total} learnings never reach a "
+        f"prompt at all."
+        if reach.entries_out
+        else ""
+    )
     db.add_journal(
         None,
         "system",
         "status",
-        f"learnings.md reached {lines} lines (cap {learnings_cap()}); auto-compacting. "
-        f"The previous version is kept under /memory revisions.",
+        f"learnings.md reached {kb:.1f} KB (cap {learnings_cap_kb()} KB); "
+        f"auto-compacting.{unread} The previous version is kept under /memory revisions.",
     )
     start_compaction()
 
@@ -2099,6 +2772,12 @@ async def run_compaction() -> None:
     timeout_min = int(db.get_setting("run_timeout_min") or "30")
     cwd = config.MEMORY_DIR
     cwd.mkdir(parents=True, exist_ok=True)
+
+    # Read before the agent runs, and kept for the whole call: the success path
+    # diffs it against what the agent left to work out what was dropped, and a
+    # revision on disk is no substitute because it ages out of the 60-deep
+    # history while the archive is permanent.
+    before_text = _learnings_text()
 
     # Before, not after: the agent rewrites learnings.md in place, so this copy
     # is the only way back if it cuts something Wes wanted kept. The /memory
@@ -2112,16 +2791,34 @@ async def run_compaction() -> None:
     run_id = db.create_run(None, "compact", model)
     prompt = agent_runner.build_prompt("compact", None)
     log.info("Compacting learnings.md (run_id=%s)", run_id)
+    max_turns = memory_max_turns()
     result = await agent_runner.run_claude(
-        prompt, cwd, model, timeout_min, max_turns=30, on_event=_live_logger(run_id),
+        prompt, cwd, model, timeout_min, max_turns=max_turns,
+        on_event=_live_logger(run_id),
         run_id=run_id, json_schema=report_schema.schema_json(),
+        # The same directory the reflect leases, on purpose: both rewrite
+        # learnings.md, and one of them rewrites profile.md too.
+        lock_dir=cwd,
     )
+
+    if result.lock_conflict:
+        # `last_auto_compact_date` is deliberately left as it is. The automatic
+        # path cannot reach here - `_maybe_compact` is gated on
+        # `db.is_run_running()`, which a live reflect makes true - so a refusal
+        # means the /memory button was pressed during a reflect, and that path
+        # stamps no date to unwind.
+        note = worklock.refused_note(worklock.MEMORY_RESOURCE)
+        db.finish_run(run_id, "error", summary=note)
+        db.add_journal(None, "system", "status", note)
+        return
 
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Learnings compaction canceled from the portal.")
         return
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff()
+        until, why = await _rate_limit_backoff(
+            result.retries.quota if result.retries else None
+        )
         db.finish_run(run_id, "error", summary=f"Rate limited during compaction; back at {until.isoformat(timespec='minutes')} ({why})")
         return
     if result.timed_out:
@@ -2129,9 +2826,42 @@ async def run_compaction() -> None:
         db.add_journal(None, "system", "status", "Learnings compaction timed out.")
         return
 
-    status = "ok" if result.ok else "error"
-    db.finish_run(run_id, status, result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
+    if not result.ok:
+        # The same catch-all as the reflect, and for the same reason: run 905
+        # was killed at the turn ceiling part-way through rewriting a 59 KB
+        # learnings.md, and the journal announced "Learnings compacted" with a
+        # before/after that looked like a clean 71% cut. The sizes were real -
+        # measured off disk - which is exactly what made the line convincing.
+        # A half-finished edit reported as a finished one is worse than a loud
+        # failure, because it is the version Wes would not think to restore.
+        note = _memory_failure_note(result, "learnings compaction", max_turns)
+        after = _learnings_size()
+        db.finish_run(
+            run_id, "error", result.session_id, result.cost_usd,
+            result.num_turns, note,
+        )
+        db.add_journal(
+            None,
+            "system",
+            "status",
+            f"{note} learnings.md is {before[0]} lines / {before[1]} chars -> "
+            f"{after[0]} lines / {after[1]} chars, which may be a part-made edit.",
+        )
+        return
+
+    db.finish_run(run_id, "ok", result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
     after = _learnings_size()
+    # Only on the success path. A killed compaction leaves a part-made edit, and
+    # diffing against that would archive every line the agent had not reached
+    # yet as though it had decided to drop them - writing a fiction into the one
+    # record that is supposed to be permanent.
+    archived = memory.archive_compaction_losses(before_text, _learnings_text())
+    kept = (
+        f" {archived} dropped learning{'s' if archived != 1 else ''} went to the "
+        f"retired-learnings archive on /memory, which does not expire."
+        if archived
+        else ""
+    )
     # Measured rather than taken from the report: the number that matters is
     # what the file on disk actually weighs now, and the agent describing its
     # own edit is the one source that cannot be checked.
@@ -2141,13 +2871,17 @@ async def run_compaction() -> None:
         "reflect",
         f"Learnings compacted: {before[0]} lines / {before[1]} chars -> "
         f"{after[0]} lines / {after[1]} chars. The previous version is on /memory "
-        f"under revisions if anything useful went missing.",
+        f"under revisions if anything useful went missing.{kept}",
     )
 
 
-def _learnings_size() -> tuple[int, int]:
+def _learnings_text() -> str:
     try:
-        text = config.LEARNINGS_MD.read_text(encoding="utf-8")
+        return config.LEARNINGS_MD.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
-        return (0, 0)
+        return ""
+
+
+def _learnings_size() -> tuple[int, int]:
+    text = _learnings_text()
     return (len(text.splitlines()), len(text))

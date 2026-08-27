@@ -27,12 +27,14 @@ from app import (
     agent_runner,
     ask,
     attachments,
+    claudelogin,
     climemory,
     config,
     daycycle,
     db,
     filetree,
     fileview,
+    headroom,
     hookguard,
     jumpkeys,
     launch,
@@ -47,19 +49,28 @@ from app import (
     oneoff,
     pacing,
     people,
+    portalmcp,
     preview,
     quickreplies,
+    quiet,
     quoting,
+    revert,
+    rundiff,
     runlimit,
     runlog,
     scope,
+    sections,
     settings_form,
+    sidebar,
     site,
     spawnauth,
+    strays,
     subprojects,
     telegram_bot,
     todos,
+    transcribe,
     usage,
+    verifydepth,
     webpush,
     worker,
 )
@@ -84,8 +95,8 @@ app = FastAPI(title="Project Portal")
 # would show the wrong person's name in the masthead and there would be no
 # obvious symptom.
 #
-# So it goes where `body_classes()` and `show_priority()` already live: a
-# zero-argument Jinja global. Those can read settings, but they cannot read a
+# So it goes where `body_classes()` already lives: a zero-argument Jinja
+# global. Those can read settings, but they cannot read a
 # request - hence the ContextVar, set once per request by the middleware below
 # and read by `me()` during the render.
 _CURRENT_PERSON: contextvars.ContextVar = contextvars.ContextVar(
@@ -479,6 +490,99 @@ def active_run_snapshot() -> dict:
     }
 
 
+def side_rail(path: str = "") -> dict:
+    """What the desktop side rail shows, for whoever is reading this page.
+
+    A Jinja global rather than per-route context because the rail is in
+    base.html and therefore on every page in the portal - threading it through
+    forty route handlers would guarantee the one that forgot. It is the same
+    shape as `open_question_total` and `restart_pending_runs` beside it.
+
+    Scoped like the dashboard is (`scope.visible_ids`), because the rail
+    carries project titles: an unscoped one would announce what everybody else
+    is working on from the chrome of every page, which is exactly the leak
+    `scope.only_runs` exists to stop.
+
+    Every failure lands on an empty rail. This runs during the render of pages
+    that are already reporting something going wrong, and chrome that can 500 a
+    page is worse than no chrome.
+    """
+    try:
+        person = me()
+        mine = scope.visible_ids(person)
+        admin = scope.is_admin(person)
+        # The reader's own dashboard order, so the rail and the board rank the
+        # same projects the same way. A rail sorted differently from the page it
+        # links into is a second opinion nobody asked for.
+        #
+        # `activity` is read once and used twice: to rank these rows and, below,
+        # to draw them. Both halves have to see the same map or the rail's order
+        # and its "worked on 2h ago" would answer from different readings.
+        activity = db.last_activity_at()
+        order = db.get_setting("dashboard_sort") or config.DEFAULT_PROJECT_SORT
+        projects = [
+            p for p in db.list_projects_sorted(order, activity) if p["id"] in mine
+        ]
+        runs = sidebar.visible_runs(active_run_snapshot(), mine, admin)
+        return sidebar.build(
+            projects,
+            question_counts=db.open_question_counts(),
+            running_ids=db.running_project_ids() & mine,
+            gated_ids={p["id"] for p in projects if worker.build_gated(p)},
+            # What "recent" actually means: the last run, note or journal entry
+            # rather than the last write to the project row. One query for the
+            # whole board, because this renders on every page.
+            activity=activity,
+            runs=runs,
+            # Wes, 2026-08-16: usage against the 5-hour and weekly windows, and
+            # how close each is to resetting, on the rail. Read from the cached
+            # snapshot - `limits.cached` is one settings row and never a network
+            # call, which is the rule that lets this run on every page render.
+            usage=limits.compact_windows(),
+            path=path,
+            # The one appearance key that is not a class on <body>: what the
+            # rail lists is decided here, on the server, because the rows have
+            # to be sorted and cut before they are rendered.
+            mode=appearance().get(
+                "ui_rail_projects", config.APPEARANCE_DEFAULTS["ui_rail_projects"]
+            ),
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("Could not build the side rail; drawing none", exc_info=True)
+        return sidebar.empty()
+
+
+def nav_links(path: str = "") -> list[dict]:
+    """The portal's top-level sections, for whoever is reading this page.
+
+    One call, two places: base.html draws the tabs across the top of the
+    content AND the rail's copy of them from this list, so they can never come
+    to disagree about which section is current or which sections exist. Wes,
+    2026-08-15: "I want the dashboard, tasks, etc to show up on the nav bar on
+    the side even when in project pages."
+
+    Counts come from the same two functions the tabs have always used, so the
+    rail's badge and the tab's badge are the same number by construction rather
+    than by coincidence.
+
+    The everyone tab is the admin door into other people's boards: only the
+    owner has one, and only once there is somebody else to look at - on a
+    one-person install it would open onto the same projects the dashboard
+    already shows.
+    """
+    try:
+        person = me()
+        return sidebar.nav_rows(
+            path,
+            questions=open_question_total(),
+            tasks=open_oneoff_total(),
+            everyone=bool(person and person["is_owner"] and len(people.everyone()) > 1),
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("Could not count the nav badges; drawing bare links", exc_info=True)
+        return sidebar.nav_rows(path)
+
+
 def open_question_total() -> int:
     """Nav badge count. A global rather than a per-route context value so every
     page (including error-adjacent ones) renders the same badge.
@@ -490,13 +594,12 @@ def open_question_total() -> int:
     shows above it.
 
     Scoped to the reader's own projects, like the page it counts: a badge
-    saying 3 that opens onto a list of 1 is worse than no badge at all."""
-    shelved = db.shelved_project_ids()
-    mine = scope.visible_ids(me())
-    return len([
-        q for q in db.open_questions()
-        if q["project_id"] not in shelved and q["project_id"] in mine
-    ])
+    saying 3 that opens onto a list of 1 is worse than no badge at all.
+
+    The rule itself lives in `scope.pending_questions`, because the home-screen
+    icon's `app_badge` has to count the same thing for the same person and a
+    second copy of the filter would eventually disagree with this one."""
+    return len(scope.pending_questions(me()))
 
 
 def install_appearance() -> dict[str, str]:
@@ -555,6 +658,28 @@ def body_classes() -> str:
     if theme_stock() == "light":
         classes.append("theme-stock-light")
     return " ".join(classes)
+
+
+def section_order(person=None) -> list[str]:
+    """The order the project page's movable blocks render in, for this person.
+
+    Same three tiers as `appearance()` and read out of the same blob, so
+    previewing somebody else's look also shows you their arrangement - which is
+    the point of the preview: "see what you are asking them to look at".
+
+    Always the full set of names, whatever is stored (see sections.order), so
+    the template can dispatch on it without a guard and a truncated preference
+    can never take a block off the page.
+    """
+    stored = ""
+    try:
+        if person is None:
+            stored = appearance().get(sections.SETTING_KEY, "")
+        else:
+            stored = people.appearance_of(person).get(sections.SETTING_KEY, "")
+    except Exception:  # pragma: no cover - defensive
+        log.debug("Could not read a personal section order; using the default", exc_info=True)
+    return sections.order(stored)
 
 
 def theme() -> str:
@@ -626,6 +751,66 @@ def icon_url(name: str) -> str:
     return f"{base}{sep}b={live.BOOT_ID}"
 
 
+def themed_icon_name(name: str, theme_name: str) -> str:
+    """`favicon-32.png` + `paper` -> `favicon-32-paper.png`, and `favicon.svg`
+    -> `favicon-paper.svg`.
+
+    The same rule deploy/make_icons.py names its output by, restated here
+    rather than shared because the generator imports Pillow and must never be
+    on the serving path. `tests/test_app_icons.py` pins the two against each
+    other, which is the only thing making a restatement safe.
+    """
+    stem, _, ext = name.rpartition(".")
+    return f"{stem}-{theme_name}.{ext}"
+
+
+def favicon_url(name: str) -> str:
+    """The tab icon in the reader's own theme, falling back to the shipped one.
+
+    The mark is a tile and two rings and every theme names all three colors in
+    its palette, so `deploy/make_icons.py` draws a set per theme - a paper tab
+    gets the printed blue on cream, not the CRT's on near-black. The existence
+    check is what keeps that honest in both directions: a theme added to
+    config before the generator is re-run serves the terminal mark rather than
+    a 404, and a 404 here is not a fallback but a blank tab, because a browser
+    that has been offered an icon and failed to fetch it does not go looking
+    for another one.
+
+    (The home-screen icon cannot work this way and never will: iOS reads
+    `apple-touch-icon` once, at Add-to-Home-Screen time, so it could only ever
+    freeze whatever theme was on that day. This is the half of todo #664 that
+    is actually reachable.)
+    """
+    return favicon_url_for(theme(), name)
+
+
+def favicon_url_for(theme_name: str, name: str = "favicon-32.png") -> str:
+    """`favicon_url` for a named theme rather than for the reader's own."""
+    themed = themed_icon_name(name, theme_name)
+    if (config.BASE_DIR / "app" / "static" / themed).exists():
+        return icon_url(themed)
+    return icon_url(name)
+
+
+# The tab icons that follow the reader's theme, keyed the way base.html tags
+# each <link data-icon-base>. favicon.ico is not among them - see favicon_url.
+THEMED_ICONS = ("favicon-32.png", "favicon-16.png", "favicon.svg")
+
+
+def theme_favicons() -> dict[str, dict[str, str]]:
+    """theme name -> {shipped file name: that theme's URL}, for the settings
+    page's live preview.
+
+    Built server-side for the same reason the URL is: app.js must not be able
+    to compose the name of a file that is not there, and the fallback lives in
+    exactly one place.
+    """
+    return {
+        name: {icon: favicon_url_for(name, icon) for icon in THEMED_ICONS}
+        for name, _label in config.APPEARANCE_CHOICES["ui_theme"]
+    }
+
+
 def secure_url() -> str:
     """The HTTPS address of this same portal, if one is being served.
 
@@ -652,14 +837,25 @@ templates.env.globals["secure_url"] = secure_url
 templates.env.globals["todo_tags"] = db.todo_tags
 templates.env.globals["open_question_total"] = open_question_total
 templates.env.globals["open_oneoff_total"] = open_oneoff_total
+templates.env.globals["side_rail"] = side_rail
+# The point at which a Claude window stops being background information. One
+# definition, so the dashboard's limit chips and the side rail's percentages
+# turn the same color at the same moment.
+templates.env.globals["limit_hot_at"] = limits.HOT_PERCENT
+templates.env.globals["nav_links"] = nav_links
 templates.env.globals["restart_pending_runs"] = worker.restart_pending_runs
 templates.env.globals["body_classes"] = body_classes
 templates.env.globals["theme"] = theme
 templates.env.globals["theme_stock"] = theme_stock
 templates.env.globals["theme_chrome"] = theme_chrome
+templates.env.globals["section_order"] = section_order
+templates.env.globals["SECTIONS"] = sections.SECTIONS
+templates.env.globals["SECTION_SETTING"] = sections.SETTING_KEY
 templates.env.globals["looking_as"] = looking_as
 templates.env.globals["static_url"] = static_url
 templates.env.globals["icon_url"] = icon_url
+templates.env.globals["favicon_url"] = favicon_url
+templates.env.globals["theme_favicons"] = theme_favicons
 templates.env.globals["APPEARANCE_CHOICES"] = config.APPEARANCE_CHOICES
 templates.env.globals["APPEARANCE_DEFAULTS"] = config.APPEARANCE_DEFAULTS
 # The body-class prefix per appearance key, so the settings page can tell app.js
@@ -691,13 +887,9 @@ def byline(entry) -> str:
         return ""
 
 
-# A global rather than a per-route context value: priority shows up on the
-# dashboard cells, the project page control and the sub-project list, and a
-# route that forgot to pass it would leave one of those three still showing it.
-templates.env.globals["show_priority"] = db.show_priority
 templates.env.globals["jump_keys_json"] = jump_keys_json
 # Who is reading this page, and everybody who could be. Globals rather than
-# per-route context for the same reason `show_priority` is: the acting person
+# per-route context for the same reason `body_classes` is: the acting person
 # appears in the masthead of every page and in the member boxes on two more,
 # and a route that forgot to pass it would show somebody the wrong name.
 def todo_head_for(person, style: str = "for") -> str:
@@ -728,11 +920,15 @@ templates.env.globals["refile_choices"] = todos.refile_choices
 templates.env.globals["refile_value"] = todos.refile_value
 templates.env.globals["person_pronouns"] = people.pronouns_of
 templates.env.globals["byline"] = byline
-templates.env.globals["is_side_thread"] = db.is_side_thread
+# No is_side_thread global: no template asks any more. The side thread is drawn
+# as its own conversation in the ask box (db.ask_thread) rather than badged
+# where it sat in the journal, and the journal excludes it in SQL. The predicate
+# itself stays - db.SIDE_THREAD is still what both exclusions are built from.
 templates.env.globals["summary_bullet"] = db.summary_bullet
 templates.env.filters["status_badge"] = config.status_badge
 templates.env.globals["META_PROJECT_SLUG"] = config.META_PROJECT_SLUG
 templates.env.globals["MODEL_CHOICES"] = config.MODEL_CHOICES
+templates.env.globals["VERIFY_DEPTH_CHOICES"] = verifydepth.DEPTH_LABELS
 templates.env.globals["media_kind"] = attachments.media_kind
 templates.env.globals["note_pending"] = notes.is_pending
 # Question numbering rides with the Telegram bot and nothing else - see
@@ -743,6 +939,11 @@ templates.env.globals["question_numbers"] = db.telegram_enabled
 # both"). Stored at creation time on the question row, so what is shown is
 # what was offered - see quickreplies.
 templates.env.globals["question_options"] = lambda q: quickreplies.decode(q["quick_options"])
+# Whether an agent is, right now, holding still for this question's answer
+# (app/portalmcp.py). It changes what answering is worth: reply inside the next
+# minute or two and the running agent acts on it; reply later and it is read by
+# whatever run comes next. Live rather than stored, because so is the fact.
+templates.env.globals["question_waiting"] = portalmcp.waiting_run
 templates.env.globals["max_upload"] = attachments.human_size(attachments.MAX_UPLOAD_BYTES)
 templates.env.globals["max_upload_bytes"] = attachments.MAX_UPLOAD_BYTES
 templates.env.filters["filesize"] = attachments.human_size
@@ -790,6 +991,13 @@ async def on_startup() -> None:
     # The preview server shares this loop, so it starts and dies with the
     # portal and needs no unit of its own. See app/preview.py.
     _BACKGROUND_TASKS.append(asyncio.create_task(preview.serve_loop()))
+    # Voice memos uploaded before transcription existed (or while its Docker
+    # image was missing) get their text now. Serial, on its own daemon thread,
+    # off the event loop.
+    try:
+        transcribe.backfill()
+    except Exception:  # noqa: BLE001 - a transcription sweep must not stop boot
+        log.exception("Transcript backfill could not start")
     log.info("Project Portal started")
 
 
@@ -824,24 +1032,37 @@ async def on_shutdown() -> None:
 @app.get("/", response_class=HTMLResponse)
 async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     # `?sort=` both applies and sticks, so the order survives the next visit
-    # without needing a settings trip. An unknown name is ignored entirely.
-    # The menu, not the full catalog: with priority hidden, "priority, then
-    # recent" is not a sort this install offers, so a stored preference for it
-    # falls back here rather than quietly ranking by an invisible number.
-    sorts = db.project_sorts()
+    # without needing a settings trip. An unknown name is ignored entirely, and
+    # a stored preference for a sort this install no longer offers - `priority`,
+    # on any database seeded before 2026-08-16 - falls back to the default
+    # rather than reaching SQLite or ranking by nothing.
+    sorts = config.PROJECT_SORTS
     if sort in sorts:
         db.set_setting("dashboard_sort", sort)
     active_sort = sort if sort in sorts else (
-        db.get_setting("dashboard_sort") or db.default_project_sort()
+        db.get_setting("dashboard_sort") or config.DEFAULT_PROJECT_SORT
     )
     if active_sort not in sorts:
-        active_sort = db.default_project_sort()
+        active_sort = config.DEFAULT_PROJECT_SORT
     # Your board, not the install's. Wes, 2026-07-28: "I only want users to see
     # projects they are included on." He is filtered like everybody else - the
     # admin view is /everyone, deliberately a page he goes to rather than
     # anything that reaches back into this feed. See app/scope.py.
     mine = scope.visible_ids(me())
-    projects = [p for p in db.list_projects_sorted(active_sort) if p["id"] in mine]
+    # Wes, 2026-08-16: "within project statuses on the dashboard, I want to sort
+    # by most recently modified similar to how the left nav bar is done." The
+    # shelves below keep the order this list arrives in, so ranking it once here
+    # is what puts every shelf in recency order - one sort, four shelves, and no
+    # way for one of them to be left ranking by something else.
+    #
+    # `activity` is what makes "modified" mean what he means by it: a run, a
+    # note, an agent entry, a report. `projects.updated_at` alone moves only
+    # when the project's own row is written, which is why the rail was wrong
+    # about this until 2026-08-07. See `db.last_activity_at`.
+    activity = db.last_activity_at()
+    projects = [
+        p for p in db.list_projects_sorted(active_sort, activity) if p["id"] in mine
+    ]
     done = [p for p in projects if p["stage"] in config.DONE_STAGES]
     question_counts = db.open_question_counts()
 
@@ -855,10 +1076,12 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
     for p in projects:
         if p["stage"] in config.DONE_STAGES:
             continue
-        if p["id"] in running_ids:
-            shelf = "active"
-        else:
-            shelf = db.project_shelf(p, question_counts.get(p["id"], 0))
+        # `shelf_of` rather than the rule spelled out here: the side rail lists
+        # the same two shelves from the same rows, and the "a run in flight
+        # outranks the stored stage" part used to live only in this loop.
+        shelf = db.shelf_of(
+            p, question_counts.get(p["id"], 0), p["id"] in running_ids
+        )
         shelves[shelf].append(p)
     # Each shelf is re-ordered so a sub-project sits directly under the project
     # it was split out of, indented and labeled. Children stay real cards -
@@ -900,6 +1123,16 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             "worker_model": settings.get("worker_model") or config.DEFAULT_MODEL,
             "sorts": sorts,
             "active_sort": active_sort,
+            # The timestamp each card SAYS, so it agrees with the order the
+            # cards are in. Showing `updated_at` under a recency sort would put
+            # "5 days ago" at the top of the shelf above "2 hours ago" whenever
+            # the newest thing was a run or a note rather than a write to the
+            # project row - which is most of the time, and reads as the sort
+            # being broken rather than as the label answering a different
+            # question. Same value the sort ranked on; see `db.worked_on_at`.
+            "worked_on": {
+                p["id"]: db.worked_on_at(p, activity) for p in projects
+            },
             # Which cards carry the "needs your OK" badge. A set of ids rather
             # than a per-card call so the gate is evaluated once per render.
             "awaiting_approval": {
@@ -911,17 +1144,32 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
 
 @app.post("/ideas")
 async def create_idea(
+    request: Request,
     title: str = Form(""), idea: str = Form(...), then: str = Form("")
 ) -> RedirectResponse:
     """Two buttons on the idea form (Wes's ask): plain "add idea" parks it in
     the backlog and no model ever sees it until he says so; "add and start
     planning" makes it active (still unapproved for code) and puts an agent on
     it right now."""
+    # A title Wes typed in the box is his, and locks. One he left blank is cut
+    # from the first line of the idea, which is a placeholder rather than a
+    # name, so that one stays open for an agent to improve. Wes, 2026-07-29:
+    # "if a title is defined, do not change it. If you want to suggest
+    # alternative titles, feel free to, but do not change a title that the user
+    # set themselves." (Suggesting still works - see db.propose_title.)
+    typed = bool(title.strip())
     title = title.strip() or idea.strip().split("\n", 1)[0][:80] or "Untitled idea"
     stage = "active" if then == "plan" else "backlog"
-    project = db.create_project(title=title, description=idea.strip(), kind="unknown", stage=stage)
+    # The project belongs to whoever is filling in the form - Karli's idea goes
+    # on Karli's board, not the owner's (Wes, 2026-08-06). create_project only
+    # falls back to the owner when nobody can be resolved at all.
+    person_id = _person_id(request)
+    project = db.create_project(
+        title=title, description=idea.strip(), kind="unknown", stage=stage,
+        title_locked=1 if typed else 0, person_id=person_id,
+    )
     if idea.strip():
-        db.add_journal(project["id"], "user", "note", idea.strip())
+        db.add_journal(project["id"], "user", "note", idea.strip(), person_id=person_id)
     if then == "plan":
         await worker.queue_manual_run(project["id"])
     return RedirectResponse(url=f"/project/{project['slug']}", status_code=303)
@@ -941,7 +1189,14 @@ def _get_project_or_404(slug: str) -> db.sqlite3.Row:
 @app.get("/project/{slug}", response_class=HTMLResponse)
 async def project_page(request: Request, slug: str) -> HTMLResponse:
     project = _get_project_or_404(slug)
-    journal = db.list_journal(project["id"], limit=200)
+    # The ask side thread is drawn in the ask box at the top of the page rather
+    # than in this feed. Wes, 2026-08-16: "I also want the questions to be asked
+    # and answered all up at the 'Ask' area instead of in line in the journal."
+    # Excluded in SQL, so a chatty thread does not eat slots in the 200 entries
+    # of journal this page shows.
+    journal = db.list_journal(project["id"], limit=200, exclude=db.SIDE_THREAD)
+    ask_rows = db.ask_thread(project["id"])
+    ask_pending = ask.pending(project["id"])
     questions = db.open_questions(project["id"])
     runs = db.list_runs(project["id"])
     # Only the workspace root is read here; folders are fetched from /tree as
@@ -979,16 +1234,26 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "console_run_id": console_run_id,
             "console_text": runlog.tail(console_run_id, 200) if console_run_id else "",
             "runs_today": db.count_runs_today(project["id"]),
+            # What the runs/day control is actually enforcing right now: the
+            # project's own number, or the board default it inherits, or 0 for
+            # no cap. The control shows the choice; this shows its effect.
+            "project_cap": worker.effective_project_cap(project),
+            "default_project_cap": db.default_project_max_runs(),
             "usage": usage_snapshot(),
             "attachments": db.list_attachments(project["id"]),
             "journal_attachments": db.attachments_by_journal(project["id"]),
             "ssh_command": config.ssh_command(slug),
             "build_gated": worker.build_gated(project),
+            # Whether the green "add note" button will start a run on its own,
+            # which is also what decides if "add & run now" is worth rendering.
+            "note_runs_now": worker.can_run_now(project),
             "research_queued": db.is_research_queued(project),
             # The model a burst would actually use, setting override included.
             "research_model": agent_runner.resolve_model(None, "research"),
             "spending_down": pacing.spending_down(),
-            "ask_pending": ask.pending(project["id"]),
+            "ask_pending": ask_pending,
+            "ask_thread": ask_rows,
+            "ask_open": ask.opens(ask_rows, ask_pending),
             "agent_todos": db.visible_todos(project["id"], owner="agent"),
             "user_todos": db.visible_todos(project["id"], owner="user"),
             # The same grouping the run prompt uses, so the page and the agent
@@ -1004,6 +1269,7 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "hidden_done_todos": db.count_hidden_done_todos(project["id"]),
             "clearable_todos": db.count_clearable_todos(project["id"]),
             "suggested_slug": db.suggested_slug(project),
+            "title_suggestion": db.title_suggestion(project),
             "unacked_work": db.unacknowledged_work(project["id"]),
             "heatmap": usage.heatmap(project_id=project["id"]),
             "preview_link": preview.link_for(
@@ -1021,14 +1287,22 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
 
 @app.post("/project/{slug}/run-cap")
 async def update_run_cap(slug: str, max_runs_per_day: str = Form("")) -> RedirectResponse:
-    """Per-project daily run cap. Empty or 0 means "no project-specific cap"."""
+    """Per-project daily run cap.
+
+    Empty means "inherit the board-wide default"; 0 means "no cap on this
+    project at all". They used to be the same thing - 0 was folded to NULL -
+    which left no way to say "let this one project run as much as it likes",
+    and that is exactly what Wes asked for on 2026-08-13 ("I don't see where I
+    can increase daily limits on runs of single projects"). See
+    worker.effective_project_cap.
+    """
     project = _get_project_or_404(slug)
     raw = max_runs_per_day.strip()
     if not raw:
         cap: Optional[int] = None
     else:
         try:
-            cap = max(0, int(raw)) or None
+            cap = max(0, int(raw))
         except ValueError:
             raise HTTPException(status_code=400, detail="Run cap must be a number")
     db.update_project(project["id"], max_runs_per_day=cap)
@@ -1081,6 +1355,8 @@ async def update_details(
     title = title.strip()
     if title:
         updates["title"] = title
+        if not db.same_title(title, project["title"]):
+            db.reject_title_suggestion(project)
 
     target = db.slugify(new_slug.strip()) if new_slug.strip() else slug
     renamed = target != slug
@@ -1119,8 +1395,30 @@ async def rename_project(slug: str, title: str = Form("")) -> RedirectResponse:
     if not title or title == project["title"]:
         return RedirectResponse(url=f"/project/{slug}", status_code=303)
     was = project["title"]
+    # He has just decided the name himself, so an agent's pending offer of a
+    # different one is answered - by being turned down, which also stops that
+    # same wording coming back on the next run.
+    db.reject_title_suggestion(project)
     db.update_project(project["id"], title=title, title_locked=1)
     db.add_journal(project["id"], "user", "status", f"Renamed `{was}` -> `{title}`.")
+    return RedirectResponse(url=f"/project/{slug}", status_code=303)
+
+
+@app.post("/project/{slug}/title-suggestion")
+async def answer_title_suggestion(slug: str, action: str = Form("apply")) -> RedirectResponse:
+    """Take, or turn down, the alternative title an agent proposed.
+
+    The offer only exists because the title is locked. Wes's rule is that a
+    title he set himself is never overwritten - but he also said "if you want to
+    suggest alternative titles, feel free to", so the proposal has to land
+    somewhere he can act on in one press rather than being thrown away. Turning
+    it down remembers the wording, so the next run cannot propose it again.
+    """
+    project = _get_project_or_404(slug)
+    if action == "apply":
+        db.accept_title_suggestion(project)
+    else:
+        db.reject_title_suggestion(project)
     return RedirectResponse(url=f"/project/{slug}", status_code=303)
 
 
@@ -1248,8 +1546,8 @@ async def add_subproject(
     """Split a deliverable out of this project by hand.
 
     Lands on the new child rather than back on the parent: Wes has just named a
-    thing, and the next thing he wants is almost always to describe it or set
-    its priority, both of which are on the child's own page.
+    thing, and the next thing he wants is almost always to describe it or hand
+    it a note, both of which are on the child's own page.
     """
     project = _get_project_or_404(slug)
     if not title.strip():
@@ -1258,6 +1556,10 @@ async def add_subproject(
         child = subprojects.create_child(project, title, description)
     except subprojects.SplitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    # Wes typed this name into the box himself, so it locks - the same rule as
+    # a title typed on the idea form or into the heading. A child named by an
+    # agent report (subprojects.add) is left open, because nobody has chosen it.
+    db.update_project(child["id"], title_locked=1)
     return RedirectResponse(url=f"/project/{child['slug']}", status_code=303)
 
 
@@ -1290,13 +1592,6 @@ async def release_subproject(slug: str) -> RedirectResponse:
         subprojects.release(project)
     except subprojects.SplitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return RedirectResponse(url=f"/project/{slug}", status_code=303)
-
-
-@app.post("/project/{slug}/priority")
-async def update_priority(slug: str, priority: int = Form(...)) -> RedirectResponse:
-    project = _get_project_or_404(slug)
-    db.update_project(project["id"], priority=priority)
     return RedirectResponse(url=f"/project/{slug}", status_code=303)
 
 
@@ -1358,13 +1653,10 @@ async def add_note(
         # Named in the note body too, not only in the attachments table: the
         # journal is what a human reads back, and "see the screenshot" with no
         # trace of a screenshot is a worse record than a slightly noisier one.
+        # The block is built in attachments.py because that is also where it is
+        # taken apart again when a file is removed before the prompt goes.
         if stored:
-            listing = "\n".join(
-                f"- `{attachments.rel_path(a['stored_name'])}` ({a['mime']}, "
-                f"{attachments.human_size(a['size'])})"
-                for a in stored
-            )
-            body = f"{quoted}\n\n**Attached {len(stored)} file(s):**\n{listing}".strip()
+            body = f"{quoted}\n\n{attachments.listing_block(stored)}".strip()
     if errors:
         body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
 
@@ -1374,6 +1666,13 @@ async def add_note(
     for a in stored:
         db.set_attachment_journal(a["id"], journal_id)
 
+    # A voice memo gets transcribed before any run this note triggers, so the
+    # run's prompt carries the words rather than "(transcription is still
+    # running)" - the memo IS the instruction. transcribe.kick returns
+    # immediately (the work happens on the loop after this response) and runs
+    # the continuation whether or not transcription succeeds.
+    audio_ids = [a["id"] for a in stored if transcribe.wants(a["mime"])]
+
     # "add note and run" - the note, the switch to active and the run in one
     # press, because typing an instruction and then wanting it acted on now is
     # the common case and it was three controls in three different places.
@@ -1382,12 +1681,21 @@ async def add_note(
     if then == "run":
         if db.display_state(project) != "active":
             db.set_user_state(project, "active")
-        await worker.queue_manual_run(project["id"])
+        if audio_ids:
+            transcribe.kick(audio_ids, after=worker.queue_manual_run(project["id"]))
+        else:
+            await worker.queue_manual_run(project["id"])
     elif then != "queue":
-        # A note on a put-down project wakes it up (Wes's rule; see the helper).
-        # "queue & don't run" is the explicit opt-out: the note is stored for
-        # whenever the agent next runs, and nothing else is touched.
-        await worker.reactivate_on_note(project)
+        # The plain green "add note": wake a put-down project (Wes's rule) and
+        # start a run whenever one could start at all - see worker.note_arrived.
+        # "queue note" is the explicit opt-out: the note is stored for whenever
+        # the agent next runs, and nothing else is touched.
+        if audio_ids:
+            transcribe.kick(audio_ids, after=worker.note_arrived(project))
+        else:
+            await worker.note_arrived(project)
+    elif audio_ids:
+        transcribe.kick(audio_ids)
     return RedirectResponse(url=f"/project/{slug}", status_code=303)
 
 
@@ -1443,7 +1751,10 @@ async def ask_project(
     question = quoting.frame(quote, question)
     if question and not ask.pending(project["id"]):
         ask.start(project["id"], question)
-    return RedirectResponse(url=f"/project/{slug}", status_code=303)
+    # Back to the ask box, not the top of the page: the question and its answer
+    # both appear there now (Wes, 2026-08-16), and a redirect that landed above
+    # them would be the same hunt his note is about.
+    return RedirectResponse(url=f"/project/{slug}#ask", status_code=303)
 
 
 @app.get("/attachment/{attachment_id}")
@@ -1470,6 +1781,37 @@ async def attachment_file(attachment_id: int) -> FileResponse:
     )
 
 
+def _unname_attachment(journal_id: int, stored_name: str) -> None:
+    """Take a deleted file back out of the note that carried it.
+
+    Wes, 2026-08-17: "Add a way of removing note file attachments before the
+    prompt is sent." Deleting the row and the bytes is only half of that. The
+    note's own markdown lists the file (see `add_note`), and that markdown is
+    what an agent is handed as its instructions - so a note left naming a file
+    that is no longer on disk tells the agent to go read a missing path, which
+    is exactly the confusion the staging directory was built to prevent.
+
+    Both writes are guarded in SQL on `delivered_at IS NULL`, so this cannot
+    rewrite a note an agent has already acted on: after delivery the file may
+    still be deleted from the Files shelf, but the sentence that was sent stays
+    as it was sent. A body that strips to nothing was a files-only note, and it
+    goes with its last file - the same rule as clearing the box in `edit_note`.
+
+    There is deliberately no "did anything change?" early return here. It was
+    written and the sweep proved nothing could observe it: `strip_from_note`
+    hands back the body it was given when the file is not listed, so the write
+    it would have skipped stores the text that is already there.
+    """
+    entry = db.get_journal(journal_id)
+    if entry is None:
+        return
+    body = attachments.strip_from_note(entry["content_md"] or "", stored_name)
+    if body:
+        db.update_journal_content(journal_id, body)
+    else:
+        db.delete_journal_note(journal_id)
+
+
 @app.post("/attachment/{attachment_id}/delete")
 async def delete_attachment_route(attachment_id: int) -> RedirectResponse:
     row = db.get_attachment(attachment_id)
@@ -1479,6 +1821,8 @@ async def delete_attachment_route(attachment_id: int) -> RedirectResponse:
     if row["stored_name"] and slug:
         attachments.remove_file(slug, row["stored_name"])
     db.delete_attachment(attachment_id)
+    if row["journal_id"] and row["stored_name"]:
+        _unname_attachment(int(row["journal_id"]), row["stored_name"])
     return RedirectResponse(url=f"/project/{slug}" if slug else "/", status_code=303)
 
 
@@ -1628,27 +1972,149 @@ async def activity_page(
 
 
 @app.get("/run/{run_id}", response_class=HTMLResponse)
-async def run_page(request: Request, run_id: int) -> HTMLResponse:
+async def run_page(request: Request, run_id: int, filed: int = 0) -> HTMLResponse:
+    # `filed` is set by the redirect a posted diff comment makes, so the
+    # confirmation survives the POST-redirect-GET without the page being able
+    # to re-post the comment on a refresh.
+    return _render_run_page(request, run_id, comment_filed=bool(filed))
+
+
+def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
+    """The run page, optionally carrying the outcome of an action taken on it."""
     row = db.get_run_with_project(run_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _decorate_runs([row])[0]
     text, _ = runlog.read_log(run_id, 0)
-    return templates.TemplateResponse(
-        request,
-        "run.html",
-        {
-            "run": run,
-            # A pruned transcript is a normal outcome, not an error - say so
-            # rather than showing an empty terminal.
-            "console_text": text or "",
-            "log_pruned": not run["has_log"],
-            "denials": db.hook_denials_for_run(run_id),
-            "audit": db.hook_audit_for_run(run_id),
-            "audit_retention_days": db.AUDIT_RETENTION_DAYS,
-            "active_run": active_run_snapshot(),
-        },
+    landed = revert.landed(row)
+    context = {
+        "run": run,
+        # A pruned transcript is a normal outcome, not an error - say so
+        # rather than showing an empty terminal.
+        "console_text": text or "",
+        "log_pruned": not run["has_log"],
+        "denials": db.hook_denials_for_run(run_id),
+        "audit": db.hook_audit_for_run(run_id),
+        "audit_retention_days": db.AUDIT_RETENTION_DAYS,
+        "active_run": active_run_snapshot(),
+        "landed": landed,
+        # Built from the same Landed, so the diff and the undo button can never
+        # disagree about which commits this run is responsible for.
+        "diff": rundiff.for_run(landed),
+        "undo_error": None,
+        "comment_error": None,
+        "comment_filed": False,
+    }
+    context.update(extra)
+    return templates.TemplateResponse(request, "run.html", context)
+
+
+@app.post("/run/{run_id}/comment", response_class=HTMLResponse)
+async def comment_on_diff(
+    request: Request,
+    run_id: int,
+    path: str = Form(""),
+    index: str = Form(""),
+    comment: str = Form(""),
+):
+    """Turn a line of this run's diff into a note on its project.
+
+    RESEARCH.md §3: every comparable orchestrator steers its agent by comments
+    on the diff, and the portal steered by prose written from memory. This is
+    the smallest version of that which is actually useful - the comment becomes
+    an ordinary project note, so it rides the path notes already have into the
+    next run's prompt, and wakes a parked project the same way.
+
+    The quoted line is read back out of the diff here rather than trusted from
+    the form: see app/rundiff.py. Every refusal renders the page again with a
+    sentence on it, because a phone user who taps `send` and gets a JSON error
+    page has no idea whether their comment was filed.
+    """
+    row = db.get_run_with_project(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not row["project_id"]:
+        return _render_run_page(
+            request, run_id,
+            comment_error="This run has no project, so there is nobody to send a note to.",
+        )
+
+    hit = rundiff.line_at(rundiff.for_run(revert.landed(row)), path, _int_or(index, -1))
+    if hit is None:
+        return _render_run_page(
+            request, run_id,
+            comment_error=(
+                "Pick a line first - tap one in the diff above, then press send. "
+                "(If you did pick one, this run's diff has changed underneath the "
+                "page; reload it and try again.)"
+            ),
+        )
+    file, line = hit
+
+    project = db.get_project(row["project_id"])
+    if project is None:
+        return _render_run_page(
+            request, run_id,
+            comment_error="This run's project no longer exists.",
+        )
+    db.add_journal(
+        project["id"], "user", "note",
+        rundiff.note_body(run_id, file, line, comment),
+        person_id=_person_id(request),
     )
+    await worker.reactivate_on_note(project)
+    return RedirectResponse(url=f"/run/{run_id}?filed=1#rundiff", status_code=303)
+
+
+def _int_or(raw: str, fallback: int) -> int:
+    try:
+        return int(str(raw).strip())
+    except (TypeError, ValueError):
+        return fallback
+
+
+@app.post("/run/{run_id}/revert", response_class=HTMLResponse)
+async def revert_run_route(request: Request, run_id: int) -> HTMLResponse:
+    """Undo the commits this run made to its project's workspace.
+
+    Refusals render the page again with the reason on it rather than raising,
+    because every one of them is a sentence a person has to read and act on, and
+    FastAPI's default error page is a JSON blob - which is what Wes would be
+    looking at on his phone at the exact moment something went wrong.
+
+    The reason is recomputed inside `revert.undo` under the workspace lease, so
+    what is shown here is what was actually true when the git ran, not what the
+    page believed when it drew the button.
+    """
+    row = db.get_run_with_project(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    plan = revert.landed(row)
+    who = people.name_of(me())
+    outcome = revert.undo(row, who=who)
+    if not outcome.ok:
+        return _render_run_page(request, run_id, undo_error=outcome.message)
+
+    db.mark_run_reverted(run_id)
+    if plan is not None and row["project_id"]:
+        # The next agent on this project has to be told, or it will find its
+        # predecessor's feature missing, conclude the run died before committing,
+        # and build the whole thing again. See revert.journal_note.
+        db.add_journal(
+            row["project_id"], "user", "status",
+            revert.journal_note(run_id, plan, who, outcome.sha),
+        )
+    log.info("Run %s reverted by %s", run_id, who)
+    if plan is not None and plan.is_source and outcome.sha:
+        # Reverting the portal's own source only changes files on disk; imported
+        # Python does not change until the process does. Without this the undo
+        # would appear to work and change nothing about the running site, which
+        # is the quiet-failure shape - and this is the one revert most likely to
+        # be someone urgently backing out a broken self-update. The scheduler's
+        # own restart path is reused so it still defers behind in-flight runs.
+        worker.schedule_source_restart(row["project_id"], outcome.sha)
+    return RedirectResponse(url=f"/run/{run_id}", status_code=303)
 
 
 @app.post("/run/{run_id}/cancel")
@@ -1813,6 +2279,52 @@ def _after_question(question: sqlite3.Row, next: str) -> str:
     return f"/project/{project['slug']}" if project else "/questions"
 
 
+@app.get("/questions/{question_id}/tap", response_class=HTMLResponse)
+async def question_tap(request: Request, question_id: int, opt: str = "") -> HTMLResponse:
+    """Where an answer button on a lock-screen notification lands.
+
+    A Declarative Web Push action navigates; it cannot post. So the button
+    carries the option's INDEX here and this page submits the answer itself -
+    see app/templates/question_tap.html for why it is not simply done in this
+    handler.
+
+    The index resolves against the options stored on the question, exactly as
+    the Telegram callback does. Two things it deliberately refuses rather than
+    guesses at: an index that no longer maps to an option (the question was
+    re-asked with a different list), and a question that has already been
+    settled by whoever got there first - a phone can hold a notification for a
+    day, and a stale tap must not overwrite a real answer.
+    """
+    question = db.get_question(question_id)
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found")
+
+    options = quickreplies.decode(question["quick_options"])
+    choice, note = "", ""
+    if question["status"] != "open":
+        note = "That question has already been answered."
+    else:
+        try:
+            index = int(opt)
+        except ValueError:
+            index = -1
+        if 0 <= index < len(options):
+            choice = options[index]
+        else:
+            note = "That button no longer maps to an answer - pick one here instead."
+
+    return templates.TemplateResponse(
+        request,
+        "question_tap.html",
+        {
+            "question": question,
+            "choice": choice,
+            "note": note,
+            "heading": "Answering" if choice else "Nothing to send",
+        },
+    )
+
+
 @app.post("/questions/{question_id}/answer")
 async def answer_question(
     request: Request,
@@ -1856,6 +2368,9 @@ async def answer_question(
     # than at whoever it assumed. Resolved from the request, not from the
     # ContextVar - see _person_id.
     db.answer_question_and_resume(question_id, text, _person_id(request))
+    # A web answer settles the Telegram copies too - without this, whoever
+    # got the question on Telegram keeps a message that looks open forever.
+    await notify.settle_question_copies(question_id, f"answered: {text}")
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
@@ -1873,6 +2388,10 @@ async def dismiss_question(question_id: int, next: str = Form("")) -> RedirectRe
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     db.dismiss_question_and_resume(question_id)
+    # Telegram buttons on a dismissed question already answer "Already
+    # handled." - settling the copies makes them say so instead of waiting
+    # to be tapped. A typed reply to the message still answers by row id.
+    await notify.settle_question_copies(question_id, "saved for later")
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
@@ -1889,6 +2408,7 @@ async def delete_question(question_id: int, next: str = Form("")) -> RedirectRes
     if question is None:
         raise HTTPException(status_code=404, detail="Question not found")
     db.delete_question(question_id)
+    await notify.settle_question_copies(question_id, "deleted")
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
@@ -2098,13 +2618,29 @@ async def memory_page(request: Request) -> HTMLResponse:
             "dismissal_days": db.SUGGESTION_DISMISSAL_DAYS,
             "learnings_lines": len(learnings.splitlines()),
             "learnings_chars": len(learnings),
-            "learnings_cap": worker.learnings_cap(),
+            "learnings_cap": worker.learnings_cap_kb(),
             "learnings_over_cap": worker.learnings_over_cap(),
+            # Not the file's size but how much of it a run actually reads. The
+            # size alone told Wes nothing he could act on; "127 of 171 never
+            # reach a prompt" is the number that says the file has a problem.
+            "learnings_reach": worker.learnings_reach(),
+            "profile_chars": len(profile),
+            "profile_cap_kb": worker.profile_cap_bytes() // 1024,
+            "profile_over_cap": worker.profile_over_cap(),
             "revisions": memory.revisions(),
             "compacting": worker.compaction_running(),
+            # The other reason the compact button can do nothing: a daily
+            # reflect (or a compaction started before the last restart) is
+            # working in the same directory and holds its lease. Without this
+            # the button would be live, press to no effect, and say nothing.
+            "memory_busy": worker.memory_leased(),
             "cli_memory": cli_memory,
             "cli_memory_files": sum(d.file_count for d in cli_memory),
             "archived_learnings": memory.archived_learnings(),
+            # Named on the page so the archive's "this does not age out" claim
+            # is measured against the real depth of the history, not a number
+            # written into the copy that would drift from `memory.KEEP`.
+            "revision_keep": memory.KEEP,
             "learnings_freshness": worker.learnings_freshness(),
             "promoted_skills": memory.promoted_skills(),
             # Only once there are two people to tell apart, which is exactly
@@ -2134,7 +2670,7 @@ async def save_learnings(content: str = Form(...)) -> RedirectResponse:
 
 @app.post("/memory/compact")
 async def compact_learnings() -> RedirectResponse:
-    """Send an agent through learnings.md to distil it.
+    """Send an agent through learnings.md to distill it.
 
     Deliberately a button rather than a schedule - see worker.start_compaction.
     """
@@ -2207,19 +2743,21 @@ async def view_cli_memory(request: Request, dir_name: str, filename: str) -> HTM
 
 
 @app.post("/suggestions/{suggestion_id}/accept")
-async def accept_suggestion(suggestion_id: int) -> RedirectResponse:
+async def accept_suggestion(request: Request, suggestion_id: int) -> RedirectResponse:
     suggestion = db.get_suggestion(suggestion_id)
     if suggestion is None:
         raise HTTPException(status_code=404, detail="Suggestion not found")
     # `stage`, not `status`: the eight-value status enum was folded into the
     # stage model on 2026-07-22 and this call was never updated, so accepting a
     # suggestion raised TypeError and Wes got a 500 on every attempt. A new
-    # idea lands in `backlog` unapproved, exactly like one typed in by hand.
+    # idea lands in `backlog` unapproved, exactly like one typed in by hand -
+    # and, like one typed in by hand, on the board of whoever pressed accept.
     project = db.create_project(
         title=suggestion["title"],
         description=suggestion["description"],
         kind="unknown",
         stage="backlog",
+        person_id=_person_id(request),
     )
     db.set_suggestion_status(suggestion_id, "accepted")
     return RedirectResponse(url=f"/project/{project['slug']}", status_code=303)
@@ -2297,6 +2835,14 @@ async def settings_page(request: Request) -> HTMLResponse:
             # How runs are paid for: this is the page that owns the per-run
             # ceiling, and what an unset ceiling *means* depends on the mode.
             "auth": spawnauth.status(),
+            # The subscription login itself - whether one is on file, and the
+            # in-portal /login flow (see app/claudelogin.py). Only rendered in
+            # subscription mode; an API-key install has no login to keep fresh.
+            "claude": {
+                "status": claudelogin.status(),
+                "pending": claudelogin.pending(),
+                "result": claudelogin.last_result(),
+            },
             # Same reasoning one field down: a blank memory cap is not "no cap",
             # it is a number derived from this machine, so the page has to say
             # which number rather than let someone guess.
@@ -2304,7 +2850,27 @@ async def settings_page(request: Request) -> HTMLResponse:
                 "available": runlimit.available(),
                 "default_human": runlimit.human(runlimit.default_max_bytes()),
                 "total_human": runlimit.human(runlimit.total_memory_bytes()),
+                # The pool's own three answers: is it possible here, what does
+                # blank mean, and is it actually in force. The third is not the
+                # first two ANDed - systemd can refuse the property - and the
+                # page reports the effective answer.
+                "pool_available": runlimit.pool_available(),
+                "pool_default_human": runlimit.human(runlimit.default_pool_bytes()),
+                "pool_in_use": runlimit.pool_in_use(),
             },
+            # A blank headroom reserve is not "no reserve" - it is the number
+            # the portal measured from its own runs - so the field shows that
+            # number as its placeholder and says how many runs it stands on.
+            # Zero samples is worth showing too: it is the honest "this is
+            # still the provisional default" the field would otherwise hide.
+            "headroom_reserve": f"{headroom.reserve():g}",
+            "headroom_samples": headroom.sample_size(),
+            "headroom_max": f"{headroom.MAX_RESERVE:g}",
+            # The zones quiet hours can be read in. A dropdown rather than a
+            # free-text box because an IANA name is exactly the kind of string
+            # a person mistypes ("America/Arkansas") and the mistake is silent:
+            # a rejected zone falls back and the hours quietly move.
+            "quiet_zones": quiet.zone_choices(),
             # One row per jumpable section: the field to render, and what the
             # key does now. Derived from jumpkeys.ACTIONS rather than listed in
             # the template, so a new jumpable section grows its settings field
@@ -2330,6 +2896,15 @@ async def settings_page(request: Request) -> HTMLResponse:
             "my_stock": config.THEME_STOCK.get(
                 appearance(me()).get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]),
                 config.DEFAULT_THEME_STOCK,
+            ),
+            # How this person has arranged a project page, and the same thing
+            # as one line of prose. `appearance(me())` for the same reason the
+            # theme above uses it: the panel edits YOUR arrangement even while
+            # you are previewing somebody else's page.
+            "my_arrangement": appearance(me()).get(sections.SETTING_KEY, ""),
+            "my_sections": sections.sections(appearance(me()).get(sections.SETTING_KEY, "")),
+            "my_arrangement_desc": sections.describe(
+                appearance(me()).get(sections.SETTING_KEY, "")
             ),
             "install_look": install_appearance(),
             "people_count": len(people.everyone()),
@@ -2362,8 +2937,54 @@ async def settings_page(request: Request) -> HTMLResponse:
             "tailnet": netinfo.cached(),
             "portal_port": config.PORT,
             "model_catalog": modelwatch.catalog(),
+            "strays": _stray_view(),
         },
     )
+
+
+def _stray_view() -> list[dict]:
+    """Helpers that outlived the runs that started them, named for a person.
+
+    A leftover is otherwise completely invisible: it is a live server holding a
+    port, started by an agent that finished hours ago, and nothing in the UI has
+    ever said so. Six of them were up on Wes's box when this was written.
+
+    The project title comes from the run id baked into the scope name. It is
+    best-effort on purpose - a run row can be pruned while its leftover is still
+    running, and "some helper is still up" is worth showing even when the portal
+    can no longer say which project asked for it.
+    """
+    view = []
+    for scope in strays.listing():
+        title = None
+        if scope.run_id is not None:
+            run = db.get_run_with_project(scope.run_id)
+            if run is not None:
+                title = run["project_title"]
+        view.append({
+            "unit": scope.unit,
+            "run_id": scope.run_id,
+            "project_title": title,
+            "processes": [
+                {"pid": p.pid, "command": p.command} for p in scope.processes
+            ],
+        })
+    return view
+
+
+@app.post("/settings/stray/stop")
+async def stop_stray(unit: str = Form(...)) -> RedirectResponse:
+    """Stop one leftover helper and everything under it.
+
+    Deliberately a button rather than something the portal does by itself: these
+    are usually the preview servers "open it" points at, and a portal that
+    silently killed the thing a run was built to show would be a worse bug than
+    the leak. `strays.stop` re-checks the unit name, because this takes one from
+    a form and stopping an arbitrary user unit is a much larger power than
+    stopping a leftover the portal created.
+    """
+    strays.stop(unit)
+    return RedirectResponse(url="/settings#strays", status_code=303)
 
 
 @app.post("/settings/appearance/reset")
@@ -2574,6 +3195,34 @@ async def set_project_members(
     project = _get_project_or_404(slug)
     people.set_members(project["id"], member)
     return RedirectResponse(url=f"/project/{slug}#project", status_code=303)
+
+
+# --------------------------------------------------------------------------
+# Claude login (see app/claudelogin.py) - the CLI's /login flow, from a phone.
+# --------------------------------------------------------------------------
+
+@app.post("/settings/claude-login/start")
+async def claude_login_start() -> RedirectResponse:
+    claudelogin.begin()
+    return RedirectResponse(url="/settings#claude-account", status_code=303)
+
+
+@app.post("/settings/claude-login/cancel")
+async def claude_login_cancel() -> RedirectResponse:
+    claudelogin.cancel()
+    return RedirectResponse(url="/settings#claude-account", status_code=303)
+
+
+@app.post("/settings/claude-login/finish")
+async def claude_login_finish(code: str = Form("")) -> RedirectResponse:
+    # The exchange is a network round trip; off the event loop with it.
+    result = await asyncio.to_thread(claudelogin.finish, code)
+    if result.get("ok"):
+        # The usage cache was answering with the dead token's reading (or a
+        # cached error). Refresh it now so the page reflects the new login
+        # without waiting for the poller's next lap.
+        await limits.refresh_async()
+    return RedirectResponse(url="/settings#claude-account", status_code=303)
 
 
 @app.post("/settings/test-notification")
@@ -3032,6 +3681,35 @@ async def hooks_stop(request: Request, run: int = 0, token: str = "") -> JSONRes
     if decision == "block":
         return JSONResponse({"hook_output": {"decision": "block", "reason": reason}})
     return JSONResponse({"hook_output": None})
+
+
+@app.get("/mcp/tools")
+async def mcp_tools(run: int = 0, token: str = "") -> JSONResponse:
+    """The tool list one run's MCP relay sees (app/mcpstdio.py).
+
+    Unlike the hook endpoints this fails *closed*: an unrecognized run gets an
+    empty list rather than the benefit of the doubt, because the tool behind it
+    files questions and pushes notifications to somebody's phone."""
+    return JSONResponse({"tools": portalmcp.tools(run, token) or []})
+
+
+@app.post("/mcp/call")
+async def mcp_call(request: Request, run: int = 0, token: str = "") -> JSONResponse:
+    """One `tools/call` from a run, relayed here. The response is the MCP tool
+    result verbatim - the relay stays a dumb pipe, the portal owns the shape.
+
+    This request can legitimately take minutes: `ask` blocks while it waits for
+    a person to answer, which is the entire point of it."""
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    result = await portalmcp.call(
+        run, token, str(payload.get("name") or ""), payload.get("arguments") or {}
+    )
+    return JSONResponse(result)
 
 
 @app.get("/api/active-run")

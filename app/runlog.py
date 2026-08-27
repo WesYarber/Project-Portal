@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
-from app import config
+from app import apiretry, config
 
 # The field of a tool's input that best identifies what it is doing. Anything
 # not listed falls back to the first short string value in the input dict.
@@ -137,6 +137,23 @@ def render_event(event: dict) -> list[str]:
         model = event.get("model") or "?"
         tools = event.get("tools") or []
         return [f"{STATUS} session start  model={model}  tools={len(tools)}"]
+
+    if etype == "system" and event.get("subtype") == "api_retry":
+        # The only output a run produces while the CLI is waiting out a failed
+        # API call. Dropped, as it was before, the console shows a run that has
+        # simply stopped moving for ten minutes with nothing to say why.
+        #
+        # STATUS rather than ERROR, and that is not cosmetic: the console folds
+        # tool calls and errors away behind "show tool calls", so an ERROR line
+        # would have made a run stalled for three minutes read as "3 errors" in
+        # a collapsed summary - quiet again, which is the whole thing this is
+        # meant to fix. It is also honest. The CLI is handling the failure and
+        # most retries succeed; what a reader needs to see is that the run is
+        # waiting and why, alongside "session start" and "run complete".
+        retry = apiretry.classify(event)
+        if retry is None:
+            return []
+        return [f"{STATUS} API {retry.describe()}"]
 
     if etype == "assistant":
         lines: list[str] = []

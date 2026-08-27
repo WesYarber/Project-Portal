@@ -36,7 +36,7 @@
        from the same table main.body_classes() renders from - so a new
        appearance setting previews without anybody remembering to add it. #}
     <select id="{{ key }}" name="{{ key }}"
-            data-appearance-prefix="{{ APPEARANCE_CLASS_PREFIX[key] }}">
+            data-appearance-prefix="{{ APPEARANCE_CLASS_PREFIX.get(key, '') }}">
       {% for value, option_label in APPEARANCE_CHOICES[key] %}
       <option value="{{ value }}" {{ 'selected' if value == (settings[key] or APPEARANCE_DEFAULTS[key]) else '' }}>{{ option_label }}</option>
       {% endfor %}
@@ -180,7 +180,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,run_timeout_min,run_max_turns,run_max_budget_usd,run_memory_max,day_reset_hour,cost_units,limit_hold_percent,spend_down_session_hold,spend_front_load,saturation_max_duty,research_model,spend_down_model,learnings_cap_lines,prompt_learnings_kb,prompt_journal_kb">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,mcp_tools,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -189,6 +189,14 @@
       <div class="field checkbox-row">
         <input type="checkbox" id="require_build_approval" name="require_build_approval" {{ 'checked' if (settings.require_build_approval or '1') == '1' else '' }}>
         <label for="require_build_approval">Ask before building{% call info() %}Agents always triage and plan on their own. With this on, actually writing code waits until you press <strong>approve build</strong> on the project (or set its status to building yourself). Off means a finished plan rolls straight into a build.{% endcall %}</label>
+      </div>
+      <div class="field">
+        <label for="verification_depth">Self-verification{% call info() %}How hard a build run works to prove its own change before it commits. Proving is about 60% of what a run spends, so this is the biggest single lever on your Claude allowance. <strong>Scaled to the change</strong> is your answer from 2026-08-07: a docs edit owes nothing, a label change runs the tests that own it, and only a change to real logic earns the full suite and a delete-the-fix mutation sweep. <strong>Full suite and a sweep, always</strong> is how runs behaved before that. <strong>Only the tests it touches</strong> is for a stretch where clearing the backlog matters more than proving each step. Whatever you pick, a run still has to leave the tree green and may never report a test result it did not watch run.{% endcall %}</label>
+        <select id="verification_depth" name="verification_depth">
+          {% for value, label in VERIFY_DEPTH_CHOICES %}
+          <option value="{{ value }}" {{ 'selected' if value == (settings.verification_depth or 'proportionate') else '' }}>{{ label }}</option>
+          {% endfor %}
+        </select>
       </div>
       <div class="field">
         <label for="worker_model">Default agent{% call info() %}Used by any project that hasn't set its own agent.{% endcall %}</label>
@@ -246,6 +254,10 @@
         <input type="checkbox" id="hook_audit" name="hook_audit" {{ 'checked' if (settings.hook_audit or '1') == '1' else '' }}>
         <label for="hook_audit">Tool-call audit trail on runs{% call info() %}Every tool call a run makes is recorded as one structured row and listed on the run's page - so "what did this run actually do" survives after its transcript is pruned. Capped per run, and plain rows age out after a month; guardrail denials are kept forever.{% endcall %}</label>
       </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="mcp_tools" name="mcp_tools" {{ 'checked' if (settings.mcp_tools or '1') == '1' else '' }}>
+        <label for="mcp_tools">Let a run ask you mid-run{% call info() %}A run can file a question the moment it hits a decision only you can make, and wait a couple of minutes for your reply, instead of parking it until its report - the question reaches your phone immediately with its one-tap answers, and the run carries on with your answer in hand. At most 3 per run, deduped against what is already open, and a question you don't answer in time is simply left waiting as usual. Off means questions only ever arrive with a finished run.{% endcall %}</label>
+      </div>
       {# Wes tracks model releases himself and wants the newest one adopted the day it
          ships. This is that job, done by the portal instead. #}
       <div class="field checkbox-row">
@@ -264,6 +276,13 @@
         <div class="field">
           <label for="run_max_turns">Turn limit per run{% call info() %}The CLI stops a run at this many turns. The timeout above is the real backstop.{% endcall %}</label>
           <input type="number" id="run_max_turns" name="run_max_turns" value="{{ settings.run_max_turns or '400' }}" min="10" max="2000">
+        </div>
+        <div class="field">
+          {# Short label on purpose: "Turn limit for memory jobs" wraps at this
+             column width and drops its ⓘ onto a second line, which pushes the
+             input out of line with the fields beside it. #}
+          <label for="memory_max_turns">Memory job turns{% call info() %}The same ceiling for the daily reflect and the learnings compaction, which rewrite <code>profile.md</code> and <code>learnings.md</code>. They were fixed at 30 and both hit it on 2026-08-07, each spending about $5 to finish nothing.{% endcall %}</label>
+          <input type="number" id="memory_max_turns" name="memory_max_turns" value="{{ settings.memory_max_turns or '120' }}" min="10" max="2000">
         </div>
         <div class="field">
           {# What "blank" means differs by auth mode, and getting it wrong in
@@ -295,16 +314,42 @@
           {% endif %}
         </div>
         <div class="field">
-          <label for="learnings_cap_lines">Learnings auto-compact at{% call info() %}Lines. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). 0 disables it.{% endcall %}</label>
-          <input type="number" id="learnings_cap_lines" name="learnings_cap_lines" value="{{ settings.learnings_cap_lines or '200' }}" min="0" max="5000">
+          <label for="runs_memory_pool">Memory pool for all runs{% call info() %}{% if runmem.pool_available %}A
+            ceiling on every run in flight <em>together</em>, not one at a time. Without it the only
+            bound was {{ settings.max_parallel_runs or 2 }} &times; the per-run cap, which is several
+            times this machine's {{ runmem.total_human }} &mdash; so one greedy run could still reach
+            the kernel's own OOM killer and take the portal or docker with it. When the pool fills,
+            the kernel kills a process inside it, which need not be the run that grew last.
+            Blank = {{ runmem.pool_default_human }}; <code>off</code> = no pool.{% else %}Not
+            available on this machine (systemd would not put a run in its own slice), so runs are
+            capped one at a time only.{% endif %}{% endcall %}</label>
+          <input type="text" id="runs_memory_pool" name="runs_memory_pool" value="{{ settings.runs_memory_pool or '' }}" placeholder="{{ runmem.pool_default_human }}">
+          {# A configured pool that systemd refused is a WARNING, not a
+             definition: the number on the page would otherwise read as a
+             guarantee that is not being kept. #}
+          {% if runmem.available and not runmem.pool_in_use %}
+          <p class="hint warn">no pool in force &mdash; runs are capped one at a time only</p>
+          {% endif %}
         </div>
         <div class="field">
-          <label for="prompt_learnings_kb">Learnings in a prompt{% call info() %}KB. Learnings memory is in every run's prompt on every project, so it is the biggest single block there. Sections are taken in the file's own order and the one that overflows keeps its newest entries; the rest are named, and the agent is told it may read the whole file.{% endcall %}</label>
+          <label for="learnings_cap_kb">Learnings auto-compact at{% call info() %}KB. Past this, learnings.md auto-compacts at the next quiet day-boundary (snapshotted first). Set above "Learnings in a prompt" below, not equal to it: the compaction is told to finish under that budget, and the gap is the headroom it grows back into before being asked again. Was a line count until 2026-08-07, which never fired because a prompt spends bytes. 0 disables it.{% endcall %}</label>
+          <input type="number" id="learnings_cap_kb" name="learnings_cap_kb" value="{{ settings.learnings_cap_kb or '24' }}" min="0" max="512">
+        </div>
+        <div class="field">
+          <label for="profile_cap_kb">Profile cap{% call info() %}KB. profile.md goes into every run's prompt whole, so it is the largest single block there. The daily reflect rewrites the file anyway, so it is told this number and shortens it as part of that run - no separate compaction. Past twice this, a prompt leaves out whole sections from the bottom and names them. 0 disables.{% endcall %}</label>
+          <input type="number" id="profile_cap_kb" name="profile_cap_kb" value="{{ settings.profile_cap_kb or '16' }}" min="0" max="512">
+        </div>
+        <div class="field">
+          <label for="prompt_learnings_kb">Learnings in a prompt{% call info() %}KB. Learnings memory is in every run's prompt on every project, so it is one of the two biggest blocks there. Sections are taken in the file's own order and the one that overflows keeps its newest entries; the rest are named, and the agent is told it may read the whole file.{% endcall %}</label>
           <input type="number" id="prompt_learnings_kb" name="prompt_learnings_kb" value="{{ settings.prompt_learnings_kb or '16' }}" min="1" max="512">
         </div>
         <div class="field">
           <label for="prompt_journal_kb">Journal in a prompt{% call info() %}KB. The last 20 journal entries go in a prompt and an agent's progress report can run to 10 KB on its own. Every entry keeps its heading whatever happens; older ones fall back to heading plus opening paragraph, and the newest is always whole.{% endcall %}</label>
           <input type="number" id="prompt_journal_kb" name="prompt_journal_kb" value="{{ settings.prompt_journal_kb or '24' }}" min="1" max="512">
+        </div>
+        <div class="field">
+          <label for="prompt_answered_kb">Answers in a prompt{% call info() %}KB. Every question you have answered on a project used to go into every prompt that project would ever build. Near-identical re-askings of one question now collapse into their newest answer first, then the newest decisions fill the budget; older ones are named as left out rather than dropped silently.{% endcall %}</label>
+          <input type="number" id="prompt_answered_kb" name="prompt_answered_kb" value="{{ settings.prompt_answered_kb or '6' }}" min="1" max="512">
         </div>
         <div class="field">
           <label for="max_parallel_runs">Parallel runs{% call info() %}Agents in flight at once, on different projects. 1-{{ max_parallel_limit }}.{% endcall %}</label>
@@ -315,8 +360,16 @@
           <input type="number" id="max_runs_per_day" name="max_runs_per_day" value="{{ settings.max_runs_per_day }}" min="0" max="999">
         </div>
         <div class="field">
+          <label for="project_max_runs_per_day">Default per-project runs a day{% call info() %}Stops one project taking the whole budget above: the board is worked least-recently-run first, so without this the project at the head runs until it has nothing left to do. 0 turns it off, and a spend-down ignores it. One project's own limit is the runs/day box on its project page, which overrides this in both directions.{% endcall %}</label>
+          <input type="number" id="project_max_runs_per_day" name="project_max_runs_per_day" value="{{ settings.project_max_runs_per_day or '6' }}" min="0" max="999">
+        </div>
+        <div class="field">
           <label for="limit_hold_percent">Hold scheduled runs at{% call info() %}% of a real Claude window. Scheduled runs stop here; run now still goes.{% endcall %}</label>
           <input type="number" id="limit_hold_percent" name="limit_hold_percent" value="{{ settings.limit_hold_percent or '90' }}" min="1" max="100">
+        </div>
+        <div class="field">
+          <label for="session_headroom_reserve">Keep session headroom{% call info() %}Points of the 5h window left spare for the run about to start, so it isn't killed part-way through. Blank measures it from your own runs{% if headroom_samples %} &mdash; {{ headroom_samples }} measured so far{% endif %}.{% endcall %}</label>
+          <input type="number" id="session_headroom_reserve" name="session_headroom_reserve" value="{{ settings.session_headroom_reserve or '' }}" placeholder="{{ headroom_reserve }}" min="0" max="{{ headroom_max }}" step="0.5">
         </div>
         <div class="field">
           <label for="spend_down_session_hold">Burst session guard{% call info() %}% of the 5h window a spend-down or ahead-of-pace burst may use, so it spreads across sessions.{% endcall %}</label>
@@ -329,6 +382,34 @@
         <div class="field">
           <label for="saturation_max_duty">Don't-saturate guard{% call info() %}% of the last 5h the portal may run before it holds to leave an idle gap, so steady use doesn't look like a 24/7 bot. 0 or 100 turns it off; spend-downs are exempt.{% endcall %}</label>
           <input type="number" id="saturation_max_duty" name="saturation_max_duty" value="{{ settings.saturation_max_duty or '85' }}" min="0" max="100">
+        </div>
+        {# Quiet hours get their own row of three because they are one setting
+           in three boxes: two hours and the zone they are read in. The zone is
+           on the page rather than assumed from the host, which runs on UTC and
+           would put "23:00" in the middle of the evening. #}
+        <div class="field">
+          <label for="quiet_hours_start">Quiet hours{% call info() %}No scheduled runs start between these hours, so the portal doesn't work through the night where nobody reads it. Set both to the same hour to turn it off; run now still goes, and a run already going is never cut short.{% endcall %}</label>
+          <select id="quiet_hours_start" name="quiet_hours_start">
+            {% for h in range(24) %}
+            <option value="{{ h }}" {{ 'selected' if h|string == (settings.quiet_hours_start or '23') else '' }}>{{ '%02d:00'|format(h) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="quiet_hours_end">Quiet hours end</label>
+          <select id="quiet_hours_end" name="quiet_hours_end">
+            {% for h in range(24) %}
+            <option value="{{ h }}" {{ 'selected' if h|string == (settings.quiet_hours_end or '7') else '' }}>{{ '%02d:00'|format(h) }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="quiet_hours_zone">Quiet hours zone{% call info() %}The timezone those two hours are read in. This server runs on UTC, so leaving it as the host's zone would hold runs five hours early.{% endcall %}</label>
+          <select id="quiet_hours_zone" name="quiet_hours_zone">
+            {% for z in quiet_zones %}
+            <option value="{{ z }}" {{ 'selected' if z == (settings.quiet_hours_zone or 'America/Chicago') else '' }}>{{ z }}</option>
+            {% endfor %}
+          </select>
         </div>
         <div class="field">
           <label for="day_reset_hour">Day resets at{% call info() %}Local. Everything daily rolls over here, not midnight.{% endcall %}</label>
@@ -350,6 +431,57 @@
     </div>
   </form>
 
+  {% if not (auth and auth.api_key) %}
+  <!-- The subscription login runs are paid with, and the CLI's /login flow
+       without a terminal: mint a link, sign in on any device, paste the code
+       back. See app/claudelogin.py. -->
+  <h2 id="claude-account">Claude account</h2>
+  <div class="card">
+    <div class="status-line" style="border:0;padding:0;margin:0;">
+      {% if claude.status.state == 'ok' %}
+      <span><span class="dot ok"></span>logged in{% if claude.status.plan %} on <strong>{{ claude.status.plan }}</strong>{% endif %}</span>
+      {% if claude.status.refresh_expires_in %}<span class="muted">login good for {{ claude.status.refresh_expires_in }}</span>{% endif %}
+      {% elif claude.status.state == 'stale' %}
+      <span><span class="dot warn"></span>token stale</span>
+      <span class="muted">the next run refreshes it by itself; log in again only if runs keep failing to authenticate</span>
+      {% elif claude.status.state == 'logged_out' %}
+      <span><span class="dot err"></span>logged out</span>
+      <span class="muted">runs fail until someone logs in</span>
+      {% else %}
+      <span><span class="dot err"></span>no Claude login on file</span>
+      {% endif %}
+      {% call info() %}Runs are paid for by the Claude subscription the machine's
+      Claude CLI is logged into. The CLI keeps that login fresh on its own; when it
+      expires anyway (like the morning of Aug 6), every run fails with an
+      authentication error until someone logs in again. This card does the CLI's
+      /login without needing a terminal: get a link, sign in on this or any device,
+      paste the code it shows you back here.{% endcall %}
+    </div>
+    {% if claude.result and not claude.result.ok %}
+    <p class="hint"><span class="dot err"></span>{{ claude.result.error }}</p>
+    {% elif claude.result and claude.result.ok %}
+    <p class="hint"><span class="dot ok"></span>Logged in. Runs pick up the new login immediately.</p>
+    {% endif %}
+    {% if claude.pending %}
+    <p class="hint">Open the login link (any device works), sign in, then paste the
+      code the page shows you:</p>
+    <div class="button-row">
+      <a class="btn" href="{{ claude.pending.url }}" target="_blank" rel="noopener">open the Claude login page</a>
+    </div>
+    <form id="claude-login-cancel" method="post" action="/settings/claude-login/cancel"></form>
+    <form method="post" action="/settings/claude-login/finish" class="button-row">
+      <input type="text" name="code" placeholder="paste the code here" autocomplete="off" style="flex:1;min-width:12rem;">
+      <button type="submit">finish login</button>
+      <button type="submit" form="claude-login-cancel" class="secondary">cancel</button>
+    </form>
+    {% else %}
+    <form method="post" action="/settings/claude-login/start" class="button-row">
+      <button type="submit">{{ 'log in again' if claude.status.state in ('ok', 'stale') else 'log in' }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+
   <h2 id="budget">Today's budget</h2>
   <div class="card">
     <div class="status-line" style="border:0;padding:0;margin:0;">
@@ -367,13 +499,57 @@
       <button type="submit" name="extra" value="0" class="secondary">clear bonus</button>
     </form>
   </div>
+
+  <!-- Helpers an agent detached and left running. Read-only apart from the stop
+       button: these are usually the preview servers "open it" points at, so the
+       portal moves them out of the finished run's container and shows them
+       here, rather than killing them. See app/strays.py. -->
+  <h2 id="strays">Left running</h2>
+  <div class="card">
+    {% if strays %}
+    <p class="hint">A run started {{ strays|length }} helper{{ '' if strays|length == 1 else 's' }}
+      that {{ 'is' if strays|length == 1 else 'are' }} still up after the run finished - usually a
+      preview server, sometimes a tunnel.{% call info() %}An agent can leave a server running on
+      purpose, so the portal moves it into a container of its own instead of killing it. That also
+      keeps the finished run from looking alive forever, which used to be able to lock a project out
+      of new runs.{% endcall %}</p>
+    <ul class="access-list">
+      {% for stray in strays %}
+      <li>
+        <span class="access-label">
+          {% if stray.project_title %}{{ stray.project_title }}{% else %}unknown project{% endif %}
+          {% if stray.run_id %}<span class="muted">run {{ stray.run_id }}</span>{% endif %}
+        </span>
+        <span>
+          {% for proc in stray.processes %}
+          {# Truncated, with the whole thing on the title: an agent's command line
+             can run to a couple of hundred characters and wrapping six of them
+             turns the panel into a wall. #}
+          <code title="{{ proc.command }}">{{ proc.command|truncate(88, True, '...') }}</code>
+          <span class="muted">pid {{ proc.pid }}</span><br>
+          {% else %}
+          <span class="muted">nothing left in it</span>
+          {% endfor %}
+        </span>
+        <form method="post" action="/settings/stray/stop" style="display:inline">
+          <input type="hidden" name="unit" value="{{ stray.unit }}">
+          <button type="submit" class="secondary">stop</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="hint">Nothing left running. When a run detaches a server and exits, it shows up here
+      with a button to stop it.</p>
+    {% endif %}
+  </div>
 </section>
 
 <!-- Appearance ----------------------------------------------------------- -->
 <section class="settings-panel" id="panel-appearance" data-panel="appearance">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="appearance">
-    <input type="hidden" name="_fields" value="ui_theme,crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,show_priority,{{ jump_keys|map(attribute='field')|join(',') }}">
+    <input type="hidden" name="_fields" value="ui_theme,crt_scanlines,crt_glow,crt_animations,ui_font,ui_density,ui_sidebar,ui_rail_projects,{{ SECTION_SETTING }},{{ jump_keys|map(attribute='field')|join(',') }}">
     <div class="card">
       {# Whose look this is. Said out loud rather than assumed: this panel used
          to be one global setting per layer, and a page that quietly switched
@@ -388,7 +564,7 @@
         parts of the terminal look you like and drop the parts that make text tiring. The page
         previews your choice the moment you make it; nothing is stored until you save.{% endcall %}</p>
 
-      {# The theme first and on its own row: it is which look you are dialling,
+      {# The theme first and on its own row: it is which look you are dialing,
          where everything under it is a dial on that look. #}
       {% set theme_help %}The whole visual language. <strong>Terminal</strong> is the dark CRT look
         this portal shipped with; <strong>midnight</strong> and <strong>amber</strong> are the same
@@ -397,9 +573,15 @@
         garden palette. Every button, list and panel is in the same place in all of them &mdash; a
         theme changes only how things look, never what is there or where it is. Pick one and the
         page changes under you straight away; nothing is kept until you save.{% endset %}
+      {# The favicon map is built by the server (theme_favicons) rather than
+         composed in app.js from the theme name: only this side knows which
+         themes actually have a tab icon on disk, and a preview that guessed
+         wrong would swap the tab to a 404, which browsers show as no icon at
+         all rather than by falling back to the previous one. #}
       <div class="field theme-field"
            data-theme-chrome='{{ THEME_CHROME|tojson }}'
-           data-theme-stock='{{ THEME_STOCK|tojson }}'>
+           data-theme-stock='{{ THEME_STOCK|tojson }}'
+           data-theme-favicon='{{ theme_favicons()|tojson }}'>
         {{ select_field('ui_theme', 'Theme', theme_help) }}
       </div>
 
@@ -447,6 +629,33 @@ The suite is green, so the change is in.</pre>
         </div>
       </div>
 
+      {# Layout, not look, and above "the terminal look" because those five are
+         dials on a CRT and this one decides whether there is a second column on
+         the page at all. Only offered where it can do something: the rail is a
+         desktop thing by definition and every one of these options is identical
+         on a phone. #}
+      {% set rail_help %}A second column down the left of wide desktop windows: how many agents
+        are working and on what, your active and in-review projects, and the sections of the page
+        you are on &mdash; all of it live, and all of it one click away.
+        <strong>Use existing space</strong> never moves anything on the page: the rail sits in the
+        empty margin beside the centered page and narrows to fit whatever margin there is, so it
+        appears from about 1400px wide and is full width again by about 1600px. Below 1400px there
+        is no margin to use and it shows nothing.
+        <strong>Interface shift</strong> shows it from about 1100px wide, pinned to the left edge
+        with the page pushed right and sitting against it &mdash; the one to pick on a window too
+        narrow for the other. On a phone there is no rail either way.{% endset %}
+      {% set rail_list_help %}Which projects the rail lists, and in what order.
+        <strong>Most recently worked on</strong> is one list across every shelf, newest first &mdash;
+        the rail as a way back to what you were just doing.
+        <strong>Grouped by status</strong> is the original: your active projects under one heading
+        and the ones in review under another. Either way the list fills whatever room is left below
+        the agent widget and scrolls for the rest, and the first ten rows carry the number key that
+        jumps to them.{% endset %}
+      <div class="grid grid-2 field-grid">
+        {{ select_field('ui_sidebar', 'Side rail', rail_help) }}
+        {{ select_field('ui_rail_projects', 'Rail project list', rail_list_help) }}
+      </div>
+
       <h3 class="settings-subhead">The terminal look</h3>
       <p class="hint">{% if my_stock == 'light' %}These have no effect while you are on a light
         theme &mdash; a sheet of paper with scanlines on it is neither thing. They are kept as you
@@ -472,17 +681,50 @@ The suite is green, so the change is in.</pre>
         ({{ my_look.keys()|map('replace', 'crt_', '')|map('replace', 'ui_', '')|join(', ') }});
         the rest follow the install&rsquo;s look as it changes.</p>
       {% endif %}
-      <div class="field checkbox-row">
-        <input type="checkbox" id="show_priority" name="show_priority"
-               {{ 'checked' if (settings.show_priority or '1') == '1' else '' }}>
-        <label for="show_priority">Show project priority{% call info() %}The 0&ndash;9 number on
-          each project. Turning it off takes it off the project page, the dashboard cells and the
-          sub-project list &mdash; and out of the ordering as well, so nothing is left ranking by a
-          number you can no longer see. Projects are then picked least-recently-touched first,
-          which is a fair round-robin. Priority earns its keep when there is not enough allowance
-          to go round and some projects should get the runs; with plenty of headroom it mostly
-          just sits at 0.{% endcall %}</label>
-      </div>
+      {# Where things sit. Wes, 2026-07-28, on what a theme should do for
+         Karli: "all of the functional pieces are still there, but she can
+         change how they appear, where they appear, how they look." Themes did
+         the two "how"s the same day; this is the "where".
+
+         Buttons rather than drag: this list is read on a phone as often as on
+         a desktop, and dragging a row inside a page that is itself scrolling
+         is the worst gesture on a touch screen. Two arrows are unambiguous,
+         work from a keyboard, and cannot half-happen.
+
+         Rows come from app/sections.py, so a new movable block appears here on
+         its own - there is no list of section names in this template. #}
+      <h3 class="settings-subhead">Where things sit on a project page</h3>
+      <p class="hint">Top to bottom, and it moves the side rail&rsquo;s chapters with
+        it.{% call info() %}Your own arrangement, so it changes nothing on anybody else&rsquo;s
+        screen. Nothing can be taken off the page &mdash; every section is still there, just
+        somewhere else &mdash; and a section with nothing in it already draws nothing. The three
+        parts that do not move are the project&rsquo;s title, the green &ldquo;Since you last
+        looked&rdquo; summary, and the danger zone at the very bottom. Rearranging here changes
+        nothing until you save.{% endcall %}</p>
+      <input type="hidden" name="{{ SECTION_SETTING }}" id="section-order"
+             value="{{ my_arrangement }}">
+      <ol class="arrange-list" id="arrange-list">
+        {% for section in my_sections %}
+        <li class="arrange-row" data-arrange-row="{{ section.name }}">
+          <span class="arrange-name">{{ section.label }}</span>
+          <span class="arrange-hint muted small">{{ section.hint }}</span>
+          <span class="arrange-moves">
+            {# aria-label rather than a visible word: the arrow is the whole
+               control, and a screen reader otherwise reads nine identical
+               "button" rows with no idea which section each one moves. #}
+            <button type="button" class="btn secondary small arrange-up"
+                    aria-label="Move {{ section.label }} up">&uarr;</button>
+            <button type="button" class="btn secondary small arrange-down"
+                    aria-label="Move {{ section.label }} down">&darr;</button>
+          </span>
+        </li>
+        {% endfor %}
+      </ol>
+      {% if my_arrangement %}
+      <p class="hint">Moved: <strong>{{ my_arrangement_desc }}</strong>.
+        <button type="button" class="btn secondary small" id="arrange-reset">put the page
+          back</button></p>
+      {% endif %}
 
       {# Keyboard jumps. The rows come from app/jumpkeys.py, so a new jumpable
          section appears here on its own - there is no list of sections in this
@@ -561,6 +803,45 @@ The suite is green, so the change is in.</pre>
 
 <!-- Notifications -------------------------------------------------------- -->
 <section class="settings-panel" id="panel-notifications" data-panel="notifications">
+  {# Web push leads the panel because it is the default method: real
+     lock-screen notifications, no Telegram in the loop. The enroll button must
+     be pressed on the device that should get them, from a secure context (the
+     tailscale HTTPS address) - and on an iPhone, from the portal installed to
+     the Home Screen, because iOS only grants push to installed web apps. #}
+  <div class="card" id="push-card">
+    <h2>phone push {% if push_subs %}<span class="badge ok">{{ push_subs|length }} device{{ '' if push_subs|length == 1 else 's' }}</span>{% else %}<span class="badge warn">none enrolled</span>{% endif %}</h2>
+    <p class="hint">The default way the portal reaches people: notifications straight to the
+      lock screen of each person's own enrolled device. Someone with a device enrolled
+      is reached there and stops falling back to the shared channels below.
+      On an iPhone: open <code>{{ tailnet.https_url if tailnet and tailnet.https else 'the tailscale HTTPS address' }}</code>,
+      share &rarr; <em>Add to Home Screen</em>, open the installed app, come back
+      here and tap enable. Questions arrive as high-priority pushes with the
+      portal one tap away.</p>
+    <div class="button-row">
+      <button type="button" class="secondary" id="enable-push" data-act="enable-push">enable push on this device</button>
+      <span id="push-status" class="hint" role="status"></span>
+    </div>
+    {% if push_subs %}
+    <ul class="access-list" id="push-devices">
+      {% for sub in push_subs %}
+      <li>
+        <span class="access-label">device {{ sub.id }}</span>
+        <code>{{ sub.ua[:60] or 'unknown browser' }}</code>
+        <span class="hint">
+          enrolled {{ sub.created_at[:10] }}{% if sub.last_ok_at %} &middot; last push {{ sub.last_ok_at[:16]|replace('T', ' ') }}{% endif %}{% if sub.failures %} &middot; <span class="badge warn">{{ sub.failures }} failed</span>{% endif %}
+        </span>
+        <form method="post" action="/push/remove/{{ sub.id }}" style="display:inline">
+          <button type="submit" class="secondary" data-act="remove-push" data-id="{{ sub.id }}">remove</button>
+        </form>
+      </li>
+      {% endfor %}
+    </ul>
+    <form method="post" action="/settings/test-push" class="button-row">
+      <button type="submit" class="secondary">send test push</button>
+    </form>
+    {% endif %}
+  </div>
+
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="notifications">
     <input type="hidden" name="_fields" value="telegram_enabled,telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic">
@@ -571,26 +852,23 @@ The suite is green, so the change is in.</pre>
       </div>
       <div class="field checkbox-row" style="margin-top:1rem;">
         <input type="checkbox" id="telegram_natural_language" name="telegram_natural_language" {{ 'checked' if settings.telegram_natural_language == '1' else '' }}>
-        <label for="telegram_natural_language">Understand plain English</label>
+        <label for="telegram_natural_language">Understand plain English{% call info() %}Talk to the bot normally &mdash; it works out whether you're answering a question,
+        adding an idea, leaving a note, or asking for status. Slash commands keep working either way.{% endcall %}</label>
       </div>
-      <p class="hint">Talk to the bot normally &mdash; it works out whether you're answering a question,
-        adding an idea, leaving a note, or asking for status. Slash commands keep working either way.</p>
       <div class="field" style="margin-top:1rem;">
-        <label for="telegram_model">Telegram model</label>
+        <label for="telegram_model">Telegram model{% call info() %}Reads your messages and works out what you meant. Separate from the agent
+          model, and switchable from the chat with <code>/model sonnet</code>.{% endcall %}</label>
         <select id="telegram_model" name="telegram_model">
           {% for value, label in MODEL_CHOICES %}
           <option value="{{ value }}" {{ 'selected' if value == settings.telegram_model else '' }}>{{ label }}</option>
           {% endfor %}
         </select>
-        <p class="hint">Reads your messages and works out what you meant. Separate from the agent
-          model, and switchable from the chat with <code>/model sonnet</code>.</p>
       </div>
       <div class="field checkbox-row" style="margin-top:1rem;">
         <input type="checkbox" id="glados_mode" name="glados_mode" {{ 'checked' if settings.glados_mode == '1' else '' }}>
-        <label for="glados_mode">GLaDOS personality</label>
+        <label for="glados_mode">GLaDOS personality{% call info() %}Snark on the bot's own confirmations and notification headers. Agent output,
+        journal entries and questions are never rewritten.{% endcall %}</label>
       </div>
-      <p class="hint">Snark on the bot's own confirmations and notification headers. Agent output,
-        journal entries and questions are never rewritten.</p>
 
       {# Credentials are set once and then only ever get in the way, so they
          start folded - open only when unset, which is the one case where you
@@ -633,43 +911,6 @@ The suite is green, so the change is in.</pre>
   <form method="post" action="/settings/test-notification" class="button-row">
     <button type="submit" class="secondary">send test notification</button>
   </form>
-
-  {# Web push: real lock-screen notifications, no Telegram in the loop. The
-     enroll button must be pressed on the device that should get them, from a
-     secure context (the tailscale HTTPS address) - and on an iPhone, from the
-     portal installed to the Home Screen, because iOS only grants push to
-     installed web apps. #}
-  <div class="card" id="push-card">
-    <h2>phone push {% if push_subs %}<span class="badge ok">{{ push_subs|length }} device{{ '' if push_subs|length == 1 else 's' }}</span>{% else %}<span class="badge warn">none enrolled</span>{% endif %}</h2>
-    <p class="hint">Notifications straight to the lock screen, no Telegram in between.
-      On an iPhone: open <code>{{ tailnet.https_url if tailnet and tailnet.https else 'the tailscale HTTPS address' }}</code>,
-      share &rarr; <em>Add to Home Screen</em>, open the installed app, come back
-      here and tap enable. Questions arrive as high-priority pushes with the
-      portal one tap away.</p>
-    <div class="button-row">
-      <button type="button" class="secondary" id="enable-push" data-act="enable-push">enable push on this device</button>
-      <span id="push-status" class="hint" role="status"></span>
-    </div>
-    {% if push_subs %}
-    <ul class="access-list" id="push-devices">
-      {% for sub in push_subs %}
-      <li>
-        <span class="access-label">device {{ sub.id }}</span>
-        <code>{{ sub.ua[:60] or 'unknown browser' }}</code>
-        <span class="hint">
-          enrolled {{ sub.created_at[:10] }}{% if sub.last_ok_at %} &middot; last push {{ sub.last_ok_at[:16]|replace('T', ' ') }}{% endif %}{% if sub.failures %} &middot; <span class="badge warn">{{ sub.failures }} failed</span>{% endif %}
-        </span>
-        <form method="post" action="/push/remove/{{ sub.id }}" style="display:inline">
-          <button type="submit" class="secondary" data-act="remove-push" data-id="{{ sub.id }}">remove</button>
-        </form>
-      </li>
-      {% endfor %}
-    </ul>
-    <form method="post" action="/settings/test-push" class="button-row">
-      <button type="submit" class="secondary">send test push</button>
-    </form>
-    {% endif %}
-  </div>
 
   <script>
   (function () {
@@ -738,13 +979,17 @@ The suite is green, so the change is in.</pre>
       <li>
         <span class="access-label">on the LAN</span>
         <a href="{{ tailnet.lan_url }}"><code>{{ tailnet.lan_url }}</code></a>
-        <span class="hint">plain http - the browser hides the microphone here, so no voice memos</span>
+        <span class="hint">plain http{% call info() %}An http page is not a secure context, so the
+          browser hides the microphone on this address and voice memos cannot be
+          recorded here. Everything else works.{% endcall %}</span>
       </li>
       {% if tailnet.https %}
       <li>
         <span class="access-label ok">over tailscale</span>
         <a href="{{ tailnet.https_url }}"><code>{{ tailnet.https_url }}</code></a>
-        <span class="hint">real certificate, works off wifi, and voice memos work because it is a secure context</span>
+        <span class="hint">https{% call info() %}A real certificate over tailscale: it works away from
+          home wifi, and because it is a secure context the microphone is available,
+          so voice memos record here. The address to install to a phone's Home Screen.{% endcall %}</span>
       </li>
       {% elif tailnet.self %}
       <li>
@@ -759,12 +1004,10 @@ The suite is green, so the change is in.</pre>
     </ul>
 
     {% if tailnet.acl_known %}
-    <h2 id="reach">which machines can reach it</h2>
-    <p class="hint">
-      From the packet filter the tailnet actually handed this node. A machine
-      marked blocked is stopped by your ACL before it ever reaches the portal -
-      that is what made 8500 answer on the LAN address but not the tailscale one.
-    </p>
+    <h2 id="reach">which machines can reach it{% call info() %}From the packet filter the tailnet
+      actually handed this node. A machine marked blocked is stopped by your ACL
+      before it ever reaches the portal - that is what made 8500 answer on the
+      LAN address but not the tailscale one.{% endcall %}</h2>
     <ul class="access-peers">
       {% for peer in tailnet.peers %}
       <li class="{{ 'offline' if not peer.online }}">

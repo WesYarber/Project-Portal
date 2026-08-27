@@ -111,6 +111,26 @@ ACTIONS: tuple[Action, ...] = (
         default="p",
         targets=("project",),
     ),
+    # Wes, 2026-08-01: "Uppercase 'Since you last looked' on side-bar and make
+    # it jump-able with 'S'." The banner only exists while there is unread work,
+    # so on a project you have already acknowledged this key correctly does
+    # nothing and the footer hint stops listing it.
+    Action(
+        name="summary",
+        label="since you last looked",
+        hint="the banner of unread agent work at the top of a project",
+        default="s",
+        targets=("summary",),
+    ),
+    # Wes, same note: "combine the workspace and attachments sections into the
+    # new files section. Make it jump to with 'F'."
+    Action(
+        name="files",
+        label="files",
+        hint="the workspace tree and everything uploaded to the project",
+        default="f",
+        targets=("files",),
+    ),
 )
 
 ACTION_NAMES: tuple[str, ...] = tuple(action.name for action in ACTIONS)

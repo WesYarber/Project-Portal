@@ -183,6 +183,190 @@ def summarize(buckets: Sequence[dict]) -> dict:
     }
 
 
+# --------------------------------------------------------------------------
+# Where a run's tokens actually go
+# --------------------------------------------------------------------------
+# Wes, 2026-08-07: "I seem to blow through so much more usage than I used to.
+# Is it all the bloat from system prompt, memory, chat history, etc?"
+#
+# Answering that took an afternoon of hand-written SQL against the runs table,
+# which is the wrong way to answer a question that will be asked again. This is
+# that answer, made standing.
+#
+# The finding, from the transcript of run 924 (153 turns, 26.2M cache reads):
+# a run re-reads its whole context on every single turn, so cost is not the
+# number of tokens in a prompt, it is that number multiplied by the turns after
+# it. Of those 26.2M reads, 19% was the portal's own prompt, 30% was Claude
+# Code's system prompt plus tool schemas, and 51% was the conversation the run
+# generated itself. Only the first slice is the portal's to cut, and it is the
+# smallest of the three.
+
+# The portal's prompt is plain markdown English. Measured across the four active
+# projects on 2026-08-07, an 88 KB prompt was ~22k tokens: 4.0 bytes per token.
+# Used only to express one slice as a percentage of another, so a few percent of
+# drift here does not change what the panel says.
+BYTES_PER_TOKEN = 4.0
+
+# What every run carries before a single byte of the portal's prompt: Claude
+# Code's own system prompt plus the JSON schemas of every tool it can call.
+# Measured from run 924's transcript on 2026-08-07 - its context opened at
+# 56,793 tokens against a 90 KB (~22.5k token) prompt, leaving ~34.3k that the
+# portal neither writes nor can shrink. Named here so the panel can say plainly
+# which slice is nobody's to cut, rather than quietly folding it into the
+# portal's own share and overstating what a prompt diet would buy.
+CLI_HEAD_TOKENS = 34_300
+
+
+def anatomy(rows: Iterable[Any]) -> dict:
+    """Split what runs re-read into the prompt, the CLI's head, and the run itself.
+
+    Three slices, because they have three different owners:
+
+    * **prompt** - the portal writes this, and `promptbudget` already caps its
+      four unbounded blocks. It is the only slice a portal change can move.
+    * **cli** - Claude Code's system prompt and tool schemas. Fixed per turn and
+      not ours; shown so it is visible rather than blamed on the prompt.
+    * **run** - everything the run itself said and read back. Governed by how
+      long the run goes on, which is a question about what runs are asked to do,
+      not about prompt size.
+
+    Every slice is `tokens x turns`, because that is how a re-read context bills.
+    A run with no recorded turns or no recorded reads contributes nothing rather
+    than dividing by zero - the token columns landed on 2026-07-28 and every run
+    before that has NULL in them, exactly as `prompt_sizes` documents.
+    """
+    prompt = cli = reads = 0
+    counted = 0
+    for row in rows:
+        turns = _get(row, "num_turns") or 0
+        read = _get(row, "cache_read_tokens") or 0
+        pbytes = _get(row, "prompt_bytes") or 0
+        if not turns or not read or not pbytes:
+            continue
+        counted += 1
+        reads += read
+        prompt += int(pbytes / BYTES_PER_TOKEN) * turns
+        cli += CLI_HEAD_TOKENS * turns
+
+    if not counted or not reads:
+        return {"runs": 0, "prompt_pct": 0.0, "cli_pct": 0.0, "run_pct": 0.0, "reads": 0}
+
+    # The head slices are modeled (bytes/4, a measured constant) while `reads` is
+    # recorded, so a pathological run could model more head than it actually
+    # read. Clamp rather than emit a negative share: the honest reading of that
+    # case is "essentially all of it was head", not a nonsense number.
+    prompt_pct = min(100.0, 100.0 * prompt / reads)
+    cli_pct = min(100.0 - prompt_pct, 100.0 * cli / reads)
+    run_pct = 100.0 - prompt_pct - cli_pct
+    # Bars are built here rather than in the template, the way `by_project`
+    # already does it: `share_bar` is a function, not a registered Jinja filter.
+    return {
+        "runs": counted,
+        "reads": reads,
+        "prompt_pct": round(prompt_pct, 1),
+        "cli_pct": round(cli_pct, 1),
+        "run_pct": round(run_pct, 1),
+        "prompt_bar": share_bar(prompt_pct / 100.0),
+        "cli_bar": share_bar(cli_pct / 100.0),
+        "run_bar": share_bar(run_pct / 100.0),
+    }
+
+
+def turn_trend(buckets: Sequence[dict]) -> dict:
+    """Turns per run and weight per turn, oldest half against newest half.
+
+    The two numbers that actually moved. Between 2026-07-21 and 2026-08-04 the
+    portal's builds went from 56 turns a run to 172, while the weight of a single
+    turn roughly doubled - and because a longer run also carries a fatter context
+    on every one of those extra turns, the two multiply rather than add. That is
+    the whole of why a run went from ~4 to ~25, and neither half of it is prompt
+    size.
+
+    Split by whole days rather than by run, so a day with one expensive run does
+    not outvote a day with forty cheap ones. Days with no finished runs are
+    skipped on both sides; with fewer than two such days there is no trend to
+    report and `runs` comes back 0.
+    """
+    live = [b for b in buckets if b.get("runs") and b.get("turns")]
+    if len(live) < 2:
+        return {"runs": 0}
+
+    half = len(live) // 2
+
+    def stat(days: Sequence[dict]) -> dict:
+        runs = sum(d["runs"] for d in days)
+        turns = sum(d["turns"] for d in days)
+        cost = sum(d["cost"] for d in days)
+        return {
+            "turns_per_run": round(turns / runs, 1) if runs else 0.0,
+            "cost_per_turn": round(cost / turns, 4) if turns else 0.0,
+            "cost_per_run": round(cost / runs, 2) if runs else 0.0,
+        }
+
+    older, newer = stat(live[:half]), stat(live[half:])
+    return {
+        "runs": sum(d["runs"] for d in live),
+        "older": older,
+        "newer": newer,
+        # Signed so the template can say "up" or "down" without recomputing it,
+        # and 0 when there is nothing to divide by rather than a false "flat".
+        "turns_change_pct": _change(older["turns_per_run"], newer["turns_per_run"]),
+        "per_turn_change_pct": _change(older["cost_per_turn"], newer["cost_per_turn"]),
+        "per_run_change_pct": _change(older["cost_per_run"], newer["cost_per_run"]),
+    }
+
+
+def _change(old: float, new: float) -> int:
+    """Percent change old -> new, 0 when there is no baseline to change from."""
+    if not old:
+        return 0
+    return int(round(100.0 * (new - old) / old))
+
+
+def prompt_sizes(rows: Iterable[Any], names: dict[int, dict]) -> dict:
+    """How big the prompts have been, and which project builds the biggest one.
+
+    Every run's prompt is rebuilt from scratch, and a run re-reads it once per
+    turn - so a kilobyte here is not a kilobyte, it is a kilobyte times however
+    many turns the run takes. That is what makes prompt size worth a panel
+    rather than a column: it is the one number on the page that multiplies.
+
+    Only runs that recorded a size count. The column landed on 2026-07-28, so
+    every run before that has NULL in it, and averaging those in as zero would
+    show the prompt shrinking on exactly the day the portal started measuring
+    it. An empty rollup returns `runs: 0` and the page draws nothing.
+    """
+    sized = [r for r in rows if _get(r, "prompt_bytes")]
+    if not sized:
+        return {"runs": 0, "avg_kb": 0.0, "max_kb": 0.0, "biggest": None, "by_project": []}
+
+    per_project: dict[Any, list[int]] = {}
+    for row in sized:
+        per_project.setdefault(_get(row, "project_id"), []).append(int(_get(row, "prompt_bytes")))
+
+    table = []
+    for pid, sizes in per_project.items():
+        info = names.get(pid) or {}
+        table.append({
+            "project_id": pid,
+            "title": info.get("title") or "(not a project)",
+            "slug": info.get("slug") or "",
+            "runs": len(sizes),
+            "avg_kb": round(sum(sizes) / len(sizes) / 1024, 1),
+            "max_kb": round(max(sizes) / 1024, 1),
+        })
+    table.sort(key=lambda d: -d["avg_kb"])
+
+    total = sum(int(_get(r, "prompt_bytes")) for r in sized)
+    return {
+        "runs": len(sized),
+        "avg_kb": round(total / len(sized) / 1024, 1),
+        "max_kb": round(max(int(_get(r, "prompt_bytes")) for r in sized) / 1024, 1),
+        "biggest": table[0] if table else None,
+        "by_project": table,
+    }
+
+
 def share_bar(fraction: float, width: int = 16) -> str:
     """A proportional ASCII bar, `fraction` in 0..1. Any non-zero share gets at
     least one block so a cheap project doesn't render as an empty row."""
@@ -284,6 +468,9 @@ def history(
         "buckets": buckets,
         "totals": summarize(buckets),
         "by_project": by_project(rows, names),
+        "prompts": prompt_sizes(rows, names),
+        "anatomy": anatomy(rows),
+        "trend": turn_trend(buckets),
         "runs_spark": sparkline([b["runs"] for b in buckets]),
         "cost_spark": sparkline([b["cost"] for b in buckets]),
     }

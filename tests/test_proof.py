@@ -104,6 +104,104 @@ def test_portal_bookkeeping_is_excluded(repo):
     assert proof.changed_ui_files(repo, before) == ["style.css"]
 
 
+# --- only a change that RENDERS counts (inert.py) ---------------------------
+
+
+def test_a_comment_only_css_edit_is_not_reported(repo):
+    """The false alarm of 2026-08-16, end to end: a run whose whole front-end
+    diff was a word corrected inside two CSS comments was told it had shipped UI
+    blind. Nothing on screen could have differed, so nothing is asked for."""
+    commit(repo, "app/static/style.css", "/* the pronouns dropdown */\n.sel { width: auto; }\n")
+    before = proof.head_sha(repo)
+    commit(repo, "app/static/style.css", "/* the gender dropdown */\n.sel { width: auto; }\n")
+    assert proof.changed_ui_files(repo, before) == []
+
+
+def test_a_real_edit_beside_a_comment_edit_is_still_reported(repo):
+    commit(repo, "style.css", "/* old note */\n.sel { width: auto; }\n")
+    before = proof.head_sha(repo)
+    commit(repo, "style.css", "/* new note */\n.sel { width: 100%; }\n")
+    assert proof.changed_ui_files(repo, before) == ["style.css"]
+
+
+def test_only_the_files_that_render_are_named(repo):
+    """A spelling sweep across the tree really did edit some templates' Jinja
+    comments and another template's visible text in one commit. The note should
+    name the second and not the first."""
+    commit(repo, "banner.html", "{# the O glyphs are tinted #}\n<div>hi</div>\n")
+    commit(repo, "activity.html", "<span>stopped</span>\n")
+    before = proof.head_sha(repo)
+    commit(repo, "banner.html", "{# the O glyphs are colored #}\n<div>hi</div>\n")
+    commit(repo, "activity.html", "<span>canceled</span>\n")
+    assert proof.changed_ui_files(repo, before) == ["activity.html"]
+
+
+def test_an_added_front_end_file_is_always_reported(repo):
+    """A stylesheet appearing changes what the browser is served, whatever is
+    inside it - so an addition is never put to the inert check."""
+    before = proof.head_sha(repo)
+    commit(repo, "new.css", "/* nothing but a comment */\n")
+    assert proof.changed_ui_files(repo, before) == ["new.css"]
+
+
+def test_a_deleted_front_end_file_is_always_reported(repo):
+    commit(repo, "gone.css", "/* nothing but a comment */\n")
+    before = proof.head_sha(repo)
+    git(repo, "rm", "-q", "gone.css")
+    git(repo, "commit", "-qm", "drop it")
+    assert proof.changed_ui_files(repo, before) == ["gone.css"]
+
+
+def test_a_rename_is_reported_under_its_new_name(repo):
+    """The bytes are identical, but the path the page asks for is not."""
+    commit(repo, "old.css", ".a { color: red }\n")
+    before = proof.head_sha(repo)
+    git(repo, "mv", "old.css", "new.css")
+    git(repo, "commit", "-qm", "rename")
+    assert proof.changed_ui_files(repo, before) == ["new.css"]
+
+
+def test_an_added_file_is_not_even_put_to_the_inert_check(repo, monkeypatch):
+    """`status == "M"` and the unreadable-blob guards in `_renders_differently`
+    are two nets under the same fall, and each hides the other from a sweep: the
+    status check means the blob reads never happen for an addition, and the blob
+    reads would answer "it renders" anyway if they did. Both are worth keeping -
+    a later edit to either one alone must not be able to drop a new stylesheet
+    off the note - so each is pinned on its own. This is the status check: an
+    addition never reaches the inert check at all, and so never pays for the two
+    `git show` calls it would take to reach the same answer.
+    """
+    calls = []
+    monkeypatch.setattr(
+        proof, "_renders_differently", lambda *args: calls.append(args) or True
+    )
+    before = proof.head_sha(repo)
+    commit(repo, "new.css", "/* nothing but a comment */\n")
+    assert proof.changed_ui_files(repo, before) == ["new.css"]
+    assert calls == []
+
+
+def test_an_unreadable_blob_on_either_side_means_it_renders(repo):
+    """And this is the other net, reached directly because the one above keeps
+    `changed_ui_files` from ever getting here. A path git cannot show at one end
+    of the range has no text to compare, and no comparison means no dismissal.
+    """
+    before = proof.head_sha(repo)
+    commit(repo, "style.css", "/* only a comment */\n")
+    after = proof.head_sha(repo)
+    assert proof._blob(repo, before, "style.css") is None
+    assert proof._renders_differently(repo, before, after, "style.css") is True
+    assert proof._renders_differently(repo, after, before, "style.css") is True
+
+
+def test_a_backend_file_is_never_put_to_the_inert_check(repo):
+    """`.py` has no verdict in inert.py, so a suffix filter that ran after the
+    check rather than before it would nag on every Python commit."""
+    before = proof.head_sha(repo)
+    commit(repo, "app/worker.py", "# a comment\nx = 1\n")
+    assert proof.changed_ui_files(repo, before) == []
+
+
 # --- report_has_proof -------------------------------------------------------
 
 

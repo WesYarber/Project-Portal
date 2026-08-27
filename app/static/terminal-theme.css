@@ -207,7 +207,18 @@ a:hover { text-decoration: underline; }
 }
 .tab-btn::before { content: "[ "; opacity: 0.5; }
 .tab-btn::after { content: " ]"; opacity: 0.5; }
-.tab-btn:hover, .tab-btn.active { color: var(--ansi-blue); text-shadow: 0 0 8px rgba(56, 189, 248, 0.3); text-decoration: none; }
+/* A tab is text, not a slab: it lights its own label up rather than taking the
+   generic button hover's tint and glow, which on a borderless control reads as
+   a stray rectangle floating behind the word. Both of the properties the
+   generic rule sets are answered here, not just the one that looks wrong -
+   answering half of a hover state is what made the label vanish before. */
+.tab-btn:hover, .tab-btn:focus, .tab-btn.active {
+  color: var(--ansi-blue);
+  background: transparent;
+  box-shadow: none;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+  text-decoration: none;
+}
 .tab-btn .nav-count { color: var(--ansi-yellow); font-size: 0.75rem; vertical-align: super; }
 
 /* --- Panels --------------------------------------------------------------- */
@@ -346,31 +357,78 @@ button, .btn {
   height: var(--control-h);
   line-height: 1;
 }
-button:hover, .btn:hover {
-  background: var(--ansi-blue);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
-  text-decoration: none;
-}
 button.secondary, .btn.secondary { color: var(--terminal-dim); background: rgba(148, 163, 184, 0.06); }
-button.secondary:hover, .btn.secondary:hover { background: var(--terminal-dim); color: var(--bg-color); box-shadow: none; }
 button.danger, .btn.danger { color: var(--ansi-red); background: rgba(255, 110, 110, 0.08); }
-button.danger:hover, .btn.danger:hover {
-  background: var(--ansi-red);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(255, 110, 110, 0.3);
-}
 /* "go" - the affirmative action on a form, green so the eye lands on it. */
 button.go, .btn.go {
   color: var(--ansi-green);
   background: rgba(74, 222, 128, 0.1);
   border-color: rgba(74, 222, 128, 0.45);
 }
-button.go:hover, .btn.go:hover {
-  background: var(--ansi-green);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
+
+/* --- Hover: a lift, never an inversion ------------------------------------
+   Hover deepens the control's OWN tint and lights up its border. The label
+   keeps its color and never moves.
+
+   This rule used to flood the control with solid --ansi-blue and flip the
+   label to the page color. That broke in two ways, and both were reported by
+   a person rather than caught by a test:
+
+   1. The label can be separated from the fill. "Solid background + inverted
+      label" only stays readable while BOTH halves apply, and any rule with
+      more specificity that sets a hover color but no background keeps its own
+      label color and drops it onto the blue slab - blue on blue, the word
+      gone. A tab (`.tab-btn:hover`), a foldable head, any large custom target
+      shaped like a button. A translucent wash over the dark body cannot
+      swallow a label whatever color that label happens to be, so the failure
+      is not just fixed here, it is unreachable.
+   2. It shouted. Wes, 2026-08-04: "makes the whole section turn blue where you
+      can't read the text under it anymore. It should be a much more subtle
+      color change." Again 2026-08-13: "unreadable and pretty offensive to the
+      eyes."
+
+   Gated on (hover: hover) because a touch device has no hover to give: iOS
+   leaves :hover stuck on whatever was tapped until you tap somewhere else, so
+   an untapped-looking control stays lit. Feedback for a finger is :active,
+   below - one filter, so every variant brightens in its own color rather than
+   each needing its own rule. */
+@media (hover: hover) {
+  button:hover, .btn:hover {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: var(--ansi-blue);
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.18);
+    text-decoration: none;
+  }
+  /* The dim variant is the one case where the label itself moves: at rest it is
+     --terminal-dim on almost nothing, and merely deepening that wash pushes it
+     under the 4.5:1 floor. Lifting it to the body foreground is what "hover"
+     should mean on a control that is quiet on purpose. */
+  button.secondary:hover, .btn.secondary:hover {
+    background: rgba(148, 163, 184, 0.16);
+    border-color: var(--terminal-dim);
+    color: var(--terminal-fg);
+    box-shadow: none;
+  }
+  /* Red is the darkest of the accents, so the same wash that leaves blue and
+     green comfortably legible drops --ansi-red to 4.2:1 against it — under the
+     floor, measured. Like .secondary, the label brightens rather than the wash
+     thinning: hover should read as the control lighting UP. */
+  button.danger:hover, .btn.danger:hover {
+    background: rgba(255, 110, 110, 0.2);
+    border-color: var(--ansi-red);
+    color: hsl(0, 90%, 78%);
+    box-shadow: 0 0 10px rgba(255, 110, 110, 0.18);
+  }
+  button.go:hover, .btn.go:hover {
+    background: rgba(74, 222, 128, 0.2);
+    border-color: var(--ansi-green);
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.18);
+  }
 }
+/* The press. `filter` rather than a per-variant background so a danger button
+   flashes red and a go button green with no rule of their own, and rather
+   than a transform, which would move the hit box out from under the finger. */
+button:active, .btn:active { filter: brightness(1.4); }
 button.small, .btn.small { padding: 0.2rem 0.6rem; font-size: 0.75rem; height: 1.8rem; }
 
 .button-row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }

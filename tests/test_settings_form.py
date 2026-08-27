@@ -360,3 +360,48 @@ def test_test_notification_is_its_own_form(client):
     body = client.get("/settings").text
     assert 'action="/settings/test-notification"' in body
     assert "formaction" not in body
+
+
+# --- The 'i' sweep: definitions live behind dots, not inline ----------------
+
+def _bubble_for(html: str, label_text: str) -> str:
+    """The info-bubble markup that sits in the same element as a label."""
+    start = html.index(label_text)
+    bubble = html.index('info-bubble', start)
+    return html[bubble:html.index('</span>', bubble)]
+
+
+def test_telegram_definitions_sit_behind_info_dots(client):
+    """The last three notification-panel definitions moved off the page and
+    behind their fields' dots (#383): plain-English routing, the Telegram
+    model, and the GLaDOS switch each explain themselves on demand only."""
+    html = client.get("/settings").text
+    for label, phrase in [
+        ("Understand plain English", "answering a question"),
+        ("Telegram model", "works out what you meant"),
+        ("GLaDOS personality", "never rewritten"),
+    ]:
+        assert phrase in _bubble_for(html, label)
+    # And no bare hint paragraph repeats them in the clear.
+    assert "Slash commands keep working" not in html.split("info-bubble")[0]
+
+
+def test_access_definitions_sit_behind_info_dots(client, monkeypatch):
+    from app import netinfo
+
+    monkeypatch.setattr(netinfo, "cached", lambda: {
+        "lan_url": "http://192.168.0.10:8500/",
+        "https": True,
+        "https_url": "https://portal-host.tailnet.ts.net/",
+        "self": {"dns": "portal-host", "host": "portal-host"},
+        "acl_known": True,
+        "peers": [{"host": "render-box", "os": "linux", "tags": [], "online": True,
+                   "reach": "yes"}],
+        "age_sec": 60,
+    })
+    html = client.get("/settings").text
+    # The secure-context explanations are in bubbles; the row keeps a
+    # two-word label.
+    assert "hides the microphone" in _bubble_for(html, "plain http")
+    assert "voice memos record here" in _bubble_for(html, ">https<")
+    assert "packet filter" in _bubble_for(html, "which machines can reach it")

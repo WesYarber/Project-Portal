@@ -28,6 +28,20 @@ RUNS_DIR = DATA_DIR / "runs"
 # (see app/oneoff.py). Beside PROJECTS_DIR, never inside it - these are not
 # projects and must not show up on the dashboard's folder scans.
 TASKS_DIR = DATA_DIR / "tasks"
+# Uploaded files that have not been shown to an agent yet (app/attachments.py).
+#
+# Wes, 2026-08-16: "Projects that are currently running when I attach a file to
+# a note/prompt im currently working on ... seem to see the file get attached
+# and ask a question about it. Maybe it could wait to be revealed to the agent
+# that the file was added until it is dealing with that prompt?"
+#
+# An upload used to be written straight into the project workspace, which is
+# the agent's cwd - so a screenshot appeared underneath a run already in flight,
+# whose prompt was built minutes before the note explaining it existed. Files
+# wait here instead, and are moved into the workspace by the run whose prompt
+# carries their note. OUTSIDE PROJECTS_DIR for the whole of the point: anywhere
+# under a workspace is somewhere a running agent can see.
+INCOMING_DIR = DATA_DIR / "incoming"
 
 # Claude Code skills the portal ships to every project workspace. Copied into
 # <workspace>/.claude/skills/ before each run (see worker._ensure_workspace),
@@ -105,6 +119,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "worker_model": DEFAULT_MODEL,
     "worker_interval_min": "10",
     "max_runs_per_day": "8",
+    # Runs one project may take in a day when it has no cap of its own. The
+    # budget above is for the whole board and the scheduler works it in one
+    # order, so without this the project at the head takes the lot. 0 means no
+    # default cap.
+    "project_max_runs_per_day": "6",
     # Agent runs allowed in flight at once, always on different projects. 1 is
     # the old strictly-serial behavior; the ceiling is MAX_PARALLEL_LIMIT.
     "max_parallel_runs": "2",
@@ -124,6 +143,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # tool inside a run used to OOM the whole box and take the portal with it.
     # See app/runlimit.py.
     "run_memory_max": "",
+    # Memory ceiling for ALL runs in flight together, applied to the systemd
+    # slice every run scope is created in. Blank means a fraction of this
+    # machine's RAM; "0" or "off" disables it. This is what makes a generous
+    # per-run cap safe: without it, `max_parallel_runs` x `run_memory_max` was
+    # the only bound, and it was several times the size of the machine.
+    "runs_memory_pool": "",
     # Percentage of a real Claude window at which scheduled runs stop, so the
     # portal stops just short of the wall instead of discovering it mid-run.
     # Manual runs ignore it. See app/pacing.py.
@@ -132,6 +157,12 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # `building` - i.e. writing code - waits for Wes. Turn this off to let a
     # finished plan roll straight into a build.
     "require_build_approval": "1",
+    # How hard a build run proves its own work: "proportionate" (scale it to
+    # the diff), "thorough" (full suite plus a mutation sweep every time) or
+    # "light" (the owning tests only). Self-verification is ~60% of what a run
+    # spends, so this is the biggest single lever on cost. See
+    # app/verifydepth.py.
+    "verification_depth": "proportionate",
     # Off by default, as of 2026-07-28. Wes: "Get rid of the QX numbering
     # system as I'm no longer using telegram to control this. Turn off our
     # telegram integration along with this... If a user on GitHub, for example,
@@ -165,23 +196,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # than only on more runs. See app/pacing.py:route_for_spend.
     "spend_down_model": DEFAULT_MODEL,
     # Dashboard project ordering; see PROJECT_SORTS.
-    "dashboard_sort": "priority",
-    # Whether the per-project priority number exists at all.
-    #
-    # Wes, 2026-07-27: "priority - I don't think I use it, and might want to
-    # remove it. I think maybe it would be more useful in cases where someone
-    # has less tokens to burn through and wants to keep less things running in
-    # parallel... At very least, maybe let's add in an option in settings to
-    # hide the priority." He is right about his own install: 28 of his 30
-    # projects sit at 0.
-    #
-    # Off does NOT mean "hide a lever that is still pulling". Priority is the
-    # first key in every ORDER BY the scheduler and the dashboard use, so a
-    # hidden 6 would go on front-running the queue with nothing on screen to
-    # explain it - the silent-behavior failure this project keeps refusing to
-    # ship. Off therefore drops it from the ordering too, and the queue falls
-    # back to least-recently-touched. See db.project_order().
-    "show_priority": "1",
+    "dashboard_sort": "recent",
     # Which letter jumps to which section (n / j / t / p as shipped). Spread in
     # from app/jumpkeys.py rather than written out here, so adding a jumpable
     # section is one entry in that module's ACTIONS and nothing else - the
@@ -196,11 +211,31 @@ DEFAULT_SETTINGS: dict[str, str] = {
     "backoff_until": "",
     "last_reflect_date": "",
     # learnings.md is injected into every run's prompt, so it must not grow
-    # without bound. Past this many lines the portal auto-runs a compaction the
+    # without bound. Past this many KB the portal auto-runs a compaction the
     # next quiet day-boundary (snapshotting first), and /memory shows a nag.
     # See app/worker.py _maybe_compact. 0 disables the automatic trigger.
-    "learnings_cap_lines": "200",
+    #
+    # KB, not lines, since 2026-08-07: the trigger counted lines while a prompt
+    # spends bytes, so a file of 189 long lines sat under a 200-LINE cap at
+    # 58 KB with 43 KB of itself unreachable. See memory.learnings_cap_kb for
+    # why 24 and not the 16 the prompt budget carries.
+    "learnings_cap_kb": "24",
     "last_auto_compact_date": "",
+    # profile.md is pasted WHOLE into every run of every project, so it is the
+    # same tax as learnings.md and until 2026-08-07 it had no ceiling of any
+    # kind: it had reached 26.7 KB, 31% of the average build prompt, having
+    # grown 10 KB in ten days. Unlike learnings it needs no compaction job -
+    # the daily reflect already rewrites it every day, so the cap is simply
+    # told to the reflect (with the current size, and urgently once it is
+    # over). The prompt-side backstop trims by WHOLE sections at twice this,
+    # so a reflect that ignores the target once costs nothing and a runaway
+    # still cannot grow forever. See app/promptbudget.py profile_for_prompt.
+    #
+    # 16 KB is the same constraint that chose prompt_learnings_kb: the profile's
+    # behavior-shaping sections (who he is, what he values, how he wants things
+    # built, working style) came to 18.8 KB when this was written, and getting
+    # them under 16 is a merge-and-tighten pass, not an amputation. 0 disables.
+    "profile_cap_kb": "16",
     # How much of each unbounded block reaches a prompt, in KB. See
     # app/promptbudget.py for why these are byte budgets and not counts, and
     # for the measurement that says reordering the prompt would buy nothing.
@@ -212,6 +247,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # notes on top. It is the constraint that chose the number.
     "prompt_learnings_kb": "16",
     "prompt_journal_kb": "24",
+    # 6 is chosen the same way: on the project with the longest question
+    # history (twenty-five answered, 11.8 KB) the ten repeats of one question
+    # collapse to one, leaving 8.9 KB, and 6 keeps roughly the last two thirds
+    # of the real decisions. Older ones are named as left out, not hidden.
+    "prompt_answered_kb": "6",
     # Appearance: how much of the CRT treatment to apply (see APPEARANCE below).
     "ui_theme": "terminal",
     "crt_scanlines": "all",
@@ -227,7 +267,7 @@ DEFAULT_SETTINGS: dict[str, str] = {
 # all-or-nothing switch. Values become classes on <body>.
 APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
     # The whole visual language, and deliberately the first key: everything
-    # below it is a dial on a look, where this is which look you are dialling.
+    # below it is a dial on a look, where this is which look you are dialing.
     #
     # Wes, 2026-07-28: "she doesn't like this kind of terminal, tech-y theme
     # that I have, and she might want something a little more paper like,
@@ -281,6 +321,64 @@ APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
         ("comfortable", "comfortable"),
         ("compact", "compact (tighter rows and cards)"),
     ],
+    # The desktop side rail. Wes, 2026-08-01: "When on desktop with extra
+    # unused horizontal space, let's add a nav bar to the side... I haven't
+    # decided yet if im ok with shifting the rest of the main interface here
+    # that already exists over to the right to make more space for this. Maybe
+    # we can try it and see if I like it?"
+    #
+    # So both are built and the choice is his, which is why this is a setting
+    # rather than a decision.
+    #
+    # The two "on" options are named for what they do to the page, not for
+    # where the rail lands, because that is the only difference a person can
+    # feel. Wes, 2026-08-04: "update the sidebar options naming convention. For
+    # the 'on' options, one should be 'On - interface shift' and 'On - use
+    # existing space' with existing space being the default."
+    #
+    #   margin  "use existing space" and the default. The rail floats in the
+    #           dead margin beside the centered page and NOTHING on the page
+    #           moves at any width. It shrinks to fit that margin rather than
+    #           demanding a fixed 15rem, which is the rest of the same note -
+    #           "I want it to be more flexible for the 'Use existing space'
+    #           version to be able to be more narrow to still apply and use the
+    #           space to the left of the interface" - and is what drops it from
+    #           needing a 1620px window to needing 1400px.
+    #   beside  "interface shift". Pinned to the left edge from 1100px, page
+    #           pushed right and left-aligned against it. The only option that
+    #           can exist on a window too narrow to have any dead margin.
+    #   off     no rail at any width.
+    #
+    # The default has now been each of these once. It was `margin` on the
+    # reasoning that a default should move nothing; it became `beside` when
+    # `margin` needed 1620px and Wes's own window is ~1135px, so the default
+    # was showing him nothing. It is `margin` again because he asked for it by
+    # name - and the width work above is what makes that answer honest rather
+    # than a rail he cannot see. Below 1400px `margin` still shows no rail,
+    # because below 1400px there is genuinely no space to use.
+    #
+    # A layout switch and not a theme, deliberately: static/themes.css bans
+    # display and position outright, because a theme that can move a control is
+    # a look you cannot get back out of. This is the mechanism for the thing
+    # themes are not allowed to do, and it rides the person -> install ->
+    # default chain like every other appearance key.
+    "ui_sidebar": [
+        ("margin", "on - use existing space"),
+        ("beside", "on - interface shift"),
+        ("off", "off"),
+    ],
+    # What the rail's project list IS. Wes, 2026-08-01: "have it show as many of
+    # the most recent projects that have been worked on as will fit ... and have
+    # a section in settings to change this from recent back to kind of what we
+    # have now which is just based on status."
+    #
+    # Recent is the default because that is the one he asked for; the rail is a
+    # way back to what you were just doing, and what you were just doing is not
+    # sorted by status.
+    "ui_rail_projects": [
+        ("recent", "most recently worked on"),
+        ("shelf", "grouped by status (active, then in review)"),
+    ],
 }
 # Class prefix on <body> for each appearance setting, e.g. crt_scanlines=off
 # becomes `scan-off`. Keeping this beside the choices means adding an option
@@ -292,7 +390,13 @@ APPEARANCE_CLASS_PREFIX: dict[str, str] = {
     "crt_animations": "anim",
     "ui_font": "font",
     "ui_density": "density",
+    "ui_sidebar": "rail",
 }
+# Deliberately absent from the table above: `ui_rail_projects`. The rail's list
+# is built on the server (main.side_rail reads the setting), so there is no
+# class to paint and nothing the browser could preview - and a preview that
+# swapped a class and changed nothing on screen would read as the setting not
+# working. select_field falls back to an empty prefix, which app.js skips.
 # What the browser chrome outside the page should be for each theme: the iOS
 # status bar tint and the overscroll color. These cannot come from the
 # stylesheet - a <meta> is read before any CSS is applied, and it is what stops
@@ -336,12 +440,25 @@ APPEARANCE_DEFAULTS["crt_glow"] = "prose"
 # so two projects touched in the same second would otherwise come back in
 # whatever order SQLite felt like, and the dashboard would reshuffle on reload.
 PROJECT_SORTS: dict[str, tuple[str, str]] = {
-    "priority": ("priority, then recent", "priority DESC, updated_at DESC, id DESC"),
-    "recent": ("recently updated", "updated_at DESC, id DESC"),
+    "recent": ("recently worked on", "updated_at DESC, id DESC"),
     "created": ("newest first", "id DESC"),
     "title": ("title a-z", "title COLLATE NOCASE ASC, id DESC"),
 }
-DEFAULT_PROJECT_SORT = "priority"
+DEFAULT_PROJECT_SORT = "recent"
+
+# The one sort that SQL cannot express on its own. "Recently worked on" means
+# the newest of a run, a note, a journal entry and the project row's own
+# `updated_at` - and the first three live in other tables, so the SQL above is
+# only the base order and `db.list_projects_sorted` refines it in Python from
+# `db.last_activity_at()`. Named here rather than spelled out at each call site
+# so the dashboard, the side rail and /everyone cannot come to disagree about
+# which sort is the activity-aware one.
+#
+# Wes, 2026-08-16: "Get rid of the notion of project 'priority' values. Instead,
+# within project statuses on the dashboard, I want to sort by most recently
+# modified similar to how the left nav bar is done." The rail had already been
+# taught this question on 2026-08-07; this is the board learning the same one.
+ACTIVITY_SORT = "recent"
 
 # Stages / kinds ---------------------------------------------------------------
 # The redesigned state model (docs/state-model.md, approved by Wes 2026-07-22):

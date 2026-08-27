@@ -524,3 +524,260 @@ def test_clearing_somebodys_answer_is_not_undone_at_the_next_boot(tmp_path, monk
 
     db.init_db()  # a restart
     assert people.by_slug("erin")["gender"] == "", "the backfill overruled a real edit"
+
+
+# --------------------------------------------------------------------------
+# Dropping the retired `pronouns` column
+# --------------------------------------------------------------------------
+# The column outlived the rename on purpose: `_backfill_gender` needed it as a
+# source, and an ALTER ... DROP on a live table has no undo. It comes off on
+# 2026-08-16, and the danger in that is not the drop - it is the backfill going
+# with it. An install upgrading from before the rename straight to today has
+# every answer in `pronouns` and nothing in `gender`, so a drop that did not
+# move them first would reset those people to they/them on the way past, which
+# is the exact failure `_backfill_gender` was written to prevent, arriving by
+# way of its deletion.
+
+
+def _people_table_part_way_through(path):
+    """The shape a live install is in TODAY: both columns, backfill already run.
+
+    Wes's own database, in other words - `gender` answered, a stale `pronouns`
+    sitting beside it, and `people_gender_backfilled` set. The move must NOT
+    run again from here, because '' is a legitimate answer and re-running it
+    would put a stale pronoun back over a clearing somebody meant.
+    """
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE people (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            pronouns TEXT NOT NULL DEFAULT 'they',
+            gender TEXT NOT NULL DEFAULT '',
+            background TEXT NOT NULL DEFAULT '',
+            tailnet_login TEXT NOT NULL DEFAULT '',
+            is_owner INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+        CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL DEFAULT '');
+        INSERT INTO settings (key, value) VALUES ('people_gender_backfilled', '1');
+        INSERT INTO people (slug, name, pronouns, gender, is_owner, created_at)
+             VALUES ('wes', 'Wes', 'he', 'male', 1, '2026-07-01T00:00:00+00:00');
+        INSERT INTO people (slug, name, pronouns, gender, is_owner, created_at)
+             VALUES ('erin', 'Erin', 'she', '', 0, '2026-07-28T00:00:00+00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+def _columns_of_people():
+    return {row["name"] for row in db.get_conn().execute("PRAGMA table_info(people)")}
+
+
+def test_the_pronouns_column_comes_off_an_upgrading_database(tmp_path, monkeypatch):
+    """The point of the change: the dead column is actually gone."""
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    assert "pronouns" not in _columns_of_people()
+    assert "gender" in _columns_of_people(), "the replacement has to still be there"
+
+
+def test_a_fresh_database_has_no_pronouns_column(tmp_path, monkeypatch):
+    """Nothing re-creates it - it is not in SCHEMA and not in _ADDED_COLUMNS."""
+    monkeypatch.setattr(config, "DB_PATH", tmp_path / "new.db")
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    assert "pronouns" not in _columns_of_people()
+
+
+def test_the_answers_move_across_on_the_boot_that_drops_the_column(tmp_path, monkeypatch):
+    """The backfill has ONE boot left to run in, and it is this one.
+
+    This is the test that stops `_drop_pronouns` being simplified back down to
+    a bare DROP: an install that never saw the 2026-07-28 release has its only
+    copy of these answers in the column being dropped, so the move has to
+    happen on the same boot, before the column goes.
+    """
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    assert "pronouns" not in _columns_of_people(), "the column should be gone"
+    assert people.by_slug("erin")["gender"] == "female", (
+        "an answered person was reset to they/them by the drop"
+    )
+    assert people.by_slug("sam")["gender"] == "", "they/them was never an answer"
+
+
+def test_the_drop_does_not_reopen_an_answer_somebody_cleared(tmp_path, monkeypatch):
+    """On a database where the move already ran, it must not run a second time.
+
+    This is the live shape, so it is the branch that actually executes on Wes's
+    install: the flag is set, `gender` is deliberately '', and the stale
+    pronoun says "she". Re-running the move on the way to the drop would undo a
+    real edit at the moment the evidence for it disappears forever.
+    """
+    path = tmp_path / "mid.db"
+    _people_table_part_way_through(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    assert "pronouns" not in _columns_of_people()
+    assert people.by_slug("erin")["gender"] == "", (
+        "the drop put a stale pronoun back over a cleared answer"
+    )
+
+
+def test_the_owner_is_skipped_even_when_the_pronoun_disagrees(tmp_path, monkeypatch):
+    """`AND is_owner = 0` is load-bearing, and THIS is the install where it bites.
+
+    Two sweeps were needed to write this test, and the first version of it was
+    wrong in an instructive way. `ensure_owner` runs before `_drop_pronouns`
+    and writes the owner's gender from the config, so on an install whose
+    portal.toml answers the question the owner's row is no longer '' by the
+    time the migration's `COALESCE(gender, '') = ''` looks at it - the clause
+    excludes them anyway and dropping `AND is_owner = 0` changes nothing that
+    any assertion can see. Both the original owner test and a first attempt at
+    this one sailed through the mutation for that reason.
+
+    The clause earns its keep on the install that has NOT said: a published
+    tree with no portal.toml, where `config.SITE.gender` is '' and so is the
+    owner's row. There the retired column is the only thing left holding an
+    answer, and taking it would mean a migration deciding something the person
+    never told this install - which is the whole reason the owner is the
+    config's to answer for. So the config is pinned to '' here rather than
+    inherited, and the test states its own conditions.
+
+    It also reads the stored ROW rather than `people.owner()`, and that took a
+    third sweep to find. `owner()` calls `ensure_owner()` on every call, which
+    rewrites the row's gender from the config before handing it back - so it
+    repairs the damage on the way past and any assertion made through it holds
+    no matter what the migration wrote. `everyone()` does no such repair, which
+    is where a polluted owner row would actually surface.
+    """
+    import dataclasses
+    import sqlite3
+
+    monkeypatch.setattr(config, "SITE", dataclasses.replace(config.SITE, gender=""))
+    assert site.gender_key(config.SITE.gender) == "", "the config must say nothing here"
+    disagreeing = "he"
+
+    path = tmp_path / "owner.db"
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        f"""
+        CREATE TABLE people (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slug TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            pronouns TEXT NOT NULL DEFAULT 'they',
+            background TEXT NOT NULL DEFAULT '',
+            tailnet_login TEXT NOT NULL DEFAULT '',
+            is_owner INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            archived_at TEXT
+        );
+        INSERT INTO people (slug, name, pronouns, is_owner, created_at)
+             VALUES ('wes', 'Wes', '{disagreeing}', 1, '2026-07-01T00:00:00+00:00');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    stored = db.get_conn().execute(
+        "SELECT gender FROM people WHERE is_owner = 1"
+    ).fetchone()["gender"]
+    assert stored == "", (
+        "the migration answered for the owner out of the retired column"
+    )
+    assert "pronouns" not in _columns_of_people()
+
+
+def test_a_typed_answer_beats_the_stale_pronoun_beside_it(tmp_path, monkeypatch):
+    """An answer given in the UI outranks the column being dropped.
+
+    The install that meets this: upgraded from before the rename, so the flag
+    is unset and the move still has to run - but somebody opened the settings
+    page in between and said which they are. Their typed answer and the old
+    pronoun disagree, and the move must not overwrite the one a person gave
+    with the one a migration found. `COALESCE(gender, '') = ''` is the line
+    that decides it, and this is the only test that would notice it going.
+    """
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    conn = sqlite3.connect(path)
+    conn.execute("ALTER TABLE people ADD COLUMN gender TEXT NOT NULL DEFAULT ''")
+    conn.execute("UPDATE people SET gender = 'female' WHERE slug = 'sam'")
+    conn.commit()
+    conn.close()
+
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+    db.init_db()
+
+    assert people.by_slug("sam")["gender"] == "female", (
+        "the migration overwrote an answer somebody typed"
+    )
+    assert people.by_slug("erin")["gender"] == "female", "an unanswered row still moves"
+    assert "pronouns" not in _columns_of_people()
+
+
+def test_the_backfill_flag_goes_with_the_column(tmp_path, monkeypatch):
+    """A settings row no code can explain is what this cleanup is about.
+
+    It has to be the part-way-through fixture, and that is the whole test. On a
+    database that never ran the old backfill the flag was never written, so
+    nothing sets it and `is None` is true whether or not the DELETE runs - the
+    first version of this test used that fixture and a sweep walked the
+    mutation straight through it. Only an install that HAS the row can show it
+    being taken away.
+    """
+    path = tmp_path / "mid.db"
+    _people_table_part_way_through(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+
+    import sqlite3
+
+    before = sqlite3.connect(path).execute(
+        "SELECT value FROM settings WHERE key = 'people_gender_backfilled'"
+    ).fetchone()
+    assert before == ("1",), "the fixture must actually carry the row being dropped"
+
+    db.init_db()
+
+    assert db.get_setting(db.GENDER_BACKFILL_KEY) is None
+
+
+def test_dropping_the_column_is_idempotent(tmp_path, monkeypatch):
+    """The column's own absence is the guard, so a restart is a no-op."""
+    path = tmp_path / "old.db"
+    _people_table_as_it_was(path)
+    monkeypatch.setattr(config, "DB_PATH", path)
+    monkeypatch.setattr(db, "_CONN", None)
+
+    for _ in range(3):
+        db.init_db()
+
+    assert "pronouns" not in _columns_of_people()
+    assert people.by_slug("erin")["gender"] == "female"

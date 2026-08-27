@@ -546,19 +546,34 @@ def test_refiling_an_item_that_does_not_exist_is_a_404(client, project, karli):
     assert client.post("/todo/98765/person", data={"person": str(karli["id"])}).status_code == 404
 
 
-def test_the_row_offers_the_re_file_control_once_there_are_two_of_you(
+def _refile_data(html: str) -> list[dict]:
+    """The re-file destinations the page hands the right-click menu.
+
+    The control is initTodoMenu in app.js since 2026-08-04 ("compress the
+    +tag, whose? and x buttons into a right click menu"); the page's half of
+    the contract is a JSON attribute on the card, HTML-escaped by Jinja.
+    """
+    import html as html_mod
+    import json
+    import re
+
+    m = re.search(r"data-refile='([^']*)'", html)
+    assert m, "the todo card no longer carries data-refile"
+    return json.loads(html_mod.unescape(m.group(1)))
+
+
+def test_the_menu_offers_the_re_file_choices_once_there_are_two_of_you(
     client, project, wes, karli
 ):
     people.add_member(project["id"], karli["id"])
-    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
+    db.add_todo(project["id"], "Paste the ntfy topic in", "user")
 
-    html = client.get(f"/project/{project['slug']}").text
+    choices = _refile_data(client.get(f"/project/{project['slug']}").text)
 
-    assert f'action="/todo/{row["id"]}/person"' in html
-    assert "Karli" in html
+    assert "Karli" in [c["label"] for c in choices]
 
 
-def test_one_member_still_gets_the_control_because_the_agent_is_a_destination(
+def test_one_member_still_gets_the_menu_because_the_agent_is_a_destination(
     client, project, wes
 ):
     """This used to be the case with NO control at all (#420): with one member,
@@ -570,32 +585,34 @@ def test_one_member_still_gets_the_control_because_the_agent_is_a_destination(
     unattributed human item already resolves to them by deduction, and two
     buttons for one outcome is the thing the old rule was really objecting to.
     """
-    row = db.add_todo(project["id"], "Paste the ntfy topic in", "user")
+    db.add_todo(project["id"], "Paste the ntfy topic in", "user")
 
-    html = client.get(f"/project/{project['slug']}").text
+    choices = _refile_data(client.get(f"/project/{project['slug']}").text)
 
-    assert f'action="/todo/{row["id"]}/person"' in html
+    assert [c["label"] for c in choices] == ["the agent", "Wes"]
     assert [c["label"] for c in todos.refile_choices(project["id"])] == ["the agent", "Wes"]
 
 
-def test_the_agent_half_gets_the_control_too(client, project, wes, karli):
+def test_the_agent_half_gets_the_menu_too(client, project, wes, karli):
     """An agent item that turns out to need somebody's hands should move, not
-    be retyped. It had no control at all until #428."""
+    be retyped. One data-refile on the card serves both halves; each list says
+    where its items already sit."""
     people.add_member(project["id"], karli["id"])
-    row = db.add_todo(project["id"], "Wire up the routing", "agent")
+    db.add_todo(project["id"], "Wire up the routing", "agent")
 
     html = client.get(f"/project/{project['slug']}").text
 
-    assert f'action="/todo/{row["id"]}/person"' in html
+    assert _refile_data(html)
+    assert 'data-here="agent"' in html
 
 
-def test_the_control_marks_where_the_item_already_is(client, project, wes, karli):
+def test_the_list_marks_where_the_item_already_is(client, project, wes, karli):
     people.add_member(project["id"], karli["id"])
     db.add_todo(project["id"], "Paste the ntfy topic in", "user", person_id=karli["id"])
 
     html = client.get(f"/project/{project['slug']}").text
 
-    assert 'class="todo-who-pick is-current"' in html
+    assert f'data-here="{karli["id"]}"' in html
 
 
 def test_a_re_filed_item_moves_to_the_other_heading(client, project, wes, karli):
@@ -735,15 +752,15 @@ def test_a_project_with_nobody_on_it_gets_no_control(project):
 
 
 def test_the_agent_half_marks_the_agent_as_current(client, project, wes, karli):
-    """Each list tells the macro where it already sits, so the current choice
-    is marked on the agent half exactly as it is on a person's."""
+    """Each list tells the menu where it already sits, so the current choice
+    can be skipped on the agent half exactly as on a person's."""
     people.add_member(project["id"], karli["id"])
     db.add_todo(project["id"], "Wire up the routing", "agent")
 
     html = client.get(f"/project/{project['slug']}").text
 
-    assert '<input type="hidden" name="person" value="agent">' in html
-    assert 'class="todo-who-pick is-current"' in html
+    assert 'data-here="agent"' in html
+    assert "agent" in [c["value"] for c in _refile_data(html)]
 
 
 def test_the_unattributed_group_marks_nobody_as_current(client, project, wes, karli):
@@ -755,4 +772,4 @@ def test_the_unattributed_group_marks_nobody_as_current(client, project, wes, ka
     html = client.get(f"/project/{project['slug']}").text
 
     assert todos.refile_value(None) == ""
-    assert 'class="todo-who-pick is-current"' in html
+    assert 'data-here=""' in html

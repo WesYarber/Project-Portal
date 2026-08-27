@@ -33,6 +33,12 @@ file. It is meant to run on a home server and be read on a phone.
 - The [Claude Code CLI](https://claude.com/claude-code) — either logged into a
   subscription, or pointed at an Anthropic API key (see below).
 - `git` for the per-project workspaces.
+- Optional: Docker, for voice-note transcription. Build the engine once with
+  `docker build -t portal-whisper:latest deploy/whisper/` (whisper.cpp, its
+  base.en model and ffmpeg, run per-memo in a no-network container) and
+  recorded voice notes get their words stored, shown under the player, and
+  quoted in the agent's prompt. Without it memos still upload and play; they
+  just stay untranscribed.
 
 Other model providers are **not** supported. The design leans on the Claude
 CLI specifically — its hooks, `--json-schema` structured output, `--max-turns`
@@ -74,12 +80,25 @@ used if neither is set — but only once you have opted in.
 
 ```bash
 git clone <this repo> project-portal && cd project-portal
-python3 -m venv venv && venv/bin/pip install -r requirements.txt
+python3 deploy/setup.py
 venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8500
 ```
 
+`deploy/setup.py` is idempotent, checks the prerequisites, builds the
+virtualenv, and ends by booting the app on a scratch port and asking it
+`/api/ping` — so it reports success only after a real HTTP request got a real
+answer. It never prompts: anything that needs a person (logging the Claude CLI
+in, confirming the hostname is one your phone can resolve) is printed at the
+end as a list rather than blocked on. `--check` reports without changing
+anything.
+
 Then open it from another device. `deploy/project-portal.service` is a systemd
 user unit that works unedited if your checkout is at `~/project-portal`.
+
+**[AGENTS.md](AGENTS.md) is the same thing written for an agent** — hand a
+coding agent this repo and that file and it can bring the portal up on a new
+machine, hand back the two things it cannot do itself, and know which guard to
+run before pushing anywhere public.
 
 ## Configure
 
@@ -88,7 +107,7 @@ itself: the system hostname, the account it runs as, and that account's real
 name from GECOS. On a home server that is usually already right.
 
 Copy `portal.example.toml` to `portal.toml` (gitignored) to change any of it —
-owner name, pronouns, hostname, ports, SSH user, ntfy channel. Every key is
+owner name, gender, hostname, ports, SSH user, ntfy channel. Every key is
 also an environment variable, `PORTAL_HOST` and so on.
 
 The one setting worth checking is `host`: every URL the portal and its agents
@@ -472,6 +491,13 @@ uvicorn app.main:app --host 0.0.0.0 --port 8500
 
 The database and memory files are created automatically (with seed data) on
 first startup if `data/portal.db` doesn't exist yet.
+
+If you are an agent editing the portal's own UI and want to *see* your change,
+do not restart the live service — that kills your own run. Start a throwaway
+instance instead, and read
+[`docs/looking-at-the-ui.md`](docs/looking-at-the-ui.md) first: a second portal
+process on the same machine sweeps systemd scopes, and there is one specific
+thing keeping it off the live one's.
 
 > Note: on this machine, `python3 -m venv` needed `--without-pip` followed
 > by bootstrapping pip via `get-pip.py`, because the `python3.14-venv`

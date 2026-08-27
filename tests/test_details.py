@@ -97,7 +97,17 @@ def test_prompt_announces_a_locked_description(project):
 def test_prompt_announces_a_locked_title(project):
     db.update_project(project["id"], title_locked=1)
     prompt = agent_runner.build_prompt("build", _fresh(project))
-    assert "do not propose a new title" in prompt
+    assert "LOCKED - named by hand" in prompt
+
+
+def test_prompt_invites_a_suggestion_even_on_a_locked_title(project):
+    """Wes, 2026-07-29: "If you want to suggest alternative titles, feel free
+    to, but do not change a title that the user set themselves." The prompt used
+    to say "do not propose a new title", which is the opposite instruction."""
+    db.update_project(project["id"], title_locked=1)
+    prompt = agent_runner.build_prompt("build", _fresh(project))
+    assert "do not propose a new title" not in prompt
+    assert "one-tap suggestion" in prompt
 
 
 def test_contract_asks_for_a_description(project):

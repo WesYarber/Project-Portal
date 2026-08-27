@@ -280,14 +280,20 @@ def test_an_asks_prompt_keeps_the_ask_thread_for_continuity():
     assert "THE-ASK-REPLY" in prompt
 
 
-def test_the_journal_badges_a_side_thread_entry(client):
+def test_the_journal_does_not_carry_the_side_thread_at_all(client):
+    """It used to be shown in the journal with a "side thread" badge on it.
+    Wes, 2026-08-16: "I also want the questions to be asked and answered all up
+    at the 'Ask' area instead of in line in the journal." The badge went with
+    the rows - see tests/test_ask_thread.py for where they went."""
     p = _project()
-    db.add_journal(p["id"], "user", "ask", "a question")
+    db.add_journal(p["id"], "user", "ask", "A-QUESTION-HE-ASKED")
     db.add_journal(p["id"], "user", "note", "a note")
     html = client.get(f"/project/{p['slug']}").text
-    assert "badge-aside" in html
-    assert "side thread" in html
-    assert "journal-aside" in html
+    journal = html.split('id="journal"')[1]
+
+    assert "A-QUESTION-HE-ASKED" not in journal
+    assert "a note" in journal
+    assert "side thread" not in html
 
 
 # --------------------------------------------------------------------------
@@ -334,7 +340,6 @@ def test_css_floats_the_bar_and_styles_the_chip():
     css = (STATIC / "style.css").read_text()
     assert "#sel-actions" in css
     assert ".quote-chip" in css
-    assert ".badge-aside" in css
 
 
 def test_css_stacks_the_bar_when_it_is_parked_in_the_gutter():

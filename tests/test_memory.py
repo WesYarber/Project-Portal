@@ -651,3 +651,107 @@ def test_the_dashboards_own_cells_are_left_alone(client):
     html = client.get("/").text
     assert "cell-desc" in html
     assert "cell-expand" not in html
+
+
+# --------------------------------------------------------------------------
+# What a compaction dropped
+#
+# The write gate archives a superseded or deleted learning, but the compaction
+# rewrites the whole file without going through it, so nothing it cut was ever
+# archived. The 2026-08-07 compaction took 171 bullets to 46 with not one
+# surviving verbatim, and those 125 exist only in a revision that ages out of a
+# 60-deep history - which is the loss these tests exist to stop repeating.
+# --------------------------------------------------------------------------
+
+_PKILL_OLD = (
+    "`pkill -f <pattern>` matches the running shell's OWN command line, so a "
+    "cleanup like `pkill -f \"demo.db\"` inside a command mentioning demo.db "
+    "kills the agent's own run at exit code 144."
+)
+_PKILL_NEW = (
+    "`pkill -f` / `pgrep -f` is the foot-gun that has bitten most often: the "
+    "pattern matches the shell running it, including the agent's own `claude "
+    "-p`, whose command line embeds the whole task prompt, so the run dies at "
+    "rc 144. Kill by port owner instead."
+)
+_WAVESHARE = (
+    "Waveshare IT8951 e-paper driver HATs take 5V on VCC but their SPI logic "
+    "is 3.3V with no level translator, MISO is required, and HRDY is inverted."
+)
+
+
+def test_a_bullet_reworded_into_a_merged_line_is_not_treated_as_dropped():
+    # A compaction rewrites every line it KEEPS as well as dropping the rest,
+    # so a set difference would call this dropped. It is not: the fact is still
+    # in the file, in sharper words.
+    assert memory.dropped_bullets(f"- {_PKILL_OLD}\n", f"- {_PKILL_NEW}\n") == []
+
+
+def test_a_bullet_with_no_trace_left_in_the_new_file_is_dropped():
+    dropped = memory.dropped_bullets(f"- {_WAVESHARE}\n", f"- {_PKILL_NEW}\n")
+    assert dropped == [_WAVESHARE]
+
+
+def test_the_two_are_told_apart_in_one_pass():
+    # The real shape of a compaction: some lines merged, some cut outright.
+    before = f"- {_PKILL_OLD}\n- {_WAVESHARE}\n"
+    assert memory.dropped_bullets(before, f"- {_PKILL_NEW}\n") == [_WAVESHARE]
+
+
+def test_an_emptied_file_drops_everything_rather_than_nothing():
+    # A compaction that wrote an empty file has dropped every fact, and the
+    # archive is the whole point in exactly that case. A `max()` over no new
+    # bullets must not read as "everything matched".
+    before = f"- {_PKILL_OLD}\n- {_WAVESHARE}\n"
+    assert memory.dropped_bullets(before, "# Learnings about Wes\n") == [
+        _PKILL_OLD, _WAVESHARE,
+    ]
+
+
+def test_headings_and_prose_are_not_archived_as_learnings():
+    # The `# ` title and the paragraph under it are boilerplate the compaction
+    # is told to keep; only bullets state facts.
+    before = "# Learnings about Wes\n\nDurable facts only, because every line costs context.\n"
+    assert memory.dropped_bullets(before, "# Learnings about Wes\n") == []
+
+
+def test_a_dropped_learning_reaches_the_archive_with_its_own_words(temp_data_dir):
+    n = memory.archive_compaction_losses(f"- {_WAVESHARE}\n", f"- {_PKILL_NEW}\n")
+    assert n == 1
+    archived = memory.archived_learnings()
+    assert len(archived) == 1
+    assert archived[0].reason == "compacted"
+    assert archived[0].text == _WAVESHARE
+
+
+def test_a_second_compaction_does_not_stack_the_same_dropped_fact(temp_data_dir):
+    # A compaction runs against a file the previous one already rewrote, so the
+    # same loss is re-derivable every time and would pile up without this.
+    memory.archive_compaction_losses(f"- {_WAVESHARE}\n", f"- {_PKILL_NEW}\n")
+    again = memory.archive_compaction_losses(f"- {_WAVESHARE}\n", f"- {_PKILL_NEW}\n")
+    assert again == 0
+    assert len(memory.archived_learnings()) == 1
+
+
+def test_dedup_survives_a_rewording_of_the_punctuation(temp_data_dir):
+    memory.archive_compaction_losses(f"- {_WAVESHARE}\n", "- unrelated new line here\n")
+    reworded = _WAVESHARE.replace(",", " -").rstrip(".") + "!"
+    assert memory.archive_compaction_losses(
+        f"- {reworded}\n", "- unrelated new line here\n"
+    ) == 0
+
+
+def test_archiving_a_loss_never_raises(temp_data_dir, monkeypatch):
+    # The live file has already been rewritten by the time this runs, so a
+    # failure here must not turn a good compaction into a failed run.
+    monkeypatch.setattr(memory, "dropped_bullets", _boom)
+    assert memory.archive_compaction_losses("- a\n", "- b\n") == 0
+
+
+def _boom(*_a, **_k):
+    raise RuntimeError("archive is on fire")
+
+
+def test_a_compaction_that_kept_everything_archives_nothing(temp_data_dir):
+    assert memory.archive_compaction_losses(f"- {_PKILL_OLD}\n", f"- {_PKILL_NEW}\n") == 0
+    assert memory.archived_learnings() == []

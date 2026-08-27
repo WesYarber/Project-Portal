@@ -296,7 +296,12 @@ def test_watcher_records_a_kill_and_announces_it_once(tmp_path, monkeypatch):
     assert watch.peak_bytes == 999
     # Announced into the live log exactly once, however many polls happened.
     assert len(seen) == 1
-    assert "memory cap" in seen[0]
+    # Which of the two ceilings the note blames depends on whether this machine
+    # can pool at all (kill_note reads the peak - 999 bytes here - against the
+    # per-run cap), so assert only what both wordings must say. The wordings
+    # themselves are pinned below.
+    assert "was killed" in seen[0]
+    assert "memory" in seen[0]
 
 
 def test_watcher_says_nothing_on_a_healthy_run(tmp_path, monkeypatch):

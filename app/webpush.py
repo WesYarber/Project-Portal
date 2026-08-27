@@ -56,6 +56,12 @@ TTL_SEC = 24 * 3600
 JWT_LIFETIME_SEC = 12 * 3600
 # RFC 8188 record size. Everything the portal sends fits in one record.
 RECORD_SIZE = 4096
+# What that leaves for the JSON before encryption. RFC 8291 spends 86 bytes of
+# the record on the aes128gcm header (16 salt + 4 length + 1 + 65 key), 16 more
+# on the GCM tag and 1 on the record's padding delimiter; the rest is ours.
+# Rounded down for slack, because a push service rejects an oversized body
+# rather than truncating it.
+MAX_PLAINTEXT = RECORD_SIZE - 128
 
 
 def _b64u(data: bytes) -> str:
@@ -204,14 +210,59 @@ def portal_url() -> str:
     )
 
 
-def payload(title: str, message: str, navigate: str) -> bytes:
-    return json.dumps(
-        {
-            "web_push": 8030,
-            "notification": {"title": title, "body": message, "navigate": navigate},
-        },
-        ensure_ascii=False,
-    ).encode()
+def payload(
+    title: str,
+    message: str,
+    navigate: str,
+    app_badge: Optional[int] = None,
+    actions: Optional[list] = None,
+) -> bytes:
+    """One Declarative Web Push notification, as JSON bytes.
+
+    `app_badge` paints a number on the home-screen icon (0 clears it). It is
+    omitted rather than guessed when the caller does not know whose device this
+    is: iOS leaves the badge alone for a payload that carries no `app_badge`,
+    and an unchanged stale number beats a confidently wrong one.
+
+    `actions` are the buttons on the notification itself - see
+    `quickreplies.push_actions`. Each navigates to a URL rather than firing a
+    background fetch, which is what the spec allows, so an answer button has to
+    land on a page that submits itself.
+
+    Shrinking, in that order, if the result will not fit a push service's 4 KB
+    record: buttons first (the notification still works, it just costs a tap),
+    then the body. A payload that overflows is refused outright by the push
+    service, so a question that happened to be long would silently never reach
+    a phone at all.
+    """
+    def build(body: str, acts: Optional[list]) -> bytes:
+        notification: dict = {"title": title, "body": body, "navigate": navigate}
+        if app_badge is not None:
+            notification["app_badge"] = max(0, int(app_badge))
+        if acts:
+            notification["actions"] = list(acts)
+        return json.dumps(
+            {"web_push": 8030, "notification": notification}, ensure_ascii=False
+        ).encode()
+
+    out = build(message, actions)
+    if len(out) <= MAX_PLAINTEXT and actions:
+        return out
+    if actions:
+        out = build(message, None)
+        if len(out) <= MAX_PLAINTEXT:
+            log.info("push payload too long for its buttons; sent without them")
+            return out
+    if len(out) <= MAX_PLAINTEXT:
+        return out
+    # Still too long with no buttons at all: the body is the only part left.
+    # Trim by however much it overflows, plus room for the ellipsis.
+    over = len(out) - MAX_PLAINTEXT
+    trimmed = message.encode()[: max(0, len(message.encode()) - over - 8)].decode(
+        errors="ignore"
+    )
+    log.warning("push body trimmed by %d bytes to fit the record", over)
+    return build(trimmed.rstrip() + "…", None)
 
 
 # --- sending ----------------------------------------------------------------
@@ -254,14 +305,52 @@ async def push_all(title: str, message: str, urgency: str = "normal") -> int:
     return await push_to(db.list_push_subscriptions(), title, message, urgency)
 
 
-async def push_to(subs, title: str, message: str, urgency: str = "normal") -> int:
-    """Send to the given subscriptions. Never raises; returns accepted sends."""
+def _person_of(sub) -> Optional[int]:
+    """The person a device belongs to, or None for one enrolled before the
+    column existed. Rows are sqlite3.Row here and plain dicts in tests, and
+    neither answers `.get` the way the other does."""
+    try:
+        value = sub["person_id"]
+    except (KeyError, IndexError):
+        return None
+    return None if value is None else int(value)
+
+
+async def push_to(
+    subs,
+    title: str,
+    message: str,
+    urgency: str = "normal",
+    badges: Optional[dict] = None,
+    actions: Optional[list] = None,
+) -> int:
+    """Send to the given subscriptions. Never raises; returns accepted sends.
+
+    `badges` maps a person's id to the number their home-screen icon should
+    show. It is a map rather than one number because the count is per person -
+    Wes's three open questions are not Karli's - and one send reaches both of
+    their phones. A device whose person is not in the map (or has none, being
+    enrolled before the column existed) is sent no `app_badge` at all, so its
+    icon keeps whatever it had rather than wearing somebody else's number.
+    """
     try:
         if not subs:
             return 0
-        body = payload(title, message, portal_url())
+        url = portal_url()
+        # One body per distinct badge value, not per device: two of Wes's
+        # phones get byte-identical JSON, and the encryption below is what is
+        # actually per-device anyway.
+        bodies: dict[Optional[int], bytes] = {}
+
+        def body_for(sub) -> bytes:
+            count = (badges or {}).get(_person_of(sub))
+            if count not in bodies:
+                bodies[count] = payload(title, message, url, count, actions)
+            return bodies[count]
+
         sent = 0
         for sub in subs:
+            body = body_for(sub)
             try:
                 if await send_one(dict(sub), body, urgency):
                     sent += 1

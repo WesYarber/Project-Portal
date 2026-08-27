@@ -66,9 +66,8 @@ def _appearance_form(**overrides: str) -> dict[str, str]:
         "_section": "appearance",
         "_fields": ",".join(
             ["crt_scanlines", "crt_glow", "crt_animations", "ui_font", "ui_density",
-             "show_priority", *jumpkeys.SETTING_KEYS]
+             *jumpkeys.SETTING_KEYS]
         ),
-        "show_priority": "1",
     }
     form.update({key: value for key, value in overrides.items()})
     return form
@@ -80,7 +79,10 @@ def _appearance_form(**overrides: str) -> dict[str, str]:
 
 def test_the_shipped_letters_are_the_defaults():
     assert jumpkeys.configured({}) == {
-        "note": "n", "ask": "a", "journal": "j", "todo": "t", "project": "p"
+        "note": "n", "ask": "a", "journal": "j", "todo": "t", "project": "p",
+        # Wes, 2026-08-01: "make it jump-able with 'S'" (the since-you-last-
+        # looked banner) and "Make it jump to with 'F'" (the new Files section).
+        "summary": "s", "files": "f",
     }
     assert jumpkeys.bindings({}) == {
         "n": ["note", "idea"],
@@ -91,6 +93,8 @@ def test_the_shipped_letters_are_the_defaults():
         "j": ["journal-box", "journal"],
         "t": ["todo"],
         "p": ["project"],
+        "s": ["summary"],
+        "f": ["files"],
     }
 
 

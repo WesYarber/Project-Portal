@@ -1,0 +1,317 @@
+#!/usr/bin/env python3
+"""Bring a fresh clone up on this machine, and prove it answers.
+
+    python3 deploy/setup.py            # do it
+    python3 deploy/setup.py --check    # report only, change nothing
+
+Written to be run by an agent as much as by a person, which is the whole reason
+it exists rather than four lines in a README. Three properties follow from that:
+
+**It never guesses at a person.** Everything it can decide from the machine it
+decides (hostname, login, ports); everything it cannot it leaves alone and
+prints under HUMAN. An agent cannot log a browser into a Claude subscription,
+so the honest end state of an unattended setup is "serving, one thing left for
+you" - not a script that hangs on a prompt nobody is there to answer.
+
+**It is idempotent.** Every step checks before it acts and says "already" when
+there is nothing to do, so a half-finished setup is fixed by running it again.
+That matters more than it sounds: the most likely reader is a run that timed
+out somewhere in the middle of the previous attempt.
+
+**It ends by starting the thing and asking it a question.** A setup that
+reports success because `pip` exited 0 has checked pip, not the portal. This
+one boots uvicorn on a scratch port, waits for `/api/ping` to say `pong`, and
+shuts it down again - so "OK" means a real HTTP request got a real answer out
+of this checkout.
+
+Exit status is 0 when the portal is serving, 1 when a step failed, and 0 with
+a HUMAN list when the only thing outstanding needs hands.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent
+VENV = ROOT / "venv"
+MIN_PYTHON = (3, 11)
+
+# What the smoke test asks for and what it must hear back. Deliberately the
+# cheapest endpoint in the app: it touches no database and renders no template,
+# so a failure here is "the process is not serving" rather than "some page has
+# a bug", which are different problems with different fixes.
+PING_PATH = "/api/ping"
+PING_EXPECTED = "pong"
+
+
+class Report:
+    """What happened, in the order it happened, plus what is left for a human."""
+
+    def __init__(self) -> None:
+        self.human: list[str] = []
+        # Kept as well as printed, so a test can assert WHICH failure was
+        # reported. "The portal exited during startup" and "did not answer
+        # within 45s" both end the run the same way and mean opposite things -
+        # a crash to read, versus a machine to wait longer on.
+        self.failures: list[str] = []
+        self.failed = False
+
+    def ok(self, message: str) -> None:
+        print(f"  ok      {message}")
+
+    def already(self, message: str) -> None:
+        print(f"  already {message}")
+
+    def did(self, message: str) -> None:
+        print(f"  did     {message}")
+
+    def bad(self, message: str) -> None:
+        print(f"  FAILED  {message}", file=sys.stderr)
+        self.failures.append(message)
+        self.failed = True
+
+    def needs_a_person(self, message: str) -> None:
+        print(f"  human   {message}")
+        self.human.append(message)
+
+
+def venv_python() -> Path:
+    return VENV / ("Scripts" if os.name == "nt" else "bin") / "python"
+
+
+def free_port() -> int:
+    """A port nothing is on, asked of the kernel rather than picked.
+
+    Picking a number and hoping is how a smoke test fails on a busy box and
+    reads as a broken checkout.
+    """
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        return probe.getsockname()[1]
+
+
+def check_python(report: Report) -> None:
+    if sys.version_info < MIN_PYTHON:
+        have = ".".join(str(x) for x in sys.version_info[:3])
+        want = ".".join(str(x) for x in MIN_PYTHON)
+        report.bad(f"python {want}+ required, this is {have}")
+        return
+    report.ok(f"python {'.'.join(str(x) for x in sys.version_info[:3])}")
+
+
+def check_git(report: Report) -> None:
+    if shutil.which("git"):
+        report.ok("git on PATH")
+    else:
+        # Not fatal to serving, but every project workspace is a git repo, so a
+        # portal without git will run agents that cannot commit their work.
+        report.bad("git is not on PATH - agent workspaces cannot be committed without it")
+
+
+def check_claude_cli(report: Report) -> None:
+    """The one dependency that needs a person, and the one worth being clear about.
+
+    A missing CLI is not a failed setup: the portal serves, holds ideas and
+    answers questions perfectly well with no way to run an agent. It is a thing
+    to be told, at the end, in the list of things only hands can finish.
+    """
+    exe = shutil.which("claude")
+    if not exe:
+        report.needs_a_person(
+            "install the Claude Code CLI (https://claude.com/claude-code) and log it in "
+            "- the portal serves without it, but no agent run can start"
+        )
+        return
+    try:
+        out = subprocess.run(
+            [exe, "--version"], capture_output=True, text=True, timeout=20
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        out = ""
+    report.ok(f"claude CLI: {out or exe}")
+    report.needs_a_person(
+        "confirm the CLI is logged in (`claude` once, interactively) or set "
+        "auth_mode = \"api_key\" in portal.toml with a key in secrets/anthropic_key.txt"
+    )
+
+
+def make_venv(report: Report, check_only: bool) -> bool:
+    if venv_python().exists():
+        report.already(f"virtualenv at {VENV}")
+        return True
+    if check_only:
+        report.needs_a_person(f"no virtualenv at {VENV} (run without --check)")
+        return False
+    made = subprocess.run([sys.executable, "-m", "venv", str(VENV)], capture_output=True, text=True)
+    if made.returncode != 0 or not venv_python().exists():
+        # The message matters: on Debian and Ubuntu this fails because
+        # python3-venv is a separate package, and the raw stderr says so in a
+        # way that is easy to miss under a wall of traceback.
+        report.bad(f"could not create a virtualenv: {made.stderr.strip()[:400]}")
+        return False
+    report.did(f"created a virtualenv at {VENV}")
+    return True
+
+
+def install_requirements(report: Report, check_only: bool) -> bool:
+    python = venv_python()
+    if not python.exists():
+        return False
+    have = subprocess.run(
+        [str(python), "-c", "import fastapi, uvicorn, jinja2, httpx, cryptography"],
+        capture_output=True,
+    )
+    if have.returncode == 0:
+        report.already("dependencies installed")
+        return True
+    if check_only:
+        report.needs_a_person("dependencies are not installed (run without --check)")
+        return False
+    installed = subprocess.run(
+        [str(python), "-m", "pip", "install", "-q", "-r", str(ROOT / "requirements.txt")],
+        capture_output=True,
+        text=True,
+    )
+    if installed.returncode != 0:
+        report.bad(f"pip install failed: {installed.stderr.strip()[-600:]}")
+        return False
+    report.did("installed requirements.txt")
+    return True
+
+
+def check_config(report: Report) -> None:
+    """Say what the portal has decided about itself, rather than asking.
+
+    Every key is optional and the defaults are read from the machine, so a
+    fresh clone needs no file at all. What it DOES need is for somebody to
+    notice if the auto-detected hostname is one no phone can resolve - which is
+    a thing to print, not a thing to prompt about.
+    """
+    python = venv_python()
+    if not python.exists():
+        return
+    shown = subprocess.run(
+        [
+            str(python),
+            "-c",
+            "from app import config as c; s = c.SITE; "
+            "print(s.host); print(s.port); print(s.owner or ''); print(s.auth_mode)",
+        ],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if shown.returncode != 0:
+        report.bad(f"the app will not import: {shown.stderr.strip()[-600:]}")
+        return
+    host, port, owner, auth = (shown.stdout.splitlines() + ["", "", "", ""])[:4]
+    report.ok(f"reachable at http://{host}:{port} (auth_mode: {auth})")
+    if not owner:
+        report.needs_a_person(
+            'set `owner = "Your Name"` in portal.toml - agents are told whose behalf '
+            "they work on, and an unnamed owner reads oddly in every prompt"
+        )
+    report.needs_a_person(
+        f"check that `{host}` is a name your PHONE can resolve; if not, set `host` in "
+        "portal.toml - every URL the portal prints is read from another device"
+    )
+
+
+def smoke_test(report: Report) -> bool:
+    """Boot it on a scratch port, ask it something, shut it down.
+
+    On a port the kernel handed out rather than the configured one, so this
+    neither collides with a portal already running here nor briefly exposes a
+    half-configured one on the address people use.
+    """
+    python = venv_python()
+    if not python.exists():
+        return False
+    port = free_port()
+    proc = subprocess.Popen(
+        [str(python), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port)],
+        cwd=ROOT,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    url = f"http://127.0.0.1:{port}{PING_PATH}"
+    deadline = time.monotonic() + 45
+    try:
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                report.bad(f"the portal exited during startup:\n{(proc.stdout.read() or '')[-800:]}")
+                return False
+            try:
+                with urllib.request.urlopen(url, timeout=2) as answer:
+                    body = answer.read().decode("utf-8", "replace").strip()
+                if body == PING_EXPECTED:
+                    report.ok(f"smoke test: {PING_PATH} answered {body!r}")
+                    return True
+                report.bad(f"{PING_PATH} answered {body!r}, expected {PING_EXPECTED!r}")
+                return False
+            except (urllib.error.URLError, OSError, TimeoutError):
+                time.sleep(0.4)  # still starting
+        report.bad(f"the portal did not answer {PING_PATH} within 45s")
+        return False
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Set this checkout up and prove it serves.")
+    ap.add_argument("--check", action="store_true", help="report only, change nothing")
+    ap.add_argument("--no-smoke-test", action="store_true", help="skip booting it at the end")
+    args = ap.parse_args()
+
+    print(f"Project Portal setup - {ROOT}\n")
+    report = Report()
+
+    print("Prerequisites")
+    check_python(report)
+    check_git(report)
+    check_claude_cli(report)
+
+    print("\nEnvironment")
+    if make_venv(report, args.check):
+        install_requirements(report, args.check)
+
+    print("\nConfiguration")
+    check_config(report)
+
+    # --check promises to change nothing, and booting the app creates `data/`
+    # and the database on a fresh clone. So the one step that writes is the one
+    # step --check skips.
+    if not args.no_smoke_test and not args.check and not report.failed and venv_python().exists():
+        print("\nSmoke test")
+        smoke_test(report)
+
+    if report.failed:
+        print("\nSetup did NOT complete. Fix the FAILED line(s) above and run this again.")
+        return 1
+
+    print("\nThe portal is ready. Start it with:")
+    print(f"  {venv_python()} -m uvicorn app.main:app --host 0.0.0.0 --port 8500")
+    print("  (or install deploy/project-portal.service as a systemd user unit)")
+    if report.human:
+        print(f"\n{len(report.human)} thing(s) only a person can do:")
+        for item in report.human:
+            print(f"  - {item}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

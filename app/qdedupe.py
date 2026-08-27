@@ -149,7 +149,7 @@ def _jaccard(a: frozenset[str], b: frozenset[str]) -> float:
 
 
 def _marks(text: str) -> frozenset[str]:
-    """The names a question is *about* - capitalised words and `code spans`.
+    """The names a question is *about* - capitalized words and `code spans`.
 
     Overlap alone is not enough for a short question, because two of them can
     share almost every word and still be about different things. The case that
@@ -164,7 +164,7 @@ def _marks(text: str) -> frozenset[str]:
     marks = {t for t in _tokens(body) if t.startswith("host")}
     for raw in re.findall(r"`([^`]+)`", body):
         marks |= _tokens(raw)
-    # A word capitalised because it opens a sentence is capitalised by grammar,
+    # A word capitalized because it opens a sentence is capitalized by grammar,
     # not by being a name - "Promote it to production?" is not a question about
     # something called Promote. Dropping those is what keeps two "promote which
     # feature?" questions from looking like they name different subjects.
@@ -177,7 +177,7 @@ def _marks(text: str) -> frozenset[str]:
 
 
 # A question long enough to be an argument rather than an ask. Above this, the
-# capitalised words are incidental evidence ("American Eagle sued Amazon in
+# capitalized words are incidental evidence ("American Eagle sued Amazon in
 # 2024") rather than the subject, and vetoing on them is what let the eight
 # OpenJournal name questions through in the first place.
 SHORT_QUESTION_TOKENS = 40
@@ -239,7 +239,7 @@ def answer_space(raw: Any, text: str = "") -> frozenset[str]:
     space = set()
     for option in parse_options(raw):
         tokens = {t for t in _tokens(option) if t not in GENERIC_ANSWERS}
-        # Capitalised *in the option itself*. An answer that names a thing
+        # Capitalized *in the option itself*. An answer that names a thing
         # spells the thing with a capital - "Kithlog", "keep OpenJournal" - and
         # an answer that describes an action does not: "promote it to
         # production", "keep it dev-only", "adopt it", "not yet". Every menu in

@@ -319,7 +319,18 @@ body.anim-off *, body.anim-off *::before, body.anim-off *::after {
 }
 .tab-btn::before { content: "[ "; opacity: 0.5; }
 .tab-btn::after { content: " ]"; opacity: 0.5; }
-.tab-btn:hover, .tab-btn.active { color: var(--ansi-blue); text-shadow: 0 0 8px rgba(56, 189, 248, 0.3); text-decoration: none; }
+/* A tab is text, not a slab: it lights its own label up rather than taking the
+   generic button hover's tint and glow, which on a borderless control reads as
+   a stray rectangle floating behind the word. Both of the properties the
+   generic rule sets are answered here, not just the one that looks wrong -
+   answering half of a hover state is what made the label vanish before. */
+.tab-btn:hover, .tab-btn:focus, .tab-btn.active {
+  color: var(--ansi-blue);
+  background: transparent;
+  box-shadow: none;
+  text-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
+  text-decoration: none;
+}
 
 .tab-btn .nav-count { color: var(--ansi-yellow); font-size: 0.75rem; vertical-align: super; }
 
@@ -397,11 +408,18 @@ a:hover { text-decoration: underline; }
 
 .status-line {
   display: flex;
-  gap: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
   align-items: center;
   font-size: 0.85rem;
   padding: 0.75rem 1.1rem;
 }
+/* One short fact, held on one line. The row wraps between these rather than
+   each of them breaking inside itself - "runs today:" over "6 / 80" is what a
+   non-wrapping row does when the column gets narrower, and it reads as a
+   broken label rather than as a narrow window. Anything without the class (the
+   idle reason, which is a sentence) still wraps normally. */
+.status-line .stat-fact { white-space: nowrap; }
 /* The text facts wrap among themselves at a text-sized line gap; the heatmap
    sits beside them and its height no longer spreads the lines apart. */
 .status-items {
@@ -583,6 +601,21 @@ a:hover { text-decoration: underline; }
 /* A project whose next step is code, held for Wes's OK - the same amber as the
    approval panel on the project page, so the two read as one thing. */
 .badge.needs-ok { color: var(--ansi-yellow); border-color: rgba(250, 204, 21, 0.45); }
+/* An agent is holding still for this answer right now (app/portalmcp.py). The
+   running-agent green rather than the amber of a decision that merely waits,
+   because that is what it is - the same green as the header's live-run pip -
+   and it is a link to the run that is waiting. */
+.badge.waiting-run {
+  color: var(--ansi-green);
+  border-color: rgba(74, 222, 128, 0.45);
+  text-decoration: none;
+  animation: waiting-pulse 2.4s ease-in-out infinite;
+}
+/* Its own keyframes rather than `run-pulse`: that one scales as well as fades,
+   which on a pip reads as a heartbeat and on a word-width badge reads as text
+   that will not hold still. */
+@keyframes waiting-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+@media (prefers-reduced-motion: reduce) { .badge.waiting-run { animation: none; } }
 .badge::before { content: "["; opacity: 0.55; }
 .badge::after { content: "]"; opacity: 0.55; }
 
@@ -653,6 +686,36 @@ input:focus, textarea:focus, select:focus {
 textarea { resize: vertical; line-height: 1.5; max-height: var(--panel-max-h); }
 select option { background: var(--bg-color); color: var(--terminal-fg); }
 
+/* Wes, 2026-08-18: "adding a note in mobile is frustrating, because it zooms in
+   slightly when selecting a field to type into, then you have to manually zoom
+   back out."
+
+   That is one number. iOS Safari zooms the page in whenever it focuses a form
+   control whose computed font-size is under 16px, and it never zooms back out
+   - so every note, every todo, every settings field left the page magnified.
+   The controls above are 0.9rem, which is 14.4px against the 16px root and is
+   exactly the trigger.
+
+   16px only where a finger is doing the typing: this is a property of the
+   input device rather than of the window width, and a desktop browser that
+   happens to be narrow should keep the tighter type. The other way to switch
+   it off is `maximum-scale=1` on the viewport, which fixes it by taking
+   pinch-zoom away from the whole site - not a trade worth making for a page
+   Wes reads on a phone.
+
+   The padding comes in as the type goes up so the taller line still fits
+   --control-h and the row of controls stays one height. */
+@media (pointer: coarse) {
+  input[type="text"], input[type="number"], input[type="password"],
+  input[type="url"], input[type="search"], input[type="email"],
+  input[type="tel"], input[type="date"], input[type="time"],
+  textarea, select {
+    font-size: 16px;
+    padding-top: 0.3rem;
+    padding-bottom: 0.3rem;
+  }
+}
+
 .checkbox-row { display: flex; align-items: center; gap: 0.6rem; }
 .checkbox-row input[type="checkbox"] { width: auto; accent-color: var(--ansi-blue); }
 .checkbox-row label { margin: 0; }
@@ -682,21 +745,8 @@ button, .btn {
   height: var(--control-h);
   line-height: 1;
 }
-button:hover, .btn:hover {
-  background: var(--ansi-blue);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(56, 189, 248, 0.3);
-  text-decoration: none;
-}
 button.secondary { color: var(--terminal-dim); background: rgba(148, 163, 184, 0.06); }
-button.secondary:hover { background: var(--terminal-dim); color: var(--bg-color); box-shadow: none; }
-
 button.danger, .btn.danger { color: var(--ansi-red); background: rgba(255, 110, 110, 0.08); }
-button.danger:hover, .btn.danger:hover {
-  background: var(--ansi-red);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(255, 110, 110, 0.3);
-}
 button.small, .btn.small { padding: 0.2rem 0.6rem; font-size: 0.75rem; height: 1.8rem; }
 
 /* "go" - the affirmative action on a form: add note, approve the build. Green
@@ -707,11 +757,116 @@ button.go, .btn.go {
   background: rgba(74, 222, 128, 0.1);
   border-color: rgba(74, 222, 128, 0.45);
 }
-button.go:hover, .btn.go:hover {
-  background: var(--ansi-green);
-  color: var(--bg-color);
-  box-shadow: 0 0 10px rgba(74, 222, 128, 0.3);
+
+/* --- A pressed button says so ---------------------------------------------
+   Wes, 2026-08-27: "There is no feedback that anything was done when clicking
+   the button". Between the press and the page changing there is a round trip -
+   two of them for an in-place post - and he reads this from a Home Screen
+   install, where there is no tab and no browser chrome to spin. So the button
+   carries the wait itself. app.js hangs .is-busy on the submitter it saw.
+
+   TWO signals, because one of them can be switched off. The dim and the lit
+   border are static, so they survive both `body.anim-off` and
+   `prefers-reduced-motion: reduce` - each of which kills every animation on the
+   page with `!important`. The hairline sweeping the bottom edge is the one that
+   catches the eye in passing, and it is the one that disappears.
+
+   ::before, not ::after: at phone width `.attach-row button.go::after` is
+   already the ⌄ that hints at the note form's press-and-hold menu, and that is
+   the very button he presses to add a note. Absolutely positioned, so the
+   pseudo-element is not laid out as a flex item of the inline-flex button and
+   the label cannot move as the state comes and goes.
+
+   Keyed on [data-busy] rather than a class because app.js needs the marker to
+   survive a live-refresh patch landing mid-press, and the morph only protects
+   data-* attributes - see BUSY_ATTR there. `.btn.danger` outranks this on
+   border-color and is welcome to: a danger button is already red, which is
+   what currentColor would have given it. */
+button[data-busy], .btn[data-busy] {
+  cursor: progress;
+  opacity: 0.72;
+  border-color: currentColor;
+  position: relative;
+  overflow: hidden;
 }
+button[data-busy]::before, .btn[data-busy]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  width: 40%;
+  background: currentColor;
+  animation: busy-sweep 0.9s linear infinite;
+}
+@keyframes busy-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+/* --- Hover: a lift, never an inversion ------------------------------------
+   Hover deepens the control's OWN tint and lights up its border. The label
+   keeps its color and never moves.
+
+   This rule used to flood the control with solid --ansi-blue and flip the
+   label to the page color. That broke in two ways, and both were reported by
+   a person rather than caught by a test:
+
+   1. The label can be separated from the fill. "Solid background + inverted
+      label" only stays readable while BOTH halves apply, and any rule with
+      more specificity that sets a hover color but no background keeps its own
+      label color and drops it onto the blue slab - blue on blue, the word
+      gone. That is what .cl-fold-head below was patched around one at a time.
+      A translucent wash over the dark body cannot swallow a label whatever
+      color that label happens to be, so the failure is not fixed here, it is
+      unreachable.
+   2. It shouted. Wes, 2026-08-04: "makes the whole section turn blue where you
+      can't read the text under it anymore. It should be a much more subtle
+      color change." Again 2026-08-13, against another app on this theme:
+      "unreadable and pretty offensive to the eyes."
+
+   Gated on (hover: hover) because a touch device has no hover to give: iOS
+   leaves :hover stuck on whatever was tapped until you tap somewhere else, so
+   an untapped-looking control stays lit. Feedback for a finger is :active,
+   below - one filter, so every variant brightens in its own color rather than
+   each needing its own rule. */
+@media (hover: hover) {
+  button:hover, .btn:hover {
+    background: rgba(56, 189, 248, 0.2);
+    border-color: var(--ansi-blue);
+    box-shadow: 0 0 10px rgba(56, 189, 248, 0.18);
+    text-decoration: none;
+  }
+  /* The dim variant is the one case where the label itself moves: at rest it is
+     --terminal-dim on almost nothing, and merely deepening that wash pushes it
+     under the 4.5:1 contrast floor. Lifting it to the body foreground is what
+     "hover" should mean on a control that is quiet on purpose. */
+  button.secondary:hover, .btn.secondary:hover {
+    background: rgba(148, 163, 184, 0.16);
+    border-color: var(--terminal-dim);
+    color: var(--terminal-fg);
+    box-shadow: none;
+  }
+  /* Red is the darkest of the accents, so the same wash that leaves blue and
+     green comfortably legible drops --ansi-red to 4.2:1 against it - under the
+     floor, measured. Like .secondary, the label brightens rather than the wash
+     thinning: hover should read as the control lighting UP. */
+  button.danger:hover, .btn.danger:hover {
+    background: rgba(255, 110, 110, 0.2);
+    border-color: var(--ansi-red);
+    color: hsl(0, 90%, 78%);
+    box-shadow: 0 0 10px rgba(255, 110, 110, 0.18);
+  }
+  button.go:hover, .btn.go:hover {
+    background: rgba(74, 222, 128, 0.2);
+    border-color: var(--ansi-green);
+    box-shadow: 0 0 10px rgba(74, 222, 128, 0.18);
+  }
+}
+/* The press. `filter` rather than a per-variant background so a danger button
+   flashes red and a go button green with no rule of their own, and rather
+   than a transform, which would move the hit box out from under the finger. */
+button:active, .btn:active { filter: brightness(1.4); }
 
 /* The build gate: a project an agent wants to build, held for Wes's OK. */
 .approve-build {
@@ -786,11 +941,19 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
 .journal-entry.note-unsent { border-left-style: dashed; }
 .badge-unsent { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
 
-/* The ask side thread: a question and its read-only answer. Dotted and dimmed
-   because these entries are deliberately NOT part of what an agent run reads
-   (db.SIDE_THREAD) - they should look like marginalia next to the record. */
-.journal-entry.journal-aside { border-left-style: dotted; opacity: 0.86; }
-.badge-aside { color: var(--ansi-magenta); border-color: var(--ansi-magenta); }
+/* The ask side thread. It no longer runs through the journal at all - it is a
+   conversation in the ask box at the top of the page (Wes, 2026-08-16) - but a
+   turn in it is still a journal entry, so it borrows that shape and marks
+   itself dotted: these words are deliberately NOT part of what an agent run
+   reads (db.SIDE_THREAD). */
+.ask-turn {
+  border-left: 2px dotted var(--window-border);
+  padding-left: 0.9rem;
+  margin-bottom: 1.1rem;
+}
+.ask-turn:last-child { margin-bottom: 0; }
+.ask-turn.from-agent { border-left-color: var(--ansi-blue); }
+.ask-turn.from-user { border-left-color: var(--ansi-green); }
 
 /* --- Highlight a journal passage, then ask or note about it ---------------
    The floating bar over a selection, and the quoted passage once it has been
@@ -1118,6 +1281,10 @@ summary:hover { color: var(--ansi-blue); }
 .scroll-cap-files { max-height: calc(var(--files-rows) * var(--files-row-h)); }
 .scroll-cap-todo { max-height: calc(var(--todo-rows) * var(--todo-row-h)); }
 .scroll-cap-journal { max-height: var(--journal-max-h); }
+/* Well short of the journal's cap: the form you came here to type in has to
+   stay in view under the thread, so a long conversation scrolls inside its own
+   box rather than pushing the textarea off the bottom of the screen. */
+.scroll-cap-ask { max-height: 26rem; }
 .scroll-cap-panel { max-height: var(--panel-max-h); }
 .scroll-cap::-webkit-scrollbar { width: 8px; }
 .scroll-cap::-webkit-scrollbar-thumb {
@@ -1273,10 +1440,35 @@ summary:hover { color: var(--ansi-blue); }
   color: var(--terminal-dim);
 }
 .fold-section[open] > summary::after { content: "[ hide ]"; }
+/* At phone width the four items in that row - "//", the label, the sentence
+   explaining the section, and [ show ] - are each squeezed into a column of
+   their own and every one of them wraps internally, so "Paused & backlog"
+   reads down the page in three lines beside a paragraph in four. The sentence
+   is the only part that is not a control, so it takes a line of its own and
+   the heading keeps its own. `order` is what keeps [ show ] up on the first
+   line rather than being pushed below the sentence it follows in the markup. */
+@media (max-width: 560px) {
+  .fold-section > summary { flex-wrap: wrap; row-gap: 0.3rem; }
+  .fold-section > summary::after { order: 1; }
+  .fold-section > summary > .muted { order: 2; flex-basis: 100%; }
+}
 .fold-section > summary:hover::after { color: var(--ansi-blue); }
 .fold-section > summary:hover .fold-section-label { color: var(--ansi-blue); }
 .fold-section > .card { margin-top: 0.9rem; }
 .fold-section > .project-grid { margin-top: 0.9rem; }
+
+/* A shelf inside a fold: "Uploaded" and "Workspace" inside Files. Quieter than
+   the fold's own label on purpose - one section, two piles in it, and the rail
+   lists the section (see railChapters, which skips headings inside a fold). */
+.files-sub {
+  margin: 1.2rem 0 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+}
+.files-sub:first-of-type { margin-top: 0.8rem; }
 /* The dashboard shelves sit under the live grid, so they get less air above
    them than a fold that follows a full section. */
 .shelf { margin-top: 0.9rem; }
@@ -1325,16 +1517,94 @@ summary:hover { color: var(--ansi-blue); }
 .cl-say { color: var(--terminal-fg); }
 .cl-think { color: var(--terminal-fg); font-style: italic; opacity: 0.8; }
 
+/* The inline markdown inside agent prose (mdAppend in app.js). Wes,
+   2026-08-04: lines like "**My own change was wrong.**" were rendering as
+   their raw asterisks. Bold, `code` and a heading line are the constructs
+   agent summaries actually use; anything blockier stays as source text. */
+.cl-md-h { font-weight: 700; }
+.cl-md-b { font-weight: 700; }
+.cl-md-c {
+  padding: 0 0.35ch;
+  border-radius: 3px;
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--ansi-cyan);
+}
+
 /* The machinery: what it called, what came back, where the run began. */
 .cl-tool,
 .cl-result,
 .cl-status { padding-left: 2ch; color: var(--terminal-dim); }
 .cl-status { opacity: 0.8; }
 
-/* Indented with the rest of the machinery, because that is where it happened -
-   but not dimmed. A failure that reads as quietly as an ordinary tool result
-   is a failure nobody sees. */
-.cl-error { padding-left: 2ch; color: var(--ansi-red); }
+/* Indented with the rest of the machinery, and only SLIGHTLY red. Wes,
+   2026-08-06: "make them less offensive to look at like something has gone
+   wrong ... just slightly red" - the 2026-08-06 triage showed 82% of these
+   are the agent's own try/fail/adjust loop, not the portal failing. The
+   red is mixed down toward the machinery's dim gray; the plain dim color
+   first is the fallback for an engine without color-mix. */
+.cl-error {
+  padding-left: 2ch;
+  color: var(--terminal-dim);
+  color: color-mix(in srgb, var(--ansi-red) 45%, var(--terminal-dim));
+}
+
+/* A folded run of tool calls. Wes, 2026-08-01: "have an option that compressed
+   down/hides and prints a sort of summary ... '10 tools called' or '5 commands
+   run'. Have this option on by default where these are compressed down."
+
+   The heading sits where the calls sat - same 2ch indent - so the transcript
+   keeps its shape and the prose keeps its margin. Status lines are never
+   folded into it; errors are (Wes, 2026-08-06), with the head counting them
+   in .cl-fold-err so a collapsed run still admits to its failures. */
+.cl-fold { display: block; }
+.cl-fold-head {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 0 0 0 2ch;
+  border: 0;
+  background: none;
+  font: inherit;
+  text-align: left;
+  color: var(--terminal-dim);
+  opacity: 0.75;
+  cursor: pointer;
+}
+.cl-fold-head::before { content: "+ "; }
+.cl-fold-head.open::before { content: "- "; }
+/* The generic button:hover paints a solid --ansi-blue slab, which on a
+   full-width transcript line is a bar you cannot read (Wes, 2026-08-04:
+   "makes the whole section turn blue where you can't read the text under it
+   anymore. It should be a much more subtle color change"). Every property the
+   generic rule sets is overridden here, not just the one that looked wrong. */
+.cl-fold-head:hover {
+  background: rgba(148, 163, 184, 0.08);
+  color: var(--terminal-fg);
+  opacity: 1;
+  box-shadow: none;
+}
+.cl-fold-body { display: block; }
+
+/* The error count on a fold's head: the same quiet red as the lines it
+   stands for, so "3 commands run · 1 error" whispers rather than shouts. */
+.cl-fold-err {
+  color: var(--terminal-dim);
+  color: color-mix(in srgb, var(--ansi-red) 45%, var(--terminal-dim));
+}
+
+/* The switch on the console's own top line. Shaped like the [ show ] / [ hide ]
+   on a fold-section summary, because it is the same act. */
+.cl-fold-toggle {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.75rem;
+  color: var(--terminal-dim);
+  cursor: pointer;
+}
+.cl-fold-toggle:hover { color: var(--ansi-blue); }
 
 /* --- Activity: usage over time and the run feed ------------------------- */
 .window-picker { display: flex; gap: 0.4rem; margin-bottom: 0.9rem; flex-wrap: wrap; }
@@ -1371,6 +1641,10 @@ summary:hover { color: var(--ansi-blue); }
   padding-top: 0.9rem;
   border-top: 1px dashed var(--window-border);
 }
+/* A stat row is normally the footer under a chart, so it carries a rule to
+   separate itself from what is above it. When it IS the top of the card there
+   is nothing above it to separate, and the rule reads as a rendering fault. */
+.card > .stat-row:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .stat { display: flex; flex-direction: column; font-size: 0.74rem; color: var(--terminal-dim); }
 .stat em { font-style: normal; font-size: 1.05rem; font-weight: 600; color: var(--terminal-fg); }
 
@@ -1388,8 +1662,96 @@ summary:hover { color: var(--ansi-blue); }
 .run-status-cancelled { color: var(--terminal-dim); border-color: var(--terminal-dim); }
 .run-table tr.run-cancelled td { color: var(--terminal-dim); }
 
-.breakdown td { vertical-align: middle; }
+/* The breakdown tables under "By project" and "Prompt size". These are the
+   widest tables in the portal - seven columns, one of them a 16-glyph bar - and
+   on 2026-08-01 Wes photographed the result: at a ~1135px window the table ran
+   past the card's own right border, "avg length" broke across two lines, and
+   `overflow-x: hidden` on <body> sliced the last column off mid-word. Three
+   rules and a wrapper, each doing one job:
+
+   1. cells wrap. `.run-table td` sets `white-space: nowrap` for the run feed,
+      where every cell is one token; here a project title and a "+2 canceled"
+      note are the two widest things on the row and both read fine on two lines.
+   2. headers do NOT wrap, because a wrapped header is what actually looked
+      broken - "avg" over "leng" reads as a rendering fault rather than as a
+      narrow column.
+   3. the share bar shrinks. It is decoration sitting in the widest column, and
+      at the sparkline's 1.35rem it was costing ~230px of a ~730px card. */
+.breakdown td { vertical-align: middle; white-space: normal; }
+.breakdown th { white-space: nowrap; }
+.breakdown td:first-child { min-width: 8rem; }
 .share-bar { margin: 0; letter-spacing: 0.05em; }
+/* `overflow: visible` undoes `.spark`'s `overflow-x: auto`, which CSS resolves
+   to `overflow-y: auto` as well. A share bar is always exactly 16 glyphs so it
+   never needs to scroll - but `line-height: 1` leaves the block one pixel
+   shorter than the glyphs' ink, and one pixel of overflow is enough for an
+   engine with overlay scrollbars to paint a thumb on every row. Measured on a
+   390px viewport: scrollHeight - clientHeight == 1 on every bar. */
+.breakdown .share-bar { font-size: 1rem; letter-spacing: 0.02em; overflow: visible; }
+
+/* The backstop, and the rule that means no table can ever bleed across a card
+   border again: whatever cannot be made to fit scrolls inside its own box. A
+   scrollbar inside a card is a compromise; a column sliced off by
+   `overflow-x: hidden` two elements up, with nothing on screen saying so, is a
+   lie about how many columns there are. */
+.table-scroll { overflow-x: auto; max-width: 100%; }
+
+/* Stacked tables on a phone -----------------------------------------------
+   The scrolling box above kept the columns reachable, but on a 390px iPhone
+   the breakdown showed 2 of its 7 columns and the run feed 2 of its 9, with
+   nothing advertising that the rest were sideways (iOS scrollbars are overlay
+   only, so they are invisible until you already know to swipe).
+
+   So below 560px these tables stop being tables. Each row becomes a block: the
+   cell marked `cell-name` is its heading - the project, on both the breakdown
+   and the run feed - and every other cell carries the column header it lost,
+   from its own `data-label`. A cell with no `data-label` (the share bar, the
+   status badge) renders bare, because a label saying "status" over a badge
+   reading "ok" is the word twice.
+
+   Flex rather than plain blocks for two reasons: `order` puts the heading
+   first even though the project is the third cell of a run row, and the
+   remaining facts flow as chips that wrap, so a run is three short lines
+   instead of nine stacked ones. */
+@media (max-width: 560px) {
+  .run-table, .run-table tbody, .run-table td { display: block; }
+  .run-table thead { display: none; }
+  .run-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.1rem 0.7rem;
+    padding: 0.5rem 0;
+    border-top: 1px solid var(--window-border);
+  }
+  .run-table tbody tr:first-child { border-top: none; padding-top: 0; }
+  .run-table td {
+    border: none;
+    padding: 0;
+    white-space: normal;
+    min-width: 0;
+  }
+  /* The heading: full width, first, and not shrunk to `.small` - it is the
+     line you read to find the row you want. */
+  .run-table td.cell-name {
+    order: -1;
+    flex: 1 0 100%;
+    min-width: 0;
+    font-size: 0.85rem;
+  }
+  .run-table td[data-label]::before {
+    content: attr(data-label) " ";
+    color: var(--terminal-dim);
+    font-size: 0.68rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  /* The share bar is 16 glyphs wide and reads as a picture, not a fact - it
+     gets its own line under the project name rather than a place in the chip
+     flow. */
+  .breakdown td.cell-bar { flex: 1 0 100%; }
+  .breakdown td:first-child { min-width: 0; }
+}
 
 .pager { margin-top: 0.9rem; align-items: center; }
 
@@ -1406,17 +1768,21 @@ summary:hover { color: var(--ansi-blue); }
   display: flex;
   gap: 0.75rem;
 }
-/* Each control is only as wide as its own longest value needs - Wes twice:
-   the priority picker is a single digit and had a quarter of the row, and the
-   status box (now one word, "building") does not need a sentence's width.
-   Fixed widths rather than fr shares so nothing stretches to fill the card. */
+/* Each control is only as wide as its own longest value needs - the status
+   box (one word, "building") does not need a sentence's width. Fixed widths
+   rather than fr shares so nothing stretches to fill the card. The priority
+   picker is gone entirely (Wes, 2026-08-06: "Hide the priority value picker
+   for the projects"). */
 .control-bar > .control-status { width: 9.5rem; }
-.control-bar > .control-priority { width: 5rem; }
 .control-bar > .control-model { width: 11rem; }
+/* Sized for its longest option, "default (12)", not for the two-character
+   numbers: at 7.5rem chromium ellipsized the selected value to "default ...",
+   which is a control that will not say what it is set to. */
+.control-bar > .control-runs { width: 9.5rem; }
 /* The activity grid, moved into this row from above the journal (Wes,
-   2026-07-28). `margin-left: auto` rather than a width: the row's controls are
-   fixed-width and the priority picker is optional, so anything sized would
-   leave a gap exactly when priority is off. `flex: none` because the grid is
+   2026-07-28). `margin-left: auto` rather than a width: the row's controls
+   are fixed-width, so anything sized would leave a gap if one of them ever
+   came off the row again. `flex: none` because the grid is
    sized in absolute pixels on purpose ("relatively small and unobtrusive")
    and a flex item's default min-width would let it be squeezed.
 
@@ -1463,15 +1829,12 @@ select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red);
 .control select option { color: var(--terminal-fg); background: var(--bg-color); }
 
 @media (max-width: 720px) {
-  /* On a phone the three controls share the row and split it: fixed desktop
-     widths at 390px would overflow, and the one-word labels now fit. */
+  /* On a phone the controls share the row and split it: fixed desktop widths
+     at 390px would overflow, and the one-word labels now fit. */
   .control-bar { flex-wrap: wrap; }
-  /* The heatmap drops below the text facts instead of halving their column -
-     at 390px sharing the row squeezed every line into a two-word sliver. */
-  .status-line { flex-wrap: wrap; }
   .control-bar > .control-status,
-  .control-bar > .control-priority,
-  .control-bar > .control-model { flex: 1 1 auto; width: auto; min-width: 4.5rem; }
+  .control-bar > .control-model,
+  .control-bar > .control-runs { flex: 1 1 auto; width: auto; min-width: 4.5rem; }
 }
 
 /* Danger zone ------------------------------------------------------------- */
@@ -1694,6 +2057,63 @@ label.btn { margin-bottom: 0; }
 }
 button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 
+/* The mic button is a glyph, not a word (Wes, 2026-08-04): three buttons have
+   to share one phone-width line. The SVG inherits currentColor, so the
+   .recording red above covers it too - and the glyph breathes while hot. */
+.icon-btn { display: inline-flex; align-items: center; }
+.icon-btn svg { display: block; }
+button.recording svg { animation: rec-pulse 1.2s ease-in-out infinite; }
+@keyframes rec-pulse {
+  50% { opacity: 0.3; }
+}
+
+/* The live recorder (initRecorder in app.js): waveform, running length, and
+   pause / done / discard on one line under the attach row. */
+.rec-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 0.5rem 0 0.4rem;
+}
+.rec-wave {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  color: var(--ansi-green);
+  background: rgba(0, 0, 0, 0.35);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+}
+.rec-time {
+  font-variant-numeric: tabular-nums;
+  min-width: 2.6rem;
+  text-align: right;
+  color: var(--ansi-red);
+}
+/* A finished take: player, length, delete. Client-built rows (MORPH_KEEP). */
+.rec-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+.rec-row audio {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 340px;
+  height: 32px;
+}
+
+/* A voice memo's words, under its player in the Files shelf. */
+.attach-transcript {
+  margin: 0;
+  white-space: pre-wrap;
+  max-height: 7.5em;
+  overflow-y: auto;
+}
+.attach-transcript.error { color: var(--ansi-red); }
+
 .attach-grid {
   list-style: none;
   padding: 0;
@@ -1744,6 +2164,11 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .attach-strip img { max-height: 160px; border: 1px solid var(--window-border); display: block; }
 .attach-strip video { max-height: 160px; }
 .attach-strip audio { height: 34px; }
+/* An item is its media with the "remove" control stacked under it, so the
+   button sits on the file it removes. Only rendered while the note is unsent -
+   see the comment in project.html. */
+.attach-strip li { display: flex; flex-direction: column; align-items: flex-start; gap: 0.3rem; }
+.attach-strip form { margin: 0; }
 
 /* Dashboard sort control -------------------------------------------------- */
 /* The heading and its sort links share a baseline, and the links wrap under
@@ -1765,25 +2190,35 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .dismissed-questions { margin-bottom: 1.2rem; }
 .dismissed-questions .card { opacity: 0.75; }
 
-/* Editable title / description ------------------------------------------- */
-/* The rendered description doubles as the disclosure trigger, so the page
-   reads the same as before until you actually want to change something. The
-   default triangle marker is dropped: it would sit beside a block of prose. */
-.details-editor { margin-top: 1rem; }
-.details-editor > summary {
+/* A quiet fold: one small dim line of text that expands in place. Wes,
+   2026-08-06, about the deleted questions: "less prominent than it is now.
+   Just a small gray line of text that can be clicked to expand it" - and the
+   collapsed project description wears the same clothes, so the pattern reads
+   the same everywhere it appears. */
+.quiet-fold > summary {
   cursor: pointer;
   list-style: none;
-  position: relative;
-}
-.details-editor > summary::-webkit-details-marker { display: none; }
-.details-editor > summary .edit-hint {
   color: var(--terminal-dim);
-  font-size: 0.8rem;
-  text-transform: lowercase;
+  font-size: 0.78rem;
 }
-.details-editor > summary:hover .edit-hint { color: var(--ansi-cyan); }
-.details-editor[open] > summary .edit-hint { color: var(--portal-orange); }
-.details-editor > form { margin-top: 0.8rem; }
+.quiet-fold > summary::-webkit-details-marker { display: none; }
+.quiet-fold > summary::before { content: "+ "; }
+.quiet-fold[open] > summary::before { content: "- "; }
+.quiet-fold > summary:hover { color: var(--terminal-fg); }
+
+/* Deleted questions: a shelf of the Questions section, not a section - it
+   indents under the cards it trails so it reads as nested. */
+.deleted-questions { margin: 0.5rem 0 1rem 1.25ch; }
+.deleted-questions .card { opacity: 0.6; margin-top: 0.7rem; }
+
+/* Editable title / description ------------------------------------------- */
+/* Both folds here are quiet-fold lines (Wes, 2026-08-06: the description is
+   "collapsed by default as it takes a lot of space"): the outer opens the
+   prose, the inner "edit" opens the form, so reading never unrolls a form. */
+.details-editor { margin-top: 1rem; }
+.details-editor > .content { margin-top: 0.6rem; }
+.details-editor > .details-form { margin: 0.6rem 0 0 1.25ch; }
+.details-editor .details-form > form { margin-top: 0.8rem; }
 .details-editor input[readonly] { opacity: 0.6; cursor: not-allowed; }
 
 /* "ask project" - a button at the top of the page that unfolds into the ask
@@ -1799,6 +2234,14 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .ask-block > summary::-webkit-details-marker { display: none; }
 .ask-block[open] > summary { color: var(--ansi-cyan); border-color: var(--ansi-cyan); }
 .ask-block > .card { margin-top: 0.7rem; }
+
+.ask-thread { margin-bottom: 1rem; }
+/* The count on the folded button, so a thread waiting behind it says so. Same
+   shape as the rail's nav badge - a number in brackets is this portal's way of
+   saying "there are some". */
+.ask-count { margin-left: 0.6ch; opacity: 0.75; }
+.ask-count::before { content: "["; }
+.ask-count::after { content: "]"; }
 
 /* One line where the Runs section used to be, sitting above the journal. */
 .journal-runs {
@@ -1893,6 +2336,9 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   margin-bottom: 1rem;
 }
 .slug-suggestion p { margin: 0 0 0.6rem; font-size: 0.85rem; }
+/* The agent's alternative title wears the same tinted box, but sits under the
+   page heading rather than inside a card, so it supplies its own spacing. */
+.title-suggestion { margin-top: 0.75rem; }
 
 .slug-suggestions { list-style: none; margin: 0; padding: 0; }
 .slug-suggestions li {
@@ -1940,7 +2386,21 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   font-size: 0.88rem;
 }
 .work-summary-list > li + li { border-top: 1px solid var(--window-border); }
-.work-summary-text { flex: 1 1 auto; list-style: none; margin: 0; padding: 0; }
+/* min-width AND overflow-wrap, and neither one alone is enough. A flex item's
+   default `min-width: auto` is the floor that made this bug: an agent summary
+   routinely names a URL ("http://example.test:8530/admin/platforms") or a path,
+   which is one unbreakable token, so the row's min-content width ran past a
+   390px phone and the whole page scrolled sideways. `min-width: 0` lets the
+   item shrink; `overflow-wrap: anywhere` (not `break-word` - only `anywhere`
+   moves min-content) is what lets the token itself break once it has. */
+.work-summary-text {
+  flex: 1 1 auto;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 /* The tick replaces the "Done." these lines used to open with - it says the
    same thing in one glyph and leaves the whole line for what changed. */
 .work-summary-text li {
@@ -1962,6 +2422,18 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   color: var(--terminal-dim);
 }
 .work-summary-list a { white-space: nowrap; }
+
+/* The same move the todo row makes at this width, for the same reason: the
+   "just now" on the right is `white-space: nowrap`, so with the bullets now
+   able to shrink they shrank instead - measured at 390px, the text column was
+   255px of a 325px card and a URL broke three times inside it. Given its own
+   line the timestamp costs one row and hands the bullets the whole width.
+   Right-aligned rather than under the bullets so it stays where it already
+   sat, which is where the eye goes looking for it. */
+@media (max-width: 560px) {
+  .work-summary-list > li { flex-wrap: wrap; gap: 0; }
+  .work-summary-list > li > a { flex: 1 0 100%; text-align: right; }
+}
 
 /* ---- Todo list ---------------------------------------------------------
    The project's working checklist. Deliberately quiet: it sits between the
@@ -2008,142 +2480,47 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
 .todo-item.done .todo-text { text-decoration: line-through; color: var(--terminal-dim); }
 .todo-toggle input { cursor: pointer; }
 
-/* Everything on the row that is not the text: tag chips, "+tag", the delete
-   cross. Grouped into one flex item purely so a phone can hand it its own line
-   (see the max-width: 560px block) - on desktop the text's flex-grow pushes
-   this to the right exactly as the ungrouped chips used to sit. */
+/* Everything on the row that is not the text - since 2026-08-04, at most the
+   [blocked] chip. The +tag, whose? and delete controls, and every other tag,
+   moved into the right-click / long-press menu (initTodoMenu in app.js): Wes,
+   "compress the +tag, whose? and x buttons into a right click menu ... fold
+   the tags into this menu, aside from the 'blocked' tag." Still a group so a
+   phone can hand it its own flex line (see the max-width: 560px block). */
 .todo-meta {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  /* 0.3rem matches the margin-left .todo-tag used to carry, so desktop spacing
-     between chips is unchanged. */
   gap: 0.15rem 0.3rem;
-  /* A flex item's default min-width is auto, which here would be the whole
-     unwrapped chip run and would set a floor wider than a phone. */
+  /* A flex item's default min-width is auto, which would set a floor wider
+     than a phone if a chip run ever grew back. */
   min-width: 0;
 }
 
-/* Always present, just quiet. This used to be hover-only, which failed both
-   ways: on a phone there is no hover, so the only way to reach it was a tap
-   that left it stuck visible; and on desktop a click left it lit by :focus
-   after the pointer had gone. Dim-but-there behaves the same on every device
-   and is still far short of a row of red crosses. */
-.todo-del {
-  background: none;
-  border: none;
-  color: var(--terminal-dim);
-  cursor: pointer;
-  font-size: 1rem;
-  line-height: 1;
-  /* A real tap target on a phone, without making the row taller. The explicit
-     auto height opts out of the shared control height: a 2.3rem cross would
-     set the floor for every todo row and blow the 16-row scroll cap. */
-  padding: 0 0.4rem;
-  height: auto;
-  opacity: 0.32;
-  transition: opacity 0.1s ease, color 0.1s ease;
-}
-.todo-item:hover .todo-del, .todo-del:focus-visible { opacity: 1; }
-.todo-del:hover { color: var(--ansi-red); }
-
-/* Tag chips on a todo row. Bracketed like every badge, but bare text - no
-   border or padding - so a chip cannot make a row taller than --todo-row-h. */
+/* The one tag that stays on the row: it is the one that changes what the
+   scheduler does, so it earns the space. Bracketed like every badge, but bare
+   text - no border or padding - so it cannot make a row taller than
+   --todo-row-h. */
 .todo-tag {
   font-size: 0.7rem;
   color: var(--terminal-dim);
   white-space: nowrap;
-  /* No margin-left: .todo-meta's `gap` spaces these now. The old margin was
-     also the reason the chips hung 5px past the text on a phone, since it
-     applies inside the indented group. */
 }
 .todo-tag::before { content: "["; opacity: 0.55; }
 .todo-tag::after { content: "]"; opacity: 0.55; }
 .todo-tag.tag-blocked { color: var(--ansi-yellow); }
-.todo-tag.tag-ready { color: var(--ansi-green); }
-/* The little cross inside the brackets: dim-but-there, same rationale as
-   .todo-del above. */
-.tag-x {
-  background: none;
-  border: none;
-  color: inherit;
-  cursor: pointer;
-  font-size: 0.7rem;
-  line-height: 1;
-  padding: 0 0 0 0.2rem;
-  height: auto;
-  opacity: 0.32;
-  transition: opacity 0.1s ease;
-}
-.todo-item:hover .tag-x, .tag-x:focus-visible { opacity: 1; }
-.tag-x:hover { color: var(--ansi-red); }
 
-/* "+tag" swaps for a tiny inline input (app.js) when pressed. */
-.tag-add { white-space: nowrap; }
-.tag-add-btn {
-  background: none;
-  border: none;
-  color: var(--terminal-dim);
-  cursor: pointer;
-  font-size: 0.7rem;
-  line-height: 1;
-  padding: 0 0.2rem;
-  height: auto;
-  opacity: 0.32;
-  transition: opacity 0.1s ease;
-}
-.todo-item:hover .tag-add-btn, .tag-add-btn:focus-visible { opacity: 1; }
-.tag-add-form input[type="text"] {
-  width: 6.5rem;
-  height: 1.5rem;
-  font-size: 0.72rem;
-  padding: 0 0.3rem;
-}
-
-/* Re-filing a row onto somebody: a quiet "whose?" that swaps for one small
-   button per member. Every control here is `height: auto` and under 1rem of
-   line box on purpose - .todo-del's note above explains why: these share a row
-   with the text, so anything inheriting the 2.3rem shared control height would
-   raise EVERY row and break the 16-row scroll cap's arithmetic. */
-.todo-who { white-space: nowrap; }
-.todo-who-btn {
-  background: none;
-  border: none;
-  color: var(--terminal-dim);
-  cursor: pointer;
-  font-size: 0.7rem;
-  line-height: 1;
-  padding: 0 0.2rem;
-  height: auto;
-  opacity: 0.32;
-  transition: opacity 0.1s ease;
-}
-.todo-item:hover .todo-who-btn, .todo-who-btn:focus-visible { opacity: 1; }
-.todo-who-menu {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 0.2rem;
-  vertical-align: baseline;
-}
-.todo-who-pick {
-  background: none;
-  border: 1px solid var(--terminal-dim);
-  border-radius: 2px;
-  color: var(--terminal-fg);
-  cursor: pointer;
-  font-size: 0.68rem;
-  line-height: 1;
-  /* Vertical padding buys a tap target without buying row height: the border
-     box stays under the 2.05rem the scroll cap counts on. */
-  padding: 0.2rem 0.35rem;
-  height: auto;
-}
-.todo-who-pick:hover, .todo-who-pick:focus-visible { border-color: var(--ansi-cyan); }
-/* Where it already is. Still a live button - re-picking it is a harmless
-   no-op - but it should not look like the change on offer. */
-.todo-who-pick.is-current {
-  border-style: dashed;
-  color: var(--terminal-dim);
+/* A long press opens the row's menu, so the press must not fight the OS over
+   selecting the words. Coarse pointers only: on a desktop, dragging across a
+   todo to copy it still works. The note form's buttons are here for the same
+   reason - holding the green "add note" opens the run/queue menu
+   (initNoteMenu), and iOS must not answer the hold with text selection. */
+@media (pointer: coarse) {
+  .todo-item,
+  .note-form button {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
 }
 
 /* Clear-completed and the history link, on one line under the add form. */
@@ -2180,6 +2557,23 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
   .todo-add { flex-wrap: wrap; }
   .todo-add input[type="text"] { flex-basis: 100%; }
 
+  /* Three buttons on one line in the note form (Wes, 2026-08-04): the two
+     alternate submits hide behind a press-and-hold on the green button
+     (initNoteMenu), and the picked-files status drops to its own full-width
+     line so a long filename cannot push the buttons apart. The ⌄ is the only
+     hint the green button holds more - without it the menu is
+     undiscoverable. */
+  .attach-row button[name="then"] { display: none; }
+  .attach-row button.go { margin-left: auto; }
+  .attach-row button.go::after { content: " \2304"; opacity: 0.55; }
+  .attach-row [data-attach-status] { order: 9; flex-basis: 100%; }
+  /* Measured at 390px: the card's content box is 258px and the trio at
+     desktop spacing wants ~305px, so the third button wrapped. The row sheds
+     gap and button side padding on a phone instead - ~248px, one line with
+     10px to spare. */
+  .attach-row { gap: 0.35rem; }
+  .attach-row .btn { padding-left: 0.5rem; padding-right: 0.5rem; }
+
   /* Wes's 2026-07-26 note: "allow the todo item to take up the full width of
      that section and then add the tags underneath each line item for mobile".
      His screenshot showed a tagged todo rendered as a 3-character-wide column
@@ -2209,19 +2603,19 @@ button.recording { color: var(--ansi-red); border-color: var(--ansi-red); }
    Read-only facts about how the portal is reachable, so these are lists of
    label + value rather than a form. */
 .access-list, .access-peers { list-style: none; padding: 0; margin: 0.4rem 0 0.9rem; }
-.access-list li { padding: 0.45rem 0; border-bottom: 1px solid var(--border, #1e2a38); }
+.access-list li { padding: 0.45rem 0; border-bottom: 1px solid var(--window-border); }
 .access-list li:last-child { border-bottom: 0; }
 .access-label { display: inline-block; min-width: 8.5rem; color: var(--terminal-dim); }
-.access-label.ok { color: var(--ok, #6ee7a0); }
-.access-label.warn { color: var(--warn, #e8c56b); }
+.access-label.ok { color: var(--ansi-green); }
+.access-label.warn { color: var(--ansi-yellow); }
 .access-list .hint, .access-peers .hint { display: block; margin-left: 8.5rem; }
 .access-peers li { padding: 0.25rem 0; }
 .access-peers li.offline { opacity: 0.45; }
 /* Fixed-width so the codes line up into a column and a blocked machine is
    findable by scanning rather than by reading every row. */
 .reach { display: inline-block; min-width: 5rem; font-size: 0.72rem; text-transform: uppercase; }
-.reach-yes { color: var(--ok, #6ee7a0); }
-.reach-blocked { color: var(--warn, #e8c56b); }
+.reach-yes { color: var(--ansi-green); }
+.reach-blocked { color: var(--ansi-yellow); }
 .reach-unknown { color: var(--terminal-dim); }
 .secure-hint { display: block; }
 
@@ -2505,9 +2899,6 @@ a.btn:hover { text-decoration: none; }
 
 /* Priority is a number with no words on it, so color is the only thing that
    makes 8 read differently from 2 at a glance. */
-.sel-trigger.prio-high, .sel-opt.prio-high { color: var(--ansi-orange, var(--portal-orange)); }
-.sel-trigger.prio-mid, .sel-opt.prio-mid { color: var(--terminal-fg); }
-.sel-trigger.prio-low, .sel-opt.prio-low { color: var(--terminal-dim); }
 
 /* Memory page ------------------------------------------------------------- */
 .memory-head {
@@ -2760,9 +3151,9 @@ a.btn:hover { text-decoration: none; }
    attribute selector and outranks a bare class, so `.person-head input` alone
    would lose to the form-wide `width: 100%` and render full width. */
 .person-head input[type="text"] { width: auto; flex: 1 1 12rem; min-width: 0; }
-/* The pronouns dropdown is sized through its `.sel` wrapper, not the <select>:
+/* The gender dropdown is sized through its `.sel` wrapper, not the <select>:
    app.js wraps every select and the wrapper carries `width: 100%`, so sizing
-   the select alone left the name and the pronouns stacked in two full-width
+   the select alone left the name and the dropdown stacked in two full-width
    rows instead of sharing a line. Same lesson as `.whoami` above - the visible
    control is the wrapper and its trigger. */
 .person-head .sel { width: auto; flex: 0 0 auto; }
@@ -2962,6 +3353,71 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
   font-size: 0.76rem;
 }
 
+/* --- Where the sections of a project page sit ------------------------------
+   Wes, 2026-07-28: a theme should let someone change "where they appear", not
+   only how they look. The rows are the preview: the list is in the order the
+   page will be in, so this reads top-to-bottom like the page it describes.
+
+   A numbered list on purpose. The number is the position, which is the whole
+   thing being edited, and it makes "the journal is third now" checkable at a
+   glance instead of by counting rows. */
+.arrange-list {
+  list-style: none;
+  counter-reset: arrange;
+  margin: 0 0 0.6rem;
+  padding: 0;
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+}
+.arrange-row {
+  counter-increment: arrange;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--window-border);
+}
+.arrange-row:last-child { border-bottom: none; }
+.arrange-row::before {
+  content: counter(arrange);
+  color: var(--terminal-dim);
+  font-size: 0.7rem;
+  min-width: 1.1em;
+  text-align: right;
+}
+.arrange-name { font-weight: 600; white-space: nowrap; }
+/* The hint takes whatever is left and is the only thing allowed to shrink, so
+   a long description never pushes the arrows off a phone. min-width:0 because
+   a flex item defaults to its min-content width and would otherwise refuse to
+   get smaller than its longest word. */
+.arrange-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.arrange-moves {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: auto;
+  flex: none;
+}
+/* Square, and big enough to hit with a thumb: these are the only controls on
+   the settings page whose label is a single glyph. */
+.arrange-moves .btn {
+  min-width: 2rem;
+  padding: 0.2rem 0.4rem;
+  line-height: 1.2;
+}
+/* The row descriptions are the first thing to go on a phone: the name and the
+   two arrows are what the control actually needs, and nine rows of wrapped
+   prose is a wall. */
+@media (max-width: 560px) {
+  .arrange-hint { display: none; }
+  .arrange-name { white-space: normal; }
+}
+
 /* --- /everyone: the owner's directory of other people's boards -------------
    A directory, not a second dashboard. Deliberately plain rows rather than the
    dashboard's cards, so it stays a place you go to look something up instead
@@ -2976,7 +3432,7 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
   font-size: 0.95rem;
   margin: 0 0 0.3rem;
   padding-bottom: 0.3rem;
-  border-bottom: 1px solid var(--terminal-border);
+  border-bottom: 1px solid var(--window-border);
 }
 .everyone-background { margin: 0 0 0.5rem; }
 .everyone-list { list-style: none; margin: 0; padding: 0; }
@@ -2990,5 +3446,562 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
      rather than push the page sideways. */
   min-width: 0;
 }
-.everyone-list li + li { border-top: 1px dotted var(--terminal-border); }
+.everyone-list li + li { border-top: 1px dotted var(--window-border); }
 .everyone-list a { font-weight: 700; }
+
+/* The desktop side rail ----------------------------------------------------
+   Wes, 2026-08-01: "When on desktop with extra unused horizontal space, let's
+   add a nav bar to the side... I haven't decided yet if im ok with shifting the
+   rest of the main interface here that already exists over to the right to make
+   more space for this. Maybe we can try it and see if I like it?"
+
+   Both variants are here and Settings > appearance > "Side rail" picks between
+   them (config.APPEARANCE_CHOICES["ui_sidebar"] -> a `rail-*` class on <body>):
+
+     rail-margin  "use existing space", and the default. Floats in the dead
+                  margin beside the centered page and SHRINKS to fit it, from
+                  1400px. Nothing on the page ever moves at any width.
+     rail-beside  "interface shift". Pinned to the left edge from 1100px, with
+                  the page pushed right AND left-aligned so it sits against the
+                  rail rather than centering in what is left.
+     rail-off     no rail at any width.
+
+   Those two were not this clean until Wes's note of 2026-08-01: "The left
+   column nav bar does not respect the setting telling it not to shift over the
+   main window. And on neither setting does the main window come as close to the
+   left side bar as it could and should."
+
+   Both halves were real. `margin` used to pin and push between 1100 and 1620,
+   because the run before it had discovered Wes's window is ~1135px and a rail
+   starting at 1620 did not exist on his machine - so it bought him a rail by
+   quietly breaking the promise in the setting's name. And `.screen`
+   (max-width 1080, margin auto) centers in whatever space is left, so on a
+   1920px window `beside` left a ~290px gulf between the rail and the page.
+
+   The fix is to let each option mean one thing, and to make the default the one
+   he has actually been using.
+
+   `position: fixed` in both, because a nav bar that scrolls away is a nav bar
+   for the top of the page only. app.js's scroll anchoring already skips fixed
+   elements when it picks something to hold still (isPinned), so the rail can
+   never become the thing a live patch anchors the page to.
+
+   Below the breakpoint the whole thing is `display: none` and the portal is
+   byte-identical to what it was: the markup is rendered on every page because
+   the server cannot know the window width, and the width test belongs here. */
+:root {
+  --rail-w: 15rem;
+  --rail-gap: 1.25rem;
+  /* The margin placement's own two distances, kept apart from --rail-gap
+     because it is spending a much smaller budget - see Placement 2 below. */
+  --rail-margin-gap: 0.65rem;
+  --rail-margin-edge: 0.4rem;
+  /* The rail's vertical rhythm, stated once. Wes, 2026-08-15: "Look at the
+     inconsistent spacing and line separators here."
+
+     It had drifted into three different distances between four groups: the
+     status widget's own margin-bottom stacked with the nav's margin-top for a
+     doubled gap above "dashboard" (flex items do not collapse margins), the
+     nav's border-bottom put a second line at a boundary the next group's
+     heading was already ruling off, and the project list - a plain div whose
+     first shelf is therefore :first-child - had no gap above it at all, so
+     RECENT was welded to the last chapter.
+
+     So: --rail-group-gap is the ONE distance between two groups, owned by the
+     group below (margin-top, never margin-bottom, so two of them can never
+     stack), and --rail-head-gap is the ONE distance between a group's label
+     and its first row. Every rule that opens a gap in this rail spends one of
+     these two, and a line in the rail is always a .rail-head's underline. */
+  --rail-group-gap: 0.9rem;
+  --rail-head-gap: 0.3rem;
+  /* One row is one row, wherever it is: a running agent, a portal section, a
+     chapter of this page, a project. */
+  --rail-row-pad: 0.28rem 0.35rem;
+}
+
+#side-rail { display: none; }
+
+/* Common shape, stated once for both placements. */
+#side-rail {
+  position: fixed;
+  top: 1.5rem;
+  /* max-height, not `bottom`: pinning both edges makes the panel as tall as the
+     window whatever is in it, so a portal with three active projects draws a
+     mostly-empty box down the side of the page. It sizes to its content and
+     only starts scrolling once there is more of it than there is window. */
+  max-height: calc(100vh - 3rem);
+  width: var(--rail-w);
+  z-index: 40;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+.rail-inner {
+  /* min-height: 0 on the flex ITEM is what lets it scroll instead of forcing
+     its parent past the max-height above. */
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  background: var(--window-bg);
+  border: 1px solid var(--window-border);
+  border-radius: 12px;
+  padding: 0.85rem 0.9rem;
+}
+
+/* The project list takes whatever height is left under the status widget and
+   the chapter list, and scrolls inside it. Wes, 2026-08-01: "have it show as
+   many of the most recent projects that have been worked on as will fit on the
+   remainder of the screen (without having to scroll). Allow this section to be
+   scrolled to view older ones."
+
+   "The remainder of the screen" is exactly what `flex: 1` on this and `flex:
+   none` on its two siblings means, so the number of rows on screen is decided
+   by the window rather than by a constant nobody can see. `scroll-cap` is what
+   makes a live patch put the scroll position back where the reader left it. */
+.rail-projects {
+  /* The one gap this container owes: it is a plain div, so the shelf inside it
+     is a :first-child and takes no margin of its own. Without this the RECENT
+     heading sat directly under the last chapter row while every other group
+     had space above it. */
+  margin-top: var(--rail-group-gap);
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.rail-status,
+#rail-usage,
+#rail-nav,
+#rail-chapters { flex: none; }
+/* ...within reason. A page with thirty sections would otherwise leave the
+   project list a single row; past this the chapter list scrolls too. */
+#rail-chapters {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+/* Wes, 2026-08-06: "hide the scroll bar on the left side nav column." The two
+   lists still scroll - only the bar itself goes, which on a narrow rail was
+   sitting on top of the text it was measuring. */
+.rail-projects,
+#rail-chapters { scrollbar-width: none; }
+.rail-projects::-webkit-scrollbar,
+#rail-chapters::-webkit-scrollbar { display: none; }
+
+/* Placement 1 (`beside`): pinned to the left edge, with <body> given matching
+   padding so the page is pushed right by exactly the room the rail takes.
+
+   1100px, and the number is the whole of Wes's 2026-08-01 note "Is it not
+   deployed yet? It is not active for me." It had shipped. His window is about
+   1135px wide - measured off the usage-tab screenshot he sent the same night,
+   which reproduces pixel for pixel at that width - so the old 1360/1620 pair
+   meant the rail he asked for did not exist on the machine he asked from.
+   At 1100 the content column still gets ~765px, which is comfortably above the
+   720px breakpoint where the portal folds to its phone layout. Below 1100 it
+   would start eating the page, and there is no rail at any setting.
+
+   `margin-left: 0` on .screen is the second half of his follow-up ("on neither
+   setting does the main window come as close to the left side bar as it could
+   and should"). Without it the page centers in the space left over, which on a
+   1920px window parks it ~290px away from the rail it is supposed to sit
+   beside; the padding above already reserved the room, so centering inside it
+   is centering twice. */
+@media (min-width: 1100px) {
+  body.rail-beside #side-rail { display: flex; left: var(--rail-gap); }
+  body.rail-beside { padding-left: calc(var(--rail-w) + var(--rail-gap) * 2); }
+  body.rail-beside .screen { margin-left: 0; }
+}
+
+/* Placement 2 (`margin`, the default): only where there is genuinely dead
+   margin to float in, and then nothing on the page moves at all - which is the
+   whole of what this setting promises.
+
+   Wes, 2026-08-04: "I want it to be more flexible for the 'Use existing space'
+   version to be able to be more narrow to still apply and use the space to the
+   left of the interface."
+
+   So the rail is pinned by its RIGHT edge and takes whatever is left, instead
+   of demanding a fixed --rail-w and hiding itself when it cannot have it:
+
+     right  one gap in from the content column's left edge, wherever the window
+            has centered it. 540px is half of `.screen`'s max-width, which is
+            the `.screen` rule in THIS file (1080px, line ~199) - not the one
+            in terminal-theme.css, which says 1100 and which the portal does
+            not load at all. That sheet is the reusable terminal-style skill;
+            base.html links style.css and themes.css and nothing else, and a
+            rail positioned off the wrong sheet's number sits 10px out.
+     width  the whole margin minus that gap and a sliver of viewport edge,
+            capped at --rail-w. Above ~1594px the cap wins and this is pixel
+            for pixel the rail it always was; between 1400 and there it is a
+            narrower rail rather than no rail.
+
+   1400px is where the arithmetic runs out, not a taste call: at 1400 the dead
+   margin is (1400 - 1080) / 2 = 160px, and 160 minus the gap and the edge is
+   ~143px of rail, which is the narrowest the status widget and a project title
+   still read at (checked on screen, not calculated). Below that the number
+   shrinks to nothing and there is no rail on this setting, which is the honest
+   reading of its name - the option that works on a narrow window is `beside`.
+
+   --rail-gap is not reused here. 1.25rem is the right distance from a viewport
+   edge and too much to spend twice out of a margin this tight. */
+@media (min-width: 1400px) {
+  body.rail-margin #side-rail {
+    display: flex;
+    left: auto;
+    right: calc(50% + 540px + var(--rail-margin-gap));
+    width: min(
+      var(--rail-w),
+      calc(50vw - 540px - var(--rail-margin-gap) - var(--rail-margin-edge))
+    );
+  }
+}
+
+/* ...and the band where it is running on the narrow end spends less of that
+   width on padding. At 1400px the rail is ~143px wide and the default 0.9rem
+   of inner padding was eating a fifth of it, which is the difference between
+   "SimpleC..." and "SimpleClick..." on a row. Chosen off the screenshots at
+   1400 and 1500, not calculated. Above the cap width the rail is pixel for
+   pixel the one it always was, padding included. */
+@media (min-width: 1400px) and (max-width: 1619px) {
+  body.rail-margin .rail-inner { padding: 0.7rem 0.5rem; }
+  /* Re-declared as the variable rather than as a rule per row kind, so the
+     running-agent rows narrow with everything else instead of keeping the
+     wide-rail padding and sitting a pixel out from the list below them. */
+  body.rail-margin { --rail-row-pad: 0.26rem 0.2rem; }
+  body.rail-margin .rail-digit,
+  body.rail-margin .rail-chapter-key { margin-left: 0.25rem; }
+}
+
+/* The status widget ------------------------------------------------------- */
+/* No margin-bottom of its own: the gap under this group belongs to the group
+   below it (--rail-group-gap on .rail-section), and .rail-inner is a flex
+   column where two margins do not collapse into one - a margin here and a
+   margin there is how the space above "dashboard" came to be twice the space
+   anywhere else. Its bold "N agents working" line is this group's label, which
+   is why it is the one group with no .rail-head over it. */
+.rail-status-head {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.rail-status-head.idle { color: var(--terminal-dim); font-weight: 400; }
+.rail-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--terminal-dim);
+}
+.rail-dot.working { background: var(--ansi-green); animation: rail-pulse 2s ease-in-out infinite; }
+@keyframes rail-pulse { 50% { opacity: 0.3; } }
+
+.rail-runs { list-style: none; margin: var(--rail-head-gap) 0 0; padding: 0; }
+.rail-runs li { margin: 0; }
+.rail-runs a {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  padding: var(--rail-row-pad);
+  border-radius: 4px;
+  text-decoration: none;
+  color: var(--terminal-fg);
+}
+.rail-runs a:hover { background: var(--panel-bg); }
+/* min-width:0 on the flex CHILD, not just the container: without it a long
+   project title refuses to shrink and pushes the elapsed time out of the rail
+   instead of ellipsizing. */
+.rail-run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-run-elapsed { margin-left: auto; flex: none; color: var(--terminal-dim); font-size: 0.72rem; }
+
+/* Sections: the portal's own tabs, this page's chapters, then the shelves --- */
+.rail-section { margin-top: var(--rail-group-gap); }
+.rail-section:first-child { margin-top: 0; }
+/* The only thing in the rail that draws a line. Every group of links is
+   announced the same way - a dim uppercase label with a rule under it - so
+   PORTAL, THIS PAGE and RECENT read as the same kind of heading, and a reader
+   never has to work out whether a line means "new group" or something else. */
+.rail-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+  margin: 0 0 var(--rail-head-gap);
+  padding-bottom: 0.25rem;
+  border-bottom: 1px solid var(--window-border);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--terminal-dim);
+  font-weight: 600;
+}
+.rail-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.rail-section ul { list-style: none; margin: 0; padding: 0; }
+.rail-section li { margin: 0; }
+.rail-section a {
+  display: block;
+  padding: var(--rail-row-pad);
+  border-radius: 4px;
+  text-decoration: none;
+  color: var(--terminal-fg);
+  border-left: 2px solid transparent;
+}
+.rail-section a:hover { background: var(--panel-bg); }
+/* The "More" tail - paused and backlog projects filling whatever height the
+   working shelves left over (Wes, 2026-08-04). Dimmed as a group: these are
+   "not now" projects, and the rail's foreground is the work in flight.
+   `li.dim` says the same thing one row at a time, which is what the recent
+   list needs: there the parked projects are sorted in among the live ones by
+   date (Wes, 2026-08-15) and there is no group to dim. */
+#rail-shelf-more .rail-name,
+.rail-section li.dim .rail-name { color: var(--terminal-dim); }
+/* The Claude windows the runs are spending, one row each (Wes, 2026-08-16).
+   Same row shape as every other group in the rail - label left, facts right -
+   so it reads as one more group rather than as a gauge bolted to the side. */
+.rail-usage a { display: flex; align-items: baseline; gap: 0.35rem; }
+.rail-usage .rail-name { flex: 1 1 auto; }
+.rail-used {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.72rem;
+  font-weight: 700;
+}
+/* The same yellow the dashboard's limit chips go at the same threshold
+   (limits.HOT_PERCENT), so "this one is about to stop the day" looks the same
+   wherever it is said. */
+.rail-used.hot { color: var(--ansi-yellow); }
+.rail-resets {
+  flex: none;
+  font-size: 0.68rem;
+  color: var(--terminal-dim);
+  font-variant-numeric: tabular-nums;
+}
+/* The pie is the window's CLOCK - how far through it we are - not its spend,
+   which is the percentage beside it. A conic-gradient rather than an SVG: it
+   takes one number, inherits the theme's colors like everything else here, and
+   there is no second file to keep in step with this one.
+
+   --pie is declared here with its initial value even though base.html always
+   sets it inline, and that is not belt-and-braces: an element whose only
+   definition of a property lives in a template has no value at all if the
+   template ever stops setting it, and the reference below would silently fall
+   back to the initial `background` - an invisible pie that reads as a design
+   choice rather than a break. It is also the only honest way to satisfy
+   test_no_stylesheet_uses_a_custom_property_nobody_defines, which exists for
+   exactly that class of silent failure.
+
+   Both stops name --pie so the fill has a hard edge; the shorthand `transparent
+   0` form means the same thing but reads as a typo. The inset ring is the empty
+   part of the pie, which is what makes a nearly-empty one visible at 9px
+   instead of vanishing into the panel. `align-self: center` because the row is
+   baseline-aligned and an empty inline box has its baseline at its bottom
+   edge - left alone it hangs a pixel below the text it sits with. */
+.rail-pie {
+  --pie: 0%;
+  flex: none;
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: conic-gradient(var(--portal-blue) 0 var(--pie), transparent var(--pie));
+  box-shadow: inset 0 0 0 1px var(--terminal-dim);
+}
+
+/* The portal's own sections, at the top of the rail. It carries a PORTAL
+   heading like every other group rather than a rule of its own along the
+   bottom: that rule sat one text row above THIS PAGE's underline, which is two
+   lines doing one job, and it is what a group heading does here anyway - marks
+   the rows below it as a group rather than as more of the list. */
+.rail-nav a { display: flex; align-items: baseline; gap: 0.4rem; }
+.rail-nav .rail-name { flex: 1 1 auto; }
+.rail-count-badge {
+  flex: none;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--portal-orange);
+}
+/* The project you are already on. A left edge rather than a background,
+   so the marker survives a hover on a different row. */
+.rail-section li.here > a {
+  border-left-color: var(--portal-blue);
+  background: var(--panel-bg);
+}
+.rail-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-note {
+  display: block;
+  font-size: 0.68rem;
+  color: var(--terminal-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-note.working { color: var(--ansi-green); }
+.rail-note.blocked { color: var(--ansi-red); }
+.rail-note.asking { color: var(--ansi-yellow); }
+.rail-note.gate { color: var(--portal-orange); }
+
+/* The number key that jumps to a project. Wes, 2026-08-01: "Allow me to press
+   number keys to jump to the projects over there based on their order on the
+   list." Shown for the same reason the chapter list shows its bound letter - a
+   shortcut nobody can see is a shortcut nobody uses - and floated right like
+   that one so a long project title keeps the full width to ellipsis in. */
+.rail-digit {
+  float: right;
+  margin-left: 0.4rem;
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--terminal-dim);
+  border: 1px solid var(--window-border);
+  border-radius: 3px;
+  padding: 0 0.3rem;
+  line-height: 1.3;
+}
+
+/* One-click access to the sections of the page you are on, built by app.js
+   from the page's own [data-jump] elements. The key beside a chapter is the
+   letter that also jumps there, which is how a person finds out their own
+   keyboard bindings exist without opening settings. */
+.rail-chapter-key {
+  float: right;
+  margin-left: 0.4rem;
+  font-size: 0.66rem;
+  color: var(--terminal-dim);
+  border: 1px solid var(--window-border);
+  border-radius: 3px;
+  padding: 0 0.25rem;
+  line-height: 1.3;
+}
+
+
+/* The landing page for an answer button tapped on a lock-screen notification
+   (question_tap.html). On the happy path it is on screen for one frame while
+   its form posts itself, so it is styled for the case that lingers: a stale
+   button, or JavaScript refusing to run. Centered and short, because the whole
+   page is one sentence and a control. */
+.tap-answer {
+  max-width: 32rem;
+  margin: 2rem auto;
+  text-align: center;
+}
+.tap-answer .tap-question {
+  color: var(--terminal-dim);
+  margin: 0.75rem 0 1.25rem;
+}
+.tap-answer .tap-choice strong { color: var(--portal-orange); }
+.tap-answer .tap-note { margin: 0.75rem 0 1.25rem; }
+
+/* A run's diff, readable and commentable on a phone ------------------------
+   Every line is a <label> around a hidden radio, so tapping a line picks it
+   and one form per file sends it. The horizontal scroll is on .diff-lines
+   rather than on the page: code lines are long and a page that slides
+   sideways under a thumb is the layout bug Wes reports most. */
+.diff-plus { color: var(--ansi-green); }
+.diff-minus { color: var(--ansi-red); }
+
+.diff-file { border-top: 1px solid var(--window-border); margin: 0; padding: 0.5rem 0 0.2rem; }
+.diff-file:first-of-type { margin-top: 0.8rem; }
+.diff-file > summary {
+  cursor: pointer;
+  list-style: none;
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.25rem 0;
+}
+.diff-file > summary::-webkit-details-marker { display: none; }
+.diff-file > summary::before { content: "+"; color: var(--portal-blue); }
+.diff-file[open] > summary::before { content: "-"; }
+.diff-file > summary:hover .diff-path { color: var(--portal-blue); }
+/* The path is the long part, so it takes the space and the counts stay put on
+   the right rather than being pushed off a phone by a deep path. */
+.diff-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--terminal-fg);
+}
+.diff-counts { flex: none; white-space: nowrap; }
+
+.diff-lines {
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  margin: 0.5rem 0 0.6rem;
+  overflow-x: auto;
+  overflow-y: hidden;
+  background: var(--panel-bg);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  padding: 0 0.4rem;
+  /* min-content so a long line widens the scroll box rather than wrapping:
+     wrapped diff lines lose the alignment that makes a diff readable. */
+  min-width: min-content;
+}
+label.diff-line { cursor: pointer; }
+label.diff-line:hover { background: rgba(122, 162, 247, 0.12); }
+/* The radio is the selection state and must be reachable by the keyboard, so
+   it is sized to nothing rather than display:none, which would take it out of
+   the tab order and out of the form's submitted data. */
+.diff-pick {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  margin: 0;
+  pointer-events: none;
+}
+.diff-ln {
+  flex: none;
+  width: 2.8em;
+  text-align: right;
+  color: var(--terminal-dim);
+  user-select: none;
+}
+/* The one column carries numbers from both sides of the change - a deletion is
+   numbered in the OLD file, so the sequence legitimately jumps backwards. The
+   number is tinted to say which file it is counting, because an untinted
+   column that goes 8, 6, 7, 9 reads as a bug. */
+.diff-add .diff-ln { color: var(--ansi-green); opacity: 0.75; }
+.diff-del .diff-ln { color: var(--ansi-red); opacity: 0.75; }
+.diff-mark { flex: none; width: 1ch; user-select: none; }
+.diff-code { white-space: pre; }
+.diff-add { color: var(--ansi-green); }
+.diff-add .diff-mark { color: var(--ansi-green); }
+.diff-del { color: var(--ansi-red); }
+.diff-del .diff-mark { color: var(--ansi-red); }
+.diff-hunk { color: var(--portal-blue); opacity: 0.85; padding-top: 0.25rem; }
+.diff-hunk .diff-code { white-space: pre; }
+/* :has() rather than a sibling selector because the input is inside the label
+   it marks; Safari has had it since 15.4 and the fallback is only that the
+   picked line is not tinted, never that the pick fails to submit. */
+.diff-lines label.diff-line:has(> .diff-pick:checked) {
+  background: rgba(122, 162, 247, 0.22);
+  outline: 1px solid var(--portal-blue);
+  outline-offset: -1px;
+}
+.diff-lines label.diff-line:has(> .diff-pick:focus-visible) {
+  outline: 1px dashed var(--portal-blue);
+  outline-offset: -1px;
+}
+
+.diff-comment { display: flex; flex-direction: column; gap: 0.4rem; margin-bottom: 0.8rem; }
+.diff-comment textarea { width: 100%; }
+.diff-comment-open { display: flex; flex-direction: column; gap: 0.4rem; }
+.diff-comment .btn { align-self: flex-start; }
+/* The box only opens for the file a line was picked in, so a twelve-file diff
+   is a list of file names rather than twelve empty text boxes. A browser with
+   no :has() support keeps it open, which is a slightly busier page and not a
+   broken one - the pick and the submit do not depend on this rule. */
+.diff-body:not(:has(.diff-pick:checked)) .diff-comment-open { display: none; }
+.diff-body:has(.diff-pick:checked) .diff-comment-hint { color: var(--portal-blue); }

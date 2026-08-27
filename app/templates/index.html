@@ -31,9 +31,14 @@
     <span class="badge status-{{ state }}">{{ state|status_badge }}</span>
     {% if p.id in awaiting_approval %}<span class="badge needs-ok">needs your OK</span>{% endif %}
     {% if p.blocked_on %}<span class="badge status-paused" title="{{ p.blocked_on }}">blocked</span>{% endif %}
-    <span>{{ p.kind }}{% if show_priority() %} &middot; p{{ p.priority }}{% endif %}
+    <span>{{ p.kind }}
       {%- if run_counts.get(p.id) %} &middot; {{ run_counts[p.id] }} run{{ 's' if run_counts[p.id] != 1 }} today{% endif %}
-      &middot; {{ p.updated_at|timeago }}</span>
+      {# The value the shelf was ranked on, so the card agrees with its own
+         position: under a recency sort a "5 days ago" above a "2 hours ago"
+         reads as the sort being broken. `(worked_on or {})` because an
+         undefined name is falsy in Jinja - a macro that renders no timestamp
+         at all when one route forgets to pass the dict is a trap. #}
+      &middot; {{ ((worked_on or {}).get(p.id) or p.updated_at)|timeago }}</span>
   </span>
 </a>
 {% endmacro %}
@@ -85,7 +90,7 @@
         title="read from your Claude account{{ ' ' ~ usage.limits.age ~ ' ago' if usage.limits.age }}">
     claude:
     {% for w in usage.limits.windows + (usage.limits.scoped or []) %}
-    <span class="limit-chip{{ ' hot' if w.percent >= 80 }}">
+    <span class="limit-chip{{ ' hot' if w.percent >= limit_hot_at }}">
       {{ w.label }} <strong>{{ w.percent|round|int }}%</strong>
       {%- if w.resets_in %} <span class="muted">(resets {{ w.resets_in }})</span>{% endif %}
     </span>
@@ -123,10 +128,11 @@
     <div class="live-head">
       <span class="dot running"></span>
       <strong class="live-what">
-        {{ r.task }} on
-        {% if r.project_slug %}<a href="/project/{{ r.project_slug }}">{{ r.project_title }}</a>
+        {# A one-off's label already opens with "task:", so "task on task:"
+           would say it twice - the title alone carries the whole line. #}
+        {% if r.project_slug %}{{ r.task }} on <a href="/project/{{ r.project_slug }}">{{ r.project_title }}</a>
         {% elif r.oneoff_id %}<a href="/tasks/{{ r.oneoff_id }}">{{ r.project_title }}</a>
-        {% else %}{{ r.project_title }}{% endif %}
+        {% else %}{{ r.task }} on {{ r.project_title }}{% endif %}
       </strong>
       <span class="muted small live-meta">{{ r.model }} &middot; {{ r.elapsed }} &middot; {{ r.events }} events</span>
       <a class="small" href="/run/{{ r.run_id }}">full transcript &rarr;</a>
@@ -233,6 +239,10 @@
     <div class="field">
       <label for="title">Title <span class="muted">(optional)</span></label>
       <input type="text" id="title" name="title" placeholder="leave blank to auto-generate">
+      {# Typing one locks it: a name you chose is never renamed by an agent,
+         though one may still suggest an alternative on the project page. #}
+      <p class="hint">A title you type here is yours - agents can suggest a
+        different one, but never replace it.</p>
     </div>
     <div class="field">
       <label for="idea">What's the idea?</label>

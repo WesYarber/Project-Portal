@@ -15,12 +15,17 @@ full disk, a bad `--settings` payload, a revoked login, any future crash
 between "create the run row" and "the agent's first event" produces exactly the
 same shape. Fixing only the cause of the day leaves the amplifier in place.
 
-**What counts as a dead start:** a run that ended in `error` having emitted
-*zero* stream events. Zero is the load-bearing part. An agent that started,
-worked and then failed has events in the hundreds and is a normal bad run - it
-made progress, it wrote a journal entry, retrying it promptly is right. A run
-with no events never reached the model at all, so retrying it in ten seconds
-can only reproduce it.
+**What counts as a dead start:** a run that ended in `error` without ever
+reaching the model. Two shapes qualify. A run with *zero* stream events never
+even booted the CLI. And - learned the hard way on 2026-08-06, when an expired
+OAuth session was retried once a minute for twenty runs straight - a run whose
+CLI booted, printed one error and quit: that emits a *handful* of events
+(session start, the error line, the failure result - exactly 3 that day) while
+billing nothing at all. So a few-event error run counts as dead only when its
+cost and output tokens are recorded as zero; an agent that reached the model
+always billed something. An agent that started, worked and then failed has
+events in the hundreds and real usage and is a normal bad run - it made
+progress, it wrote a journal entry, retrying it promptly is right.
 
 **Why backoff rather than a stop.** A project the scheduler refuses to touch
 until somebody clears a flag is a project that stays broken while Wes is
@@ -73,6 +78,12 @@ NOTIFY_AFTER = 3
 # How far back to look. A project that has genuinely failed this many times in
 # a row is already at the delay ceiling, so counting further changes nothing.
 SCAN_LIMIT = 40
+# The most events a CLI can emit while booting and dying without the model:
+# session start, an error line, the failure result. The 2026-08-06 auth outage
+# produced exactly 3 per run. Above this, an error run is presumed to have
+# been a real attempt regardless of what it billed - run 704 recorded 770
+# events with zeroed token columns, so the count has to win over the billing.
+DEAD_START_MAX_EVENTS = 4
 
 
 def is_dead_start(run: db.sqlite3.Row) -> bool:
@@ -88,7 +99,28 @@ def is_dead_start(run: db.sqlite3.Row) -> bool:
         events = run["events"]
     except (IndexError, KeyError):  # pragma: no cover - pre-migration row
         return False
-    return events is not None and int(events) == 0
+    if events is None:
+        return False
+    if int(events) == 0:
+        return True
+    # A handful of events is ambiguous: the CLI's boot-and-fail emits 2-4, and
+    # so could a very short real attempt. Billing settles it - a run that
+    # reached the model billed output tokens or cost, and the CLI reports
+    # explicit zeros (not NULL) when it dies at the starting line. NULL means
+    # an old row or an unparsed result, which stays conservative.
+    return int(events) <= DEAD_START_MAX_EVENTS and _billed_nothing(run)
+
+
+def _billed_nothing(run: db.sqlite3.Row) -> bool:
+    """Both usage columns present and zero - the model was never reached."""
+    for col in ("cost_usd", "output_tokens"):
+        try:
+            value = run[col]
+        except (IndexError, KeyError):
+            return False
+        if value is None or float(value) > 0:
+            return False
+    return True
 
 
 def consecutive_dead_starts(project_id: int) -> int:
@@ -173,8 +205,9 @@ def note_for(streak: int) -> str:
     """The journal entry written when the breaker first trips."""
     return (
         f"**{streak} runs in a row on this project died before the agent "
-        f"started** - the run row was created and the process never produced a "
-        f"single event. That is an environment failure rather than anything "
+        f"started** - each run ended without the model ever being reached "
+        f"(no events, or a bare CLI error that billed nothing). That is an "
+        f"environment failure rather than anything "
         f"the agent did, so the portal is now spacing attempts out "
         f"({delay_min(streak)} minutes and doubling, up to "
         f"{MAX_DELAY_MIN // 60}h) instead of retrying every tick. It clears "

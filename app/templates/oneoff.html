@@ -77,7 +77,12 @@
   var live = document.getElementById("oneoff-live");
   if (!live) return;
   var taskId = parseInt(live.dataset.taskId, 10);
-  var timer = setInterval(function () {
+  function tick() {
+    // Same rule as the three pollers in app.js (Wes, 2026-08-13: an open tab
+    // was keeping his Mac's fans up). This one does stop itself when the run
+    // ends, so it never leaked - but a tab nobody is looking at still has no
+    // reason to fetch, and no reason to reload itself either.
+    if (document.hidden) return;
     fetch("/api/active-run").then(function (r) { return r.json(); }).then(function (snap) {
       var stillRunning = (snap.runs || []).some(function (r) { return r.oneoff_id === taskId; });
       if (stillRunning) return;
@@ -91,7 +96,11 @@
       }
       window.location.reload();
     }).catch(function () { /* offline overlay handles a dead server */ });
-  }, 5000);
+  }
+  var timer = setInterval(tick, 5000);
+  document.addEventListener("visibilitychange", function () {
+    if (!document.hidden) tick();
+  });
 })();
 </script>
 {% endif %}

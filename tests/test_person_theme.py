@@ -292,8 +292,18 @@ def test_split_personal_puts_each_key_in_exactly_one_bucket():
 
 def test_every_appearance_layer_is_personal_and_nothing_else_is():
     """Derived from config, so a new look-and-feel option is personal on the
-    day it is added rather than the day somebody remembers to list it."""
-    assert settings_form.PERSONAL_KEYS == frozenset(config.APPEARANCE_CHOICES)
+    day it is added rather than the day somebody remembers to list it.
+
+    The page arrangement is the one hand-added member and is named here rather
+    than waved through: it cannot live in APPEARANCE_CHOICES because it is a
+    permutation instead of one of a fixed list of values, so it is the only
+    personal setting a new dropdown would not automatically join.
+    """
+    from app import sections
+
+    assert settings_form.PERSONAL_KEYS == frozenset(config.APPEARANCE_CHOICES) | {
+        sections.SETTING_KEY
+    }
     for key in settings_form.PERSONAL_KEYS:
         assert key in settings_form.REGISTRY, key
 
