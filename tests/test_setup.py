@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -180,7 +181,10 @@ def test_check_mode_never_deletes_a_virtualenv(tmp_path, monkeypatch):
     report = setup.Report()
     assert setup.make_venv(report, check_only=True) is False
     assert venv.exists()
-    assert any("unusable" in item for item in report.human)
+    assert any("unusable" in item for item in report.pending)
+    # Rebuilding it is this script's own job, so it must not be filed against a
+    # person - that list is what an unattended run hands back to Wes.
+    assert report.human == []
 
 
 # --- the smoke test, which is the only claim that matters -------------------
@@ -312,6 +316,61 @@ def test_a_missing_claude_cli_is_a_job_for_a_person_not_a_failure():
     assert any("Claude Code CLI" in item for item in report.human)
 
 
+def _fresh_clone(tmp_path):
+    """A checkout with nothing set up, which is what a stranger has.
+
+    Only the script is copied: `ROOT` is its parent's parent, so this gives it
+    a tree with no venv, no config and no `app/` - and every step that would
+    read those is supposed to notice rather than assume.
+    """
+    (tmp_path / "deploy").mkdir()
+    shutil.copy(ROOT / "deploy" / "setup.py", tmp_path / "deploy" / "setup.py")
+    return subprocess.run(
+        [sys.executable, str(tmp_path / "deploy" / "setup.py"), "--check"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        timeout=180,
+    )
+
+
+def test_a_fresh_clone_is_never_called_ready(tmp_path):
+    """Found by running --check on a real clone of the public repo. It printed
+    "The portal is ready", and under it a start command naming an interpreter
+    that did not exist, because a missing virtualenv is reported through
+    needs_a_person() rather than bad() and only bad() set `failed`.
+
+    An unattended agent is the whole audience for this script, and this is the
+    one output that would make it skip the install it was about to run."""
+    done = _fresh_clone(tmp_path)
+
+    assert "The portal is ready" not in done.stdout
+    assert "Setup is NOT finished" in done.stdout
+    assert done.returncode == 1, done.stdout + done.stderr
+    # And it must say what to run, not just that something is missing.
+    assert "without --check" in done.stdout
+
+
+def test_a_missing_virtualenv_is_not_filed_against_a_person(tmp_path):
+    """The human list is what an agent hands back to Wes at the end, so it has
+    to hold only things his hands are needed for. Creating a virtualenv is what
+    this script does by itself - listing it there sends him to do the script's
+    job, and it is the reason a fresh clone reported itself set up."""
+    done = _fresh_clone(tmp_path)
+
+    heading, found, human = done.stdout.partition("only a person can do")
+    # Assert the section EXISTS before asserting what is missing from it -
+    # partitioning on an absent heading yields "", and "not in ''" is true of
+    # everything, so the interesting half of this test would pass against a run
+    # that printed no human list at all.
+    assert found, done.stdout
+    assert "confirm the CLI is logged in" in human
+    assert "virtualenv" not in human
+    # It is still reported - just as outstanding work, not as an errand.
+    assert "no virtualenv" in done.stdout
+    assert "  todo    " in done.stdout
+
+
 def test_check_mode_runs_clean_on_this_checkout():
     """The end-to-end one: it is a script, and a script that no longer parses
     is only discovered when somebody runs it on a fresh machine."""
@@ -324,3 +383,7 @@ def test_check_mode_runs_clean_on_this_checkout():
     )
     assert done.returncode == 0, done.stdout + done.stderr
     assert "already virtualenv" in done.stdout
+    assert "The portal is ready" in done.stdout
+    # The success path prints the human list too - a setup that is otherwise
+    # complete is exactly when the one or two remaining errands matter most.
+    assert "only a person can do" in done.stdout

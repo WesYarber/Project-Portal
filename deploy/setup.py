@@ -58,6 +58,12 @@ class Report:
 
     def __init__(self) -> None:
         self.human: list[str] = []
+        # Steps that are still outstanding but are this script's OWN job, kept
+        # apart from `human` because the two lists are read by different
+        # readers. `human` is what an unattended agent hands back to a person,
+        # so a machine task filed there sends somebody to do work the script
+        # does itself - and, worse, left the run believing it had finished.
+        self.pending: list[str] = []
         # Kept as well as printed, so a test can assert WHICH failure was
         # reported. "The portal exited during startup" and "did not answer
         # within 45s" both end the run the same way and mean opposite things -
@@ -82,6 +88,11 @@ class Report:
     def needs_a_person(self, message: str) -> None:
         print(f"  human   {message}")
         self.human.append(message)
+
+    def still_to_do(self, message: str) -> None:
+        """Outstanding, but nobody has to be fetched for it."""
+        print(f"  todo    {message}")
+        self.pending.append(message)
 
 
 def venv_python() -> Path:
@@ -170,10 +181,10 @@ def make_venv(report: Report, check_only: bool) -> bool:
         return True
     half_made = VENV.exists()
     if check_only:
-        report.needs_a_person(
-            f"the virtualenv at {VENV} is unusable (run without --check)"
+        report.still_to_do(
+            f"the virtualenv at {VENV} is unusable and has to be rebuilt"
             if half_made
-            else f"no virtualenv at {VENV} (run without --check)"
+            else f"no virtualenv at {VENV} yet"
         )
         return False
     if half_made:
@@ -212,7 +223,7 @@ def install_requirements(report: Report, check_only: bool) -> bool:
         report.already("dependencies installed")
         return True
     if check_only:
-        report.needs_a_person("dependencies are not installed (run without --check)")
+        report.still_to_do("dependencies from requirements.txt are not installed")
         return False
     installed = subprocess.run(
         [str(python), "-m", "pip", "install", "-q", "-r", str(ROOT / "requirements.txt")],
@@ -313,6 +324,15 @@ def smoke_test(report: Report) -> bool:
             proc.kill()
 
 
+def _print_human(report: Report) -> None:
+    """Last, and never merged with the machine's own outstanding work."""
+    if not report.human:
+        return
+    print(f"\n{len(report.human)} thing(s) only a person can do:")
+    for item in report.human:
+        print(f"  - {item}")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Set this checkout up and prove it serves.")
     ap.add_argument("--check", action="store_true", help="report only, change nothing")
@@ -343,15 +363,27 @@ def main() -> int:
 
     if report.failed:
         print("\nSetup did NOT complete. Fix the FAILED line(s) above and run this again.")
+        _print_human(report)
+        return 1
+
+    if report.pending:
+        # The one lie this script was able to tell. `--check` on a fresh clone
+        # never calls bad() - a missing virtualenv is not a failure, it is
+        # simply work not done yet - so `report.failed` stayed False and the
+        # run printed "The portal is ready" above a start command naming an
+        # interpreter that did not exist. An unattended agent reads that,
+        # believes it, and skips the install it was about to do.
+        print(f"\nSetup is NOT finished - {len(report.pending)} step(s) still to do:")
+        for item in report.pending:
+            print(f"  - {item}")
+        print(f"\nRun it without --check to do them:\n  {sys.executable} deploy/setup.py")
+        _print_human(report)
         return 1
 
     print("\nThe portal is ready. Start it with:")
     print(f"  {venv_python()} -m uvicorn app.main:app --host 0.0.0.0 --port 8500")
     print("  (or install deploy/project-portal.service as a systemd user unit)")
-    if report.human:
-        print(f"\n{len(report.human)} thing(s) only a person can do:")
-        for item in report.human:
-            print(f"  - {item}")
+    _print_human(report)
     return 0
 
 
