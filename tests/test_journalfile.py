@@ -269,10 +269,10 @@ async def test_the_file_is_written_before_the_prompt_that_points_at_it(project,
     seen: dict = {}
     real = agent_runner.build_prompt
 
-    def spy(task, proj):
+    def spy(task, proj, parallel_note=""):
         seen["existed"] = (config.PROJECTS_DIR / proj["slug"]
                            / journalfile.RELPATH).is_file()
-        return real(task, proj)
+        return real(task, proj, parallel_note=parallel_note)
 
     monkeypatch.setattr(agent_runner, "build_prompt", spy)
 

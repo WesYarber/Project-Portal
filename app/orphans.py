@@ -204,11 +204,19 @@ def _git(repo: Path, *args: str, quiet: bool = False) -> Optional[str]:
     return out.stdout
 
 
-def journal_note(slug: str, task: str, how: str) -> Optional[str]:
+def journal_note(
+    slug: str, task: str, how: str, repo: Optional[Path] = None
+) -> Optional[str]:
     """The markdown the worker adds when a run ends badly, or None if the repo
     is clean. `how` is why the run ended - "errored", "timed out", "canceled".
+
+    `repo` overrides which tree is scanned, and exists for parallel runs: those
+    work in a git worktree of their own, so scanning the project's ordinary
+    workspace would describe the *other* agent's live edits as this run's
+    orphaned work and send the next run to tidy up something still being
+    written. Same trap as the lock-conflict path in worker.run_project_task.
     """
-    work = scan(repo_for(slug))
+    work = scan(repo if repo is not None else repo_for(slug))
     if work is None:
         return None
     return (

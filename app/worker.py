@@ -20,6 +20,10 @@ from app import (
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, worklock,
 )
+# Imported under a name of its own: `parallel` alone reads as the global
+# concurrency cap everywhere else in this module (`pacing.parallel_cap`), and
+# this is the per-project worktree mechanism, which is a different thing.
+from app import parallel as parallel_runs
 
 log = logging.getLogger("portal.worker")
 
@@ -510,8 +514,33 @@ async def _tick() -> None:
         if not await _start_one():
             break
 
+    _drain_parallel_branches()
     await _maybe_reflect()
     await _maybe_compact()
+
+
+def _drain_parallel_branches() -> None:
+    """Retry every parallel branch that could not be merged when its run ended.
+
+    Both reasons a merge is deferred - a run still in flight, a dirty tree -
+    clear on their own with nothing to trigger them, so without a tick here a
+    branch parked as `busy` would sit there until the next run on that project
+    happened to finish. Defensive throughout: this is bookkeeping, and it runs
+    inside the loop that starts every run on the board.
+    """
+    try:
+        slugs = parallel_runs.projects_with_branches()
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Could not list projects with parallel branches")
+        return
+    for slug in slugs:
+        project = db.get_project_by_slug(slug)
+        if project is None:
+            continue
+        try:
+            merge_parallel_work(project)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Could not merge parallel work for %s", slug)
 
 
 def scheduled_work_enabled() -> bool:
@@ -795,24 +824,32 @@ async def _sweep_strays() -> None:
             )
 
 
-def spawn_run(project: db.sqlite3.Row, task: str) -> int:
+def spawn_run(project: db.sqlite3.Row, task: str, parallel: bool = False) -> int:
     """Create the run row synchronously and execute it in the background.
 
     Splitting the row creation from the execution is what makes concurrency
     accounting honest: by the time this returns, both `count_runs_today()` and
     `running_project_ids()` already reflect the new run, so the next slot in
     the same tick cannot double-spend the budget or pick the same project.
+
+    `parallel` puts this run in its own git worktree beside a run that is
+    already in flight on the same project - see app/parallel.py.
     """
     model = agent_runner.resolve_model(project, task)
-    run_id = db.create_run(project["id"], task, model)
-    log.info("Running task=%s for project=%s (run_id=%s)", task, project["slug"], run_id)
-    _inflight[run_id] = asyncio.create_task(_execute_run(project, task, run_id, model))
+    run_id = db.create_run(project["id"], task, model, parallel=parallel)
+    log.info("Running task=%s for project=%s (run_id=%s, parallel=%s)",
+             task, project["slug"], run_id, parallel)
+    _inflight[run_id] = asyncio.create_task(
+        _execute_run(project, task, run_id, model, parallel=parallel)
+    )
     return run_id
 
 
-async def _execute_run(project: db.sqlite3.Row, task: str, run_id: int, model: str) -> None:
+async def _execute_run(
+    project: db.sqlite3.Row, task: str, run_id: int, model: str, parallel: bool = False
+) -> None:
     try:
-        await run_project_task(project, task, run_id=run_id, model=model)
+        await run_project_task(project, task, run_id=run_id, model=model, parallel=parallel)
     except Exception:  # noqa: BLE001 - a crashed run must not leave a 'running' row
         log.exception("Run %s failed", run_id)
         row = db.get_run(run_id)
@@ -821,12 +858,55 @@ async def _execute_run(project: db.sqlite3.Row, task: str, run_id: int, model: s
     finally:
         # Whether it crashed or finished, this is the one place that sees every
         # completed run, so it is where "these keep dying on the launch pad"
-        # gets noticed. Never allowed to break the caller: a failure to report
-        # a crash loop must not itself become one.
+        # gets noticed, and where a parallel run's branch gets folded back in.
+        # Never allowed to break the caller: a failure to report a crash loop
+        # must not itself become one.
         try:
             await _announce_crash_loop(project)
         except Exception:  # pragma: no cover - defensive
             log.exception("Could not check the crash-loop state for %s", project["slug"])
+        try:
+            merge_parallel_work(project)
+        except Exception:  # pragma: no cover - defensive
+            log.exception("Could not merge parallel work for %s", project["slug"])
+
+
+def merge_parallel_work(project: db.sqlite3.Row) -> list[parallel_runs.Merged]:
+    """Fold every finished parallel branch back into the project's workspace.
+
+    Called when any run on the project finishes and again on each tick, because
+    the two things that stop a merge - a run still in flight and a dirty tree -
+    both clear on their own. A branch that cannot be merged today is kept and
+    retried rather than dropped: see app/parallel.py.
+
+    A branch whose own run is *still going* is deliberately skipped: merging a
+    live agent's half-written history is the same defect as merging into a
+    dirty tree, just from the other end.
+    """
+    slug = str(project["slug"])
+    live = {int(r["id"]) for r in db.running_runs_for_project(int(project["id"]))}
+    settled = [run_id for run_id in parallel_runs.pending(slug) if run_id not in live]
+    if not settled:
+        return []
+    results = parallel_runs.drain(slug, running=bool(live), run_ids=settled)
+    for result in results:
+        # A branch parked as busy has already said so once; repeating it on
+        # every tick would fill the journal with the same line.
+        if result.status == "busy" and _PARALLEL_SAID.get(result.branch) == "busy":
+            continue
+        note = parallel_runs.journal_note(slug, result)
+        if note:
+            db.add_journal(project["id"], "system", "status", note)
+        if result.kept:
+            _PARALLEL_SAID[result.branch] = result.status
+        else:
+            _PARALLEL_SAID.pop(result.branch, None)
+    return results
+
+
+# Which parallel branches have already had their "still waiting" line written,
+# so the journal gets one of them rather than one per tick.
+_PARALLEL_SAID: dict[str, str] = {}
 
 
 _CRASHLOOP_SETTING = "crashloop_announced_{}"
@@ -941,6 +1021,7 @@ async def run_project_task(
     task: str,
     run_id: Optional[int] = None,
     model: Optional[str] = None,
+    parallel: bool = False,
 ) -> None:
     """Execute one task. `run_id` is passed in by `spawn_run`, which creates the
     row up front so the slot is accounted for before the coroutine starts; call
@@ -948,24 +1029,56 @@ async def run_project_task(
     model = model or agent_runner.resolve_model(project, task)
     timeout_min = int(db.get_setting("run_timeout_min") or "30")
     max_turns = run_max_turns()
-    workspace = config.PROJECTS_DIR / project["slug"]
+    slug = str(project["slug"])
+    workspace = config.PROJECTS_DIR / slug
     _ensure_workspace(workspace)
 
     if run_id is None:
-        run_id = db.create_run(project["id"], task, model)
+        run_id = db.create_run(project["id"], task, model, parallel=parallel)
+
+    # A parallel run works in its own checkout of the same repo, so the lease
+    # on the ordinary workspace is never contended and the two agents cannot
+    # overwrite each other's files. If git will not make one, the run is
+    # refused outright rather than falling back to the shared workspace - that
+    # fallback IS the double-run this whole mechanism exists to avoid.
+    if parallel:
+        worktree = parallel_runs.open_worktree(slug, run_id)
+        if worktree is None:
+            note = (
+                "The parallel run was refused: the portal could not open a git "
+                f"worktree of `{workspace}`. Nothing was started, and the run "
+                "already in flight is untouched."
+            )
+            db.finish_run(run_id, "error", summary=note)
+            db.add_journal(project["id"], "system", "status", note)
+            return
+        workspace = worktree
+        _ensure_workspace(workspace)
     # Strictly before the prompt is built. The prompt's journal section shortens
     # older entries and points at this file for their full text; writing it after
     # would let an entry created in between be shortened in the prompt and absent
     # from the file. Written first, the same race can only ever affect the newest
     # entry - which the prompt always shows whole. See app/journalfile.py.
     journalfile.write(project, workspace)
-    prompt = agent_runner.build_prompt(task, project)
+    prompt = agent_runner.build_prompt(
+        task, project,
+        parallel_note=(
+            parallel_runs.prompt_section(
+                slug, run_id, workspace,
+                others=max(len(db.running_runs_for_project(int(project["id"]))) - 1, 1),
+            )
+            if parallel else ""
+        ),
+    )
     # For the meta-project, remember the source HEAD so we can detect a
     # self-update and restart the service to load the new code.
     src_head_before = _src_head() if project["slug"] == config.META_PROJECT_SLUG else None
-    # Remember the workspace repo's HEAD so a UI-touching run that showed no
-    # screenshot can be noticed after it commits (see proof.py, RESEARCH.md §3).
-    ws_head_before = proof.head_sha(orphans.repo_for(project["slug"]))
+    # Remember the repo's HEAD so a UI-touching run that showed no screenshot
+    # can be noticed after it commits (see proof.py, RESEARCH.md §3). A
+    # parallel run commits in its worktree, so that is the repo to watch - the
+    # ordinary workspace's HEAD will not move until the merge.
+    run_repo = _run_repo(slug, workspace, parallel)
+    ws_head_before = proof.head_sha(run_repo)
 
     try:
         result = await agent_runner.run_claude(
@@ -997,7 +1110,7 @@ async def run_project_task(
     # below can return. A run that timed out, was canceled or errored may still
     # have committed something first - those are exactly the runs whose work
     # Wes is most likely to want undone - so this cannot live on the happy path.
-    _record_workspace_heads(project, run_id, ws_head_before)
+    _record_workspace_heads(project, run_id, ws_head_before, repo=run_repo)
 
     _note_memory_kill(project, task, result)
     await _note_quota_wall(project, task, result)
@@ -1005,7 +1118,7 @@ async def run_project_task(
     if result.cancelled:
         db.finish_run(run_id, "cancelled", summary="Canceled from the portal.")
         db.add_journal(project["id"], "system", "status", f"Run ({task}) canceled from the portal.")
-        _note_orphaned_work(project, task, "was canceled")
+        _note_orphaned_work(project, task, "was canceled", repo=run_repo)
         return
 
     if result.is_rate_limited:
@@ -1021,13 +1134,13 @@ async def run_project_task(
             f"Usage/rate limit detected during **{task}** on `{project['slug']}`; "
             f"backing off until {until.isoformat(timespec='seconds')} ({why}).",
         )
-        _note_orphaned_work(project, task, "hit a usage limit")
+        _note_orphaned_work(project, task, "hit a usage limit", repo=run_repo)
         return
 
     if result.timed_out:
         db.finish_run(run_id, "timeout", summary="Run timed out")
         db.add_journal(project["id"], "system", "status", f"Run ({task}) timed out after {timeout_min} min.")
-        _note_orphaned_work(project, task, "timed out")
+        _note_orphaned_work(project, task, "timed out", repo=run_repo)
         return
 
     if not result.ok and result.report is None:
@@ -1040,7 +1153,7 @@ async def run_project_task(
             project["id"], "system", "status",
             f"Run ({task}) errored: {result.result_text[:1000] or detail}",
         )
-        _note_orphaned_work(project, task, "errored")
+        _note_orphaned_work(project, task, "errored", repo=run_repo)
         return
 
     db.finish_run(run_id, "ok", result.session_id, result.cost_usd, result.num_turns, result.result_text[:500])
@@ -1178,7 +1291,9 @@ async def _note_quota_wall(
     )
 
 
-def _note_orphaned_work(project: db.sqlite3.Row, task: str, how: str) -> None:
+def _note_orphaned_work(
+    project: db.sqlite3.Row, task: str, how: str, repo: Optional[Path] = None
+) -> None:
     """Say so in the journal when a run dies leaving uncommitted changes.
 
     Wrapped in a bare except on purpose: this is diagnostics running on the path
@@ -1186,7 +1301,7 @@ def _note_orphaned_work(project: db.sqlite3.Row, task: str, how: str) -> None:
     be able to turn a recorded failure into an unrecorded one.
     """
     try:
-        note = orphans.journal_note(project["slug"], task, how)
+        note = orphans.journal_note(project["slug"], task, how, repo=repo)
     except Exception:  # noqa: BLE001 - see docstring
         log.exception("Orphan scan failed for %s", project["slug"])
         return
@@ -1194,8 +1309,25 @@ def _note_orphaned_work(project: db.sqlite3.Row, task: str, how: str) -> None:
         db.add_journal(project["id"], "system", "status", note)
 
 
+def _run_repo(slug: str, workspace: Path, parallel: bool) -> Optional[Path]:
+    """Which repo this run's commits actually land in.
+
+    For an ordinary run that is `orphans.repo_for` - the workspace, or the
+    portal's own source root for the meta-project. A parallel run commits in
+    its worktree instead, and the meta-project keeps its exception either way:
+    a parallel run on the portal still edits the source tree at APP_ROOT, so
+    that is still the repo whose HEAD says what it did.
+    """
+    if parallel and slug != config.META_PROJECT_SLUG and (workspace / ".git").exists():
+        return workspace
+    return orphans.repo_for(slug)
+
+
 def _record_workspace_heads(
-    project: db.sqlite3.Row, run_id: int, head_before: Optional[str]
+    project: db.sqlite3.Row,
+    run_id: int,
+    head_before: Optional[str],
+    repo: Optional[Path] = None,
 ) -> None:
     """Persist the repo's HEAD either side of the run, so app/revert.py can name
     and undo exactly what this run committed.
@@ -1205,7 +1337,9 @@ def _record_workspace_heads(
     recorded error. The cost of missing it is one run without an undo button.
     """
     try:
-        head_after = proof.head_sha(orphans.repo_for(project["slug"]))
+        head_after = proof.head_sha(
+            repo if repo is not None else orphans.repo_for(project["slug"])
+        )
         if head_before == head_after:
             return  # committed nothing; leave both NULL rather than store a no-op
         db.set_run_workspace_heads(run_id, head_before, head_after)
@@ -2125,6 +2259,74 @@ async def run_now(project: db.sqlite3.Row, via: str = "") -> None:
             f"Status changed{via}: `{was}` -> `active` (run agent now)",
         )
     await queue_manual_run(project["id"])
+
+
+def max_agents_per_project() -> int:
+    """How many agents may be inside one project at once, counting the
+    ordinary run. Never below 1: a zero here would silently disable runs."""
+    raw = db.get_setting(parallel_runs.MAX_AGENTS_SETTING) or ""
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        return parallel_runs.DEFAULT_MAX_AGENTS
+
+
+async def start_parallel_run(project: db.sqlite3.Row) -> tuple[bool, str]:
+    """Wes pressed "parallel run": put a *second* agent on this project now,
+    beside the one already working, in a git worktree of its own.
+
+    Started here and now rather than through `manual_queue`, because that queue
+    exists precisely to hold a request back until the project is free - which
+    is the opposite of what this button means.
+
+    Returns (started, why-not). The refusals are deliberately different
+    sentences: "the portal is full" clears by itself in minutes and "this
+    project already has its agents" needs a setting changed, and a button that
+    said the same thing for both would send Wes to the wrong place.
+    """
+    project_id = int(project["id"])
+    live = db.running_runs_for_project(project_id)
+    if not live:
+        # Nothing to be parallel *to*. Rather than refuse - which would read as
+        # the button being broken when a run happened to finish while he was
+        # typing - do what he asked for, which is an agent on this note now.
+        await run_now(project)
+        return True, ""
+
+    cap = max_agents_per_project()
+    if len(live) >= cap:
+        return False, (
+            f"Not started: this project is already running {len(live)} agent(s), which "
+            f"is its limit. Raise `{parallel_runs.MAX_AGENTS_SETTING}` in Settings to "
+            f"allow more. The note is saved and the run in flight will read it."
+        )
+
+    slots = pacing.parallel_cap(db.max_parallel_runs())
+    if len(_inflight) >= slots:
+        return False, (
+            f"Not started: the portal is already running {len(_inflight)} agent(s) "
+            f"across all projects, which is its cap ({slots}). The note is saved and "
+            f"will be picked up as soon as a slot frees."
+        )
+
+    # Asking for a second agent on a project that is paused or parked in review
+    # is asking for the project back - the same rule a plain note follows. It is
+    # deliberately NOT a build approval (unlike "add & run now"): a gated
+    # project gets a second *planning* agent, and opening the gate stays its own
+    # click.
+    if db.display_state(project) != "active":
+        db.update_project(project_id, stage="active", paused=None)
+        db.add_journal(
+            project_id, "system", "status",
+            "Parallel run requested - moved back to **active**.",
+        )
+        project = db.get_project(project_id) or project
+
+    task = task_for(project, manual=True)
+    if task is None:  # pragma: no cover - task_for only returns None on a dead stage
+        return False, "Not started: there is no task this project can be run on."
+    spawn_run(project, task, parallel=True)
+    return True, ""
 
 
 async def reactivate_on_note(project: db.sqlite3.Row) -> bool:

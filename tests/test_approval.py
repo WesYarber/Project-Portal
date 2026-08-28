@@ -46,7 +46,7 @@ def _clean_worker_state(temp_data_dir):
 def spawned(monkeypatch):
     started: list[tuple[str, str]] = []
 
-    async def fake_execute(project, task, run_id, model):
+    async def fake_execute(project, task, run_id, model, parallel=False):
         started.append((project["slug"], task))
         await asyncio.Event().wait()
 

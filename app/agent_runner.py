@@ -749,7 +749,11 @@ def _entry_ages_section() -> str:
         return ""
 
 
-def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
+def build_prompt(
+    task: str, project: Optional[sqlite3.Row], parallel_note: str = ""
+) -> str:
+    """`parallel_note` is app/parallel.py's section, and is empty for every
+    ordinary run - so an ordinary prompt is byte-for-byte what it was."""
     parts: list[str] = []
 
     # The compaction agent reads learnings.md itself, from its cwd. Pasting a
@@ -810,6 +814,14 @@ def build_prompt(task: str, project: Optional[sqlite3.Row]) -> str:
     tvars = _project_vars(project)
     parts.append(Template(_TASK_GUIDANCE_TEMPLATES[task]).safe_substitute(**tvars) if task in _TASK_GUIDANCE_TEMPLATES else f"Task: {task}.")
     parts.append(Template(_AGENT_CONTRACT_TEMPLATE).safe_substitute(**tvars))
+
+    # Directly under the contract, above everything else this run will read.
+    # It changes where the agent's own working directory IS and tells it a
+    # second agent is live in the same project this second - two facts that
+    # invalidate the journal entries below if it learns them later rather than
+    # first. Empty on every ordinary run.
+    if parallel_note:
+        parts.append(parallel_note)
 
     # Directly under the contract, and deliberately far above the journal: this
     # section exists to outrank the twenty journal entries below it, most of

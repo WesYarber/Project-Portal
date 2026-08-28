@@ -171,7 +171,10 @@ CREATE TABLE IF NOT EXISTS runs (
     reverted_at TEXT,
     -- The five-hour usage meter either side of this run. See app/headroom.py.
     session_percent_start REAL,
-    session_percent_end REAL
+    session_percent_end REAL,
+    -- Was this run started alongside another one on the same project, in its
+    -- own git worktree? See app/parallel.py and _ADDED_COLUMNS.
+    is_parallel INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS suggestions (
@@ -550,6 +553,13 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # applied, so "no lease recorded" and "lease is free" can never be
         # confused for each other. See worker._reap_adopted.
         ("lock_dir", "TEXT"),
+        # 1 when this run was deliberately started alongside another run on the
+        # same project, in its own git worktree (app/parallel.py). Recorded
+        # rather than derived: "was there another run in flight at the time" is
+        # reconstructable only while both rows are still 'running', and every
+        # place that has to tell an ordinary run from a parallel one - the run
+        # page, the merge-back, the reaper - reads it long after that.
+        ("is_parallel", "INTEGER NOT NULL DEFAULT 0"),
         # The five-hour usage meter as it read when this run started and when
         # it ended. The portal was holding scheduled runs at a fixed 90% of
         # that window and had no way to say whether the 10 points it left were
@@ -3159,17 +3169,42 @@ def count_workable_todos(project_id: int) -> int:
 # --------------------------------------------------------------------------
 
 def create_run(
-    project_id: Optional[int], task: str, model: str, oneoff_id: Optional[int] = None
+    project_id: Optional[int],
+    task: str,
+    model: str,
+    oneoff_id: Optional[int] = None,
+    parallel: bool = False,
 ) -> int:
     conn = get_conn()
     with _LOCK:
         cur = conn.execute(
-            "INSERT INTO runs (project_id, task, model, started_at, status, oneoff_id) "
-            "VALUES (?, ?, ?, ?, 'running', ?)",
-            (project_id, task, model, now(), oneoff_id),
+            "INSERT INTO runs (project_id, task, model, started_at, status, oneoff_id, "
+            "is_parallel) VALUES (?, ?, ?, ?, 'running', ?, ?)",
+            (project_id, task, model, now(), oneoff_id, 1 if parallel else 0),
         )
         conn.commit()
         return int(cur.lastrowid)
+
+
+def running_runs_for_project(project_id: int) -> list[sqlite3.Row]:
+    """Every run in flight on one project - more than one only when somebody
+    asked for a parallel run (app/parallel.py)."""
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM runs WHERE project_id = ? AND status = 'running' "
+            "ORDER BY id ASC",
+            (project_id,),
+        ).fetchall()
+
+
+def is_parallel_run(row) -> bool:
+    """Reads False on a row from a database that predates the column, which is
+    the honest answer: no parallel run has ever existed there."""
+    try:
+        return bool(row["is_parallel"])
+    except (IndexError, KeyError):
+        return False
 
 
 def record_run_usage(

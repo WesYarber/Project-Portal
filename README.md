@@ -1,14 +1,43 @@
 # Project Portal
 
-You write down an idea. A background worker picks it up, plans it, asks you
-what it needs to know, builds it in its own workspace, and reports back — over
-the web UI, Telegram or a push notification on your phone. You answer with one
-tap. It remembers what you told it and gets better at working for you.
+**Write down an idea. Come back to working code.**
 
-It is a self-hosted FastAPI + SQLite app that drives the **Claude Code CLI**
-headlessly (`claude -p`) against a workspace per project. No framework, no
-build step, no JavaScript toolchain: templates, one stylesheet and one script
-file. It is meant to run on a home server and be read on a phone.
+A self-hosted board that runs [Claude Code](https://claude.com/claude-code)
+against your projects on a schedule, in a workspace per project, and reports
+back to your phone. FastAPI + SQLite, no build step, one file of JavaScript.
+
+![The dashboard: what is running, what is waiting on you, and every project by shelf](docs/images/dashboard.png)
+
+*Every screenshot on this page is made-up data from `deploy/demo_data.py` — run
+it yourself and click around before installing anything.*
+
+---
+
+### It does the work, and shows it happening
+
+The agent gets a real directory, writes real code, runs the tests and commits.
+The console streams live while it works, and any note you type goes into the
+next run's prompt.
+
+![A project page: live agent console, the note box, todos and journal](docs/images/project.png)
+
+### It asks instead of guessing
+
+A run that hits a decision only you can make files a question with one-tap
+answers and waits. The same question never reaches you twice in two wordings.
+
+### It paces itself against your subscription
+
+The worker reads your live usage window and spreads runs across it instead of
+burning a week by Tuesday. Every run's weight is on the record.
+
+![The activity page: runs over 14 days, share by project, where the tokens went](docs/images/activity.png)
+
+### It is built to be read on a phone
+
+<img src="docs/images/phone.png" width="330" alt="The same dashboard at phone width">
+
+---
 
 ## What makes it different from a task list
 
@@ -26,6 +55,22 @@ file. It is meant to run on a home server and be read on a phone.
   themselves go back on the shelf instead of into your review queue.
 - **It keeps memory.** Profile and learnings files, compacted on a schedule
   from journal evidence rather than accumulating forever.
+- **Two agents can work one project at once.** Press **parallel run** on the
+  note form while an agent is already going and a second one starts in a git
+  worktree of its own, on its own branch, merged back when the workspace is
+  free — never two agents in one checkout.
+
+## Try it before you install it
+
+```bash
+python3 deploy/setup.py            # builds the venv
+venv/bin/python deploy/demo_data.py 8598
+```
+
+That boots the whole portal against a throwaway database full of invented
+projects, runs, questions and memory — the board in the screenshots above. It
+uses its own directory under `/tmp`, cannot reach your Claude account and
+cannot start a run.
 
 ## Requirements
 

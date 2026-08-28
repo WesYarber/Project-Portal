@@ -51,7 +51,7 @@ def spawned(monkeypatch):
     a "running" row behaves like a real in-flight run without a subprocess."""
     started: list[tuple[str, str]] = []
 
-    async def fake_execute(project, task, run_id, model):
+    async def fake_execute(project, task, run_id, model, parallel=False):
         started.append((project["slug"], task))
         await asyncio.Event().wait()  # in flight until canceled
 
@@ -195,7 +195,7 @@ async def test_a_manual_run_on_a_busy_project_waits_rather_than_being_dropped(
 
 @pytest.mark.asyncio
 async def test_a_crashed_run_does_not_leave_a_running_row(projects, monkeypatch):
-    async def boom(project, task, run_id=None, model=None):
+    async def boom(project, task, run_id=None, model=None, parallel=False):
         raise RuntimeError("kaboom")
 
     monkeypatch.setattr(worker, "run_project_task", boom)

@@ -1247,6 +1247,11 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             # Whether the green "add note" button will start a run on its own,
             # which is also what decides if "add & run now" is worth rendering.
             "note_runs_now": worker.can_run_now(project),
+            # How many agents are inside this project this second. Non-zero is
+            # what puts the "parallel run" button on the note form, since a
+            # second agent is only a meaningful request while a first one is
+            # working. See app/parallel.py.
+            "agents_running": len(db.running_runs_for_project(project["id"])),
             "research_queued": db.is_research_queued(project),
             # The model a burst would actually use, setting override included.
             "research_model": agent_runner.resolve_model(None, "research"),
@@ -1595,6 +1600,16 @@ async def release_subproject(slug: str) -> RedirectResponse:
     return RedirectResponse(url=f"/project/{slug}", status_code=303)
 
 
+async def _start_parallel(project) -> None:
+    """Start a parallel run and, when it is refused, say so where Wes will see
+    it. A press that produced nothing and explained nothing is the failure he
+    reports most often - so the refusal goes in the journal, which is on the
+    page he lands back on."""
+    started, why = await worker.start_parallel_run(project)
+    if not started and why:
+        db.add_journal(project["id"], "system", "status", why)
+
+
 @app.post("/project/{slug}/note")
 async def add_note(
     request: Request,
@@ -1629,6 +1644,8 @@ async def add_note(
             if db.display_state(project) != "active":
                 db.set_user_state(project, "active")
             await worker.queue_manual_run(project["id"])
+        elif then == "parallel":
+            await _start_parallel(project)
         return RedirectResponse(url=f"/project/{slug}", status_code=303)
 
     stored: list[dict] = []
@@ -1685,6 +1702,15 @@ async def add_note(
             transcribe.kick(audio_ids, after=worker.queue_manual_run(project["id"]))
         else:
             await worker.queue_manual_run(project["id"])
+    elif then == "parallel":
+        # A second agent on this note NOW, beside the one already working, in a
+        # worktree of its own. Unlike every other button here it starts the run
+        # inline rather than queueing it: the manual queue exists to hold a
+        # request until the project is free, which is the opposite of the ask.
+        if audio_ids:
+            transcribe.kick(audio_ids, after=_start_parallel(project))
+        else:
+            await _start_parallel(project)
     elif then != "queue":
         # The plain green "add note": wake a put-down project (Wes's rule) and
         # start a run whenever one could start at all - see worker.note_arrived.

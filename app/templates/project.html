@@ -893,6 +893,17 @@
               title="Add this note for the agent's next run - don't wake the project or start a run">
         queue note
       </button>
+      {# Only while an agent is actually in the workspace, which is the only
+         time the word means anything - Wes asked for it "as an additional
+         option next to queue note" for exactly that case. It starts a SECOND
+         agent now, in a git worktree of its own, and the portal merges its
+         branch back when the workspace frees up (app/parallel.py). #}
+      {% if agents_running %}
+      <button type="submit" name="then" value="parallel" class="btn secondary note-actions"
+              title="Start a second agent on this note right now, alongside the {{ agents_running }} already running - it works in its own copy of the workspace and its commits are merged back when the workspace is free">
+        parallel run
+      </button>
+      {% endif %}
       <button type="submit" class="btn go"
               title="{{ 'Add this note and start an agent run on it now' if note_runs_now
                         else 'Add this note for the agent to read on its next run' }}">add note</button>
