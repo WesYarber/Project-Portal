@@ -26,7 +26,16 @@ from pathlib import Path
 
 import pytest
 
+import module_state
+
 from app import agent_runner, config, db, runlimit, worker, worklock
+
+# Asked once, for the `skipif` conditions below. Wrapped because
+# `runlimit.available()` memoizes into a process-wide global, and this runs at
+# import - before any fixture exists to clear it, so the first test of the run
+# would inherit the memo. See tests/module_state.py.
+_HAVE_SCOPES = module_state.probe_without_memoizing(
+    "app.runlimit", "_available", lambda: runlimit.available(refresh=True))
 
 
 @pytest.fixture(autouse=True)
@@ -450,7 +459,7 @@ def test_a_real_refusal_sets_the_flag(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(
-    not runlimit.available(refresh=True),
+    not _HAVE_SCOPES,
     reason="no user systemd manager to make a transient scope in",
 )
 async def test_the_lease_and_the_memory_scope_actually_compose(tmp_path, monkeypatch):

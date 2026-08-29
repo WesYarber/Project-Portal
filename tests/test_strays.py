@@ -19,6 +19,8 @@ import time
 
 import pytest
 
+import module_state
+
 from app import runlimit, strays
 
 # Every scope this file creates carries a tag in the 9000s, and nothing else on
@@ -159,7 +161,16 @@ def test_the_fence_hides_every_unit_this_suite_did_not_create():
 
 
 def _scopes_available() -> bool:
-    return runlimit.available(refresh=True)
+    """Asked for real, but without leaving the answer memoized.
+
+    This runs while the module is being imported, to decide a `skipif` - a
+    moment at which no fixture exists yet, so a memo left in
+    `runlimit._available` here is inherited by the first test of the run. See
+    `tests/module_state.py`.
+    """
+    return module_state.probe_without_memoizing(
+        "app.runlimit", "_available",
+        lambda: runlimit.available(refresh=True))
 
 
 requires_systemd = pytest.mark.skipif(

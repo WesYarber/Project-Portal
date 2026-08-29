@@ -40,20 +40,16 @@ from pathlib import Path
 
 import pytest
 
+import module_state
+
 from app import db, runlimit, worker, worklock
 
-_HAVE_FLOCK = worklock.available()
-
-
-@pytest.fixture(autouse=True)
-def _clean_worker_state():
-    worker._inflight.clear()
-    worker._lease_free_since.clear()
-    worker._last_stray_sweep = None
-    yield
-    worker._inflight.clear()
-    worker._lease_free_since.clear()
-    worker._last_stray_sweep = None
+# See the note in test_shared_leases.py: probed for real, but without leaving the
+# answer in a process-wide global that collection fills before any fixture runs.
+# The worker state this file used to clear by hand is cleared for every test in
+# the suite by `conftest`'s `module_state_is_never_inherited`.
+_HAVE_FLOCK = module_state.probe_without_memoizing(
+    "app.worklock", "_available", worklock.available)
 
 
 @pytest.fixture

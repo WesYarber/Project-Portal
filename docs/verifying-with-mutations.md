@@ -141,6 +141,33 @@ look at the failed-test names before anything else — and a harness change
 (the parse, the verdict logic, the marker) deserves one mutation's worth of
 dry run before the other twelve.
 
+### 6a. `ERROR` is not `FAILED`, and a teardown assertion is always `ERROR`
+
+Same lesson, met again on 2026-08-29 and worth its own line because the parse
+looked correct. The harness matched `^FAILED (\S+)`, which is right as far as it
+goes — but a check that runs in a **teardown hook** rather than in a test body
+is reported by pytest as
+
+```
+ERROR tests/test_module_state.py::test_a_run_id_keyed_registry_is_filled_here
+```
+
+never as FAILED. The module-state invariant is enforced from
+`pytest_runtest_teardown`, precisely so the *polluting* test is the one named,
+so every mutation it catches is invisible to a FAILED-only parser. The sweep
+reported MISSED while its own run had printed "2 errors", and a whole extra pass
+went into rewriting tests that were already working.
+
+Match both:
+
+```python
+FAILED_RE = re.compile(r"^(?:FAILED|ERROR) (\S+)", re.M)
+```
+
+The §6 tell applies unchanged: **a MISSED whose run shows a nonzero failure or
+error count is a parser bug until proven otherwise.** Applying the mutation by
+hand and reading the output took under a minute and settled it.
+
 Also from that sweep, on the throwaway-portal side: `pkill -f 'port 8791'`
 killed the invoking shell *even though the pattern lived in a script file*,
 because the `printf` that wrote the script sat in the same command line that

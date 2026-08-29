@@ -100,9 +100,29 @@ venv/bin/python -m pytest -q -n0      # same suite, serial, ~3min
 40 seconds rather than three minutes. Two things follow. Output interleaves and
 the run order is no longer the file order, so pass `-n0` when a failure has to
 be read in sequence. And a test that passes serially but fails in parallel is
-usually not a flake - it is module-global state leaking between files, which
-`tests/conftest.py` resets for `app.worker` and which is a real defect wherever
-else it turns up.
+usually not a flake - it is module-global state leaking between files, which is
+a real defect wherever it turns up.
+
+### Module globals between tests
+
+Every mutable module global in `app/` is listed in `tests/module_state.py`,
+either as one an autouse fixture restores around each test or as one exempted
+with its reason. `tests/test_module_state.py` fails if `app/` grows a global
+that is in neither list, so adding one is a decision rather than an ambush.
+
+That matters more here than in most suites because ids restart at 1 in every
+test: a leftover entry in a run-id-keyed dict is read by the next test as being
+about *its own* run 1, not as stale data.
+
+The invariant is "after any test, every listed global equals its import value",
+and this checks it against the real values as the suite runs:
+
+```bash
+venv/bin/python -m pytest tests/ -n0 -q -p deploy.find_module_state_leaks
+```
+
+Run it serially - under xdist each worker prints its own half of the report.
+It is a diagnostic and prints a summary; it never fails a test.
 
 The JavaScript tests under `tests/js/` need [Bun](https://bun.sh) and are run
 with `bun test`. They are not part of the pytest suite.

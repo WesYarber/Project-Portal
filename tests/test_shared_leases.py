@@ -37,16 +37,16 @@ from pathlib import Path
 
 import pytest
 
+import module_state
+
 from app import agent_runner, ask, config, db, oneoff, worker, worklock
 
-_HAVE_FLOCK = worklock.available()
-
-
-@pytest.fixture(autouse=True)
-def _fresh_probe():
-    worklock._available = None  # noqa: SLF001
-    yield
-    worklock._available = None  # noqa: SLF001
+# Probed without leaving the answer memoized in `worklock._available`: this runs
+# at collection, before any fixture exists to clear it. Clearing it around each
+# test is `conftest`'s `module_state_is_never_inherited`, which is why the local
+# fixture that used to do it here is gone.
+_HAVE_FLOCK = module_state.probe_without_memoizing(
+    "app.worklock", "_available", worklock.available)
 
 
 @pytest.fixture(autouse=True)

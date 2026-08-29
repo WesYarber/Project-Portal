@@ -16,6 +16,9 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import module_state  # noqa: E402 - tests/, inserted just above
 
 from app import config, db, quiet, transcribe  # noqa: E402
 
@@ -495,14 +498,64 @@ def the_run_memory_pool_is_never_written_to_real_systemd(monkeypatch):
     monkeypatch.setattr(runlimit, "apply_pool", stub)
 
 
-@pytest.fixture(autouse=True)
-def worker_module_state_is_never_inherited(monkeypatch):
-    """Every test starts from `app.worker`'s module-import state.
+_IMPORT_STATE = module_state.capture()
 
-    The worker keeps its live state in module globals - the manual-run queue,
-    the in-flight task map, the "already said this" sets, the restart latch.
-    They are process-wide, so what one test leaves behind the next one in that
-    process inherits, and only a handful of files clean up after themselves.
+# The same globals again, read once collection has finished - which is to say
+# after every test module has been imported but before any test has run.
+# Anything that differs from `_IMPORT_STATE` here was filled by a module-level
+# statement in some test file, at a moment no fixture exists to clean up after.
+# `test_module_state.py` is what compares them; conftest only takes the reading,
+# because this is the only hook that fires at the right moment.
+_STATE_AFTER_COLLECTION: dict = {}
+
+
+def pytest_collection_finish(session):  # noqa: D103
+    _STATE_AFTER_COLLECTION.clear()
+    _STATE_AFTER_COLLECTION.update(module_state.capture())
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_teardown(item, nextitem):
+    """The invariant, enforced rather than merely intended.
+
+    "After any test, every listed global equals its import value" was a claim in
+    a docstring, checked only by a diagnostic script somebody has to remember to
+    run. A delete-the-fix sweep walked straight through removing the fixture's
+    teardown-side reset, because the setup-side reset cleaned up after it and
+    each half hid the other's absence.
+
+    So the invariant is checked here, after every fixture including the reset
+    itself has finalized. In a healthy tree this can only fail if the reset is
+    broken, which is exactly the line it is here to hold in place. The test that
+    fails is the one that did the polluting, which is the one worth naming.
+    """
+    yield
+    drifted = {
+        key: (was, getattr(sys.modules[key[0]], key[1]))
+        for key, was in _IMPORT_STATE.items()
+        if key[0] in sys.modules
+        and getattr(sys.modules[key[0]], key[1], was) != was
+    }
+    assert not drifted, (
+        f"{item.nodeid} left app module globals changed:\n  "
+        + "\n  ".join(f"{m}.{n}: {was!r} -> {now!r}"
+                      for (m, n), (was, now) in sorted(drifted.items()))
+        + "\n\nThese are process-wide, so the next test in this process "
+        "inherits them - and ids restart at 1 in every test, so a leftover "
+        "entry is read as being about that test's own run 1. See "
+        "tests/module_state.py."
+    )
+
+
+@pytest.fixture(autouse=True)
+def module_state_is_never_inherited():
+    """Every test starts from `app/`'s module-import state, and leaves it there.
+
+    Modules here keep live state in globals - the manual-run queue, the
+    in-flight map, the "already said this" sets, the run-id-keyed scope and
+    cancel registries, the capability caches that memoize a subprocess. They are
+    process-wide, so what one test leaves behind the next one in that process
+    inherits, and only a handful of files clean up after themselves.
 
     Serial running hid this almost perfectly: run the files in the same order
     every time and the leaks happen to fall where nothing reads them. They stop
@@ -510,27 +563,45 @@ def worker_module_state_is_never_inherited(monkeypatch):
     then the set of tests sharing a process changes from run to run. Found on
     2026-08-29 while parallelizing the suite, as four tests that failed once in
     ten runs and never in the same combination - `_start_one` called twice
-    because a *previous file* had left an id in `manual_queue`, and a research
-    burst that came back as a build.
+    because a *previous file* had left an id in `worker.manual_queue`.
 
-    That is not a parallelism bug, it is an order-dependency the suite has
-    always had, and it is worth closing on its own account: a test that passes
-    only because of what ran before it is not testing what it says it is.
+    That was fixed for `app.worker` alone, which was the wrong shape: the
+    hazard is not "the worker is careless", it is "a module global outlives the
+    test that wrote it". `tests/module_state.py` now names all of them and
+    `tests/test_module_state.py` fails if `app/` grows one nobody has decided
+    about, so a new global is a decision rather than an ambush.
+
+    Restoring on BOTH sides of the test is what makes the invariant checkable:
+    after any test, every listed global equals its import value, so
+    `deploy/find_module_state_leaks.py` reporting drift means a real escape and
+    not ordinary fixture noise.
     """
     from app import worker
 
-    while not worker.manual_queue.empty():
-        worker.manual_queue.get_nowait()
-    monkeypatch.setattr(worker, "_inflight", {})
-    monkeypatch.setattr(worker, "_lease_free_since", {})
-    monkeypatch.setattr(worker, "_PARALLEL_SAID", {})
-    monkeypatch.setattr(worker, "_pending_restart", None)
-    monkeypatch.setattr(worker, "_restarting", False)
-    monkeypatch.setattr(worker, "_last_stray_sweep", None)
-    monkeypatch.setattr(worker, "_audit_pruned_day", None)
-    monkeypatch.setattr(worker, "_model_checked_day", None)
+    def clear() -> None:
+        module_state.restore(_IMPORT_STATE)
+        # The queue is the one that cannot be restored by assignment: tests put
+        # into the same object the worker's own loop reads from.
+        while not worker.manual_queue.empty():
+            worker.manual_queue.get_nowait()
+
+    # Cleared on both sides, and the two are not the same guard.
+    #
+    # The teardown-side clear is what the invariant rests on;
+    # `pytest_runtest_teardown` above fails the polluting test if it stops
+    # working. The setup-side clear is, on today's tree, redundant - a sweep
+    # deleting it fails nothing, and that is reported honestly rather than
+    # dressed up as coverage.
+    #
+    # It is kept for the case the other two guards cannot reach: a PARTIAL run.
+    # `test_module_state.py` is what notices that collection filled a global,
+    # and an agent running only the files it touched has not selected it, so on
+    # that run this is the only thing between an import-time memo and the first
+    # test. That is not a hypothetical shape - it is exactly what four `skipif`
+    # conditions were doing until 2026-08-29 - it is only the current tree that
+    # is clean. Owning it with a test would mean writing a test file into
+    # `tests/` from inside a test, which the filesystem fence above forbids for
+    # much better reasons than this one.
+    clear()
     yield
-    # The queue is the one that cannot be monkeypatched back, since tests put
-    # into the same object the worker reads from.
-    while not worker.manual_queue.empty():
-        worker.manual_queue.get_nowait()
+    clear()
