@@ -926,6 +926,21 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
 .button-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 
 /* Journal / logs --------------------------------------------------------- */
+
+/* "show N older entries", at the top of the journal box. Reads as a quiet
+   note rather than a control, because expanding the journal is the slow path
+   and nothing should invite a tap on it. */
+.journal-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin: 0 0 1.2rem;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px dashed var(--window-border);
+}
+.journal-more a { font-size: 0.85rem; }
+
 .journal-entry {
   border-left: 2px solid var(--window-border);
   padding-left: 0.9rem;
@@ -2104,6 +2119,43 @@ button.recording svg { animation: rec-pulse 1.2s ease-in-out infinite; }
   max-width: 340px;
   height: 32px;
 }
+
+/* Staged uploads: one row per file picked, dropped or pasted but not yet sent.
+   Client-built rows (MORPH_KEEP), so a background patch cannot eat one. */
+.attach-shelf:not(:empty) { margin-top: 0.6rem; }
+.attach-row-item {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0;
+  border-top: 1px solid var(--window-border);
+}
+.attach-row-thumb {
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--window-border);
+  overflow: hidden;
+}
+.attach-row-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-row-ext {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+}
+/* min-width: 0 so a long file name ellipsizes instead of shoving the buttons
+   off the right edge of a phone. */
+.attach-row-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 0.1rem; }
+.attach-row-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attach-row-actions { flex: 0 0 auto; display: flex; gap: 0.35rem; }
+/* 16px, literally: Safari zooms the page in on focusing any control smaller
+   than that and never zooms back out. */
+.attach-row-rename { width: 100%; font-size: 16px; }
+.attach-row-item.oversize .attach-row-name,
+.attach-row-item.oversize .attach-row-size { color: var(--ansi-red); }
 
 /* A voice memo's words, under its player in the Files shelf. */
 .attach-transcript {

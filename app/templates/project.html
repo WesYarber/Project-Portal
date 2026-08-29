@@ -154,7 +154,12 @@
       {% endfor %}
     </div>
     {% endif %}
-    <form method="post" action="/project/{{ project.slug }}/ask" class="ask-form">
+    {# Same two markers as the note box below, for the same reason: asking is a
+       gesture that consumes the box, and the answer arrives a minute later by
+       live patch anyway - so there was never anything for a navigation to
+       show you that a patch does not. #}
+    <form method="post" action="/project/{{ project.slug }}/ask" class="ask-form"
+          data-inplace data-compose>
       <div class="field">
         <textarea name="question" rows="2" enterkeyhint="enter"
                   placeholder="{{ 'Ask a follow-up - it can see this whole thread...' if ask_thread else 'Ask about this project without setting anything in motion...' }}"></textarea>
@@ -395,7 +400,11 @@
     <a class="btn go preview-open" href="/open/{{ project.slug }}" target="_blank" rel="noopener"
        title="{{ preview_link.hint }}">open it &#8599;</a>
     {% endif %}
-    <form method="post" action="/project/{{ project.slug }}/run" class="inline-form">
+    {# data-inplace, no data-compose: there is nothing in it to empty. Starting
+       a run is exactly the "submitting consumes the form" case - the button
+       becomes "agent running..." and the console box below fills in, both of
+       which arrive on the patch. #}
+    <form method="post" action="/project/{{ project.slug }}/run" class="inline-form" data-inplace>
       <button type="submit" {{ 'disabled' if active_run.active }}>
         {% if active_run.active %}agent running...{% elif build_gated %}run planning pass{% else %}run agent now{% endif %}
       </button>
@@ -404,7 +413,11 @@
        (see project_page), so stopping someone else's run from here is not
        possible even while other agents work in parallel. #}
     {% if active_run.active %}
-    <form method="post" action="/run/{{ active_run.run_id }}/cancel" class="inline-form">
+    <form method="post" action="/run/{{ active_run.run_id }}/cancel" class="inline-form" data-inplace>
+      {# `next` still rides along: with scripting off this is an ordinary
+         navigating form and the route needs somewhere to send you. The
+         in-place path ignores the redirect and refetches this page, which is
+         the same address. #}
       <input type="hidden" name="next" value="/project/{{ project.slug }}">
       <button type="submit" class="btn danger">stop this run</button>
     </form>
@@ -782,7 +795,15 @@
   {{ todo_list([], "Nothing waiting on you.") }}
   {% endif %}
 
-  <form method="post" action="/project/{{ project.slug }}/todo" class="todo-add">
+  {# In place and emptied afterwards. The todo list is a long way down a long
+     page and adding several in a row is the normal way to use it, so a
+     navigation per item put the reader back at the top between every one.
+     `required` still works: the submit event only fires once the browser's own
+     validation has passed. The owner dropdown is deliberately NOT cleared -
+     clearComposeForm touches text fields, and filing three things for the
+     agent in a row should not mean picking "for the agent" three times. #}
+  <form method="post" action="/project/{{ project.slug }}/todo" class="todo-add"
+        data-inplace data-compose>
     <input type="text" name="text" placeholder="Add a todo..." required>
     <select name="owner" aria-label="whose todo">
       <option value="agent">for the agent</option>
@@ -831,8 +852,20 @@
      voice recorder all work by putting files *into this input*, so the browser's
      own submit carries them. With scripting off you still get a working file
      picker (which on a phone is the camera / gallery / files chooser). #}
+  {# data-inplace + data-compose: posted with fetch and patched in place, never
+     navigated. Wes, 2026-08-28: "When I click add note (and maybe other things
+     now on the project page), it reloads the page now and puts me back at the
+     top of the page. This is unacceptable - the tool should be seamless and
+     should not throw the user's view around when they are on the page."
+
+     `data-compose` is what tells app.js to EMPTY this form once the post is
+     accepted. The morph deliberately preserves live field values (so a
+     background patch cannot stomp a half-typed note), which is exactly wrong
+     the moment the note has been sent - without it the note sits in the box
+     looking unsent, beside its own copy in the journal. #}
   <form method="post" action="/project/{{ project.slug }}/note"
-        enctype="multipart/form-data" class="note-form" data-dropzone>
+        enctype="multipart/form-data" class="note-form" data-dropzone
+        data-inplace data-compose>
     <div class="field">
       {# enterkeyhint=enter asks a phone keyboard for a return key rather than a
          "go" key: on mobile Enter must insert a newline, never submit. #}
@@ -925,6 +958,22 @@
        .rec-row is in MORPH_KEEP so a live patch leaves them alone). Each one
        can be listened to and deleted before the note is submitted. #}
     <div class="rec-shelf" data-rec-shelf></div>
+    {# Everything else picked, dropped or pasted, one row each. Wes, 2026-08-28:
+       "I still can't modify (delete) files that I have included in a note before
+       sending it. I want to be able to view what I have included, rename it, or
+       remove it."
+
+       All three of those, in that order: a thumbnail for an image and the name
+       for anything else, a rename that rewrites the file the server will
+       receive, and a remove. Before this the form said "3 files: a.png, b.png,
+       +1 more" in one line of gray text - which is a count, not a way to change
+       your mind. Voice memos stay on the shelf above rather than appearing here
+       twice; app.js owns that split.
+
+       `.attach-row-item` is in MORPH_KEEP for the same reason `.rec-row` is: a
+       background patch must not be able to throw away a screenshot you dropped
+       but have not sent. #}
+    <div class="attach-shelf" data-attach-shelf></div>
   </form>
 </div>
 {% endmacro %}
@@ -1058,6 +1107,34 @@
    would otherwise list "Journal" twice. #}
 <div class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box"
      data-jump-nav="off">
+  {# The rest of the journal, on request rather than on every load. Wes,
+     2026-08-28: "It also seems to take much longer to reload a page, and my key
+     commands to jump to a certain area of the page do not work when it is
+     taking this time to load."
+
+     Measured: this page was 596 KB of HTML and 490 KB of it was two hundred
+     rendered journal entries. The jump keys are bound at DOMContentLoaded,
+     which cannot fire until all of that has been parsed - so the keys were not
+     broken, they did not exist yet.
+
+     A plain link, not a fetch: `?journal=all` is a real address he can bookmark
+     or open in a second tab, it works with scripting off, and liveRefreshNow()
+     re-fetches location.href - so a live patch while the journal is expanded
+     keeps it expanded, with no client-side state to go stale.
+
+     It sits at the TOP of the box because the box reads newest-first: older is
+     up, the same direction the reader is already going. #}
+  {% if journal_hidden %}
+  <p class="journal-more">
+    <a href="/project/{{ project.slug }}?journal=all#journal">show {{ journal_hidden }} older entr{{ 'y' if journal_hidden == 1 else 'ies' }}</a>
+    <span class="small muted">kept off this page so it loads fast</span>
+  </p>
+  {% elif journal_all %}
+  <p class="journal-more">
+    <a href="/project/{{ project.slug }}#journal">show fewer</a>
+    <span class="small muted">the whole journal is on this page</span>
+  </p>
+  {% endif %}
   {% for j in journal %}
   {% set pending = note_pending(j) %}
   {# No side-thread rows here to badge any more: asks and their answers are

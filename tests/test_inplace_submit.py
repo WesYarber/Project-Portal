@@ -228,15 +228,30 @@ def test_the_toggle_is_the_only_form_left_on_a_row(row):
         )
 
 
-def test_a_compose_box_still_navigates(row):
-    """The rule for what may be in-place is that submitting CONSUMES the form:
-    a ticked row, an answered question, a dismissed banner. "Add a todo" is the
-    other kind - the field is still yours after the post, and releaseFocus()
-    would take the cursor out from under you every time you added one. So it
-    stays an ordinary navigating form, and so does the +tag input beside it."""
+def test_a_compose_box_is_posted_in_place_and_then_emptied(row):
+    """This test used to assert the opposite, and the reasoning was wrong.
+
+    The old rule was that a compose box "is the other kind - the field is still
+    yours after the post", so "Add a todo" had to keep navigating. Wes,
+    2026-08-28: "When I click add note (and maybe other things now on the
+    project page), it reloads the page now and puts me back at the top of the
+    page. This is unacceptable."
+
+    He is right, and the premise was backwards: what you typed went out with
+    the post, so the field is exactly NOT still yours - which makes releasing
+    the focus correct rather than rude, and on a phone it puts the keyboard
+    away. What the old reasoning did get right is that the box has to be
+    EMPTIED, since the morph preserves live field values on purpose; that is
+    what data-compose is for, and it is asserted here beside data-inplace so
+    the pair can never come apart.
+
+    The +tag input beside it is deliberately left alone: it sits on a single
+    row inside the list rather than at the bottom of the page, and it is the
+    one field here whose value you may well want to reuse on the next row."""
     for f in _forms(row):
-        if 'class="todo-add"' in f or "todo-tag-add" in f:
-            assert "data-inplace" not in f, f
+        if 'class="todo-add"' in f:
+            assert "data-inplace" in f, f
+            assert "data-compose" in f, f
 
 
 def test_every_row_carries_an_id_so_the_morph_pairs_it_with_itself(client, temp_data_dir):
@@ -429,3 +444,212 @@ def test_an_answer_still_lands_when_the_option_is_the_whole_answer(client, temp_
     )
 
     assert db.get_question(q["id"])["answer"] == "merge it"
+
+
+# --------------------------------------------------------------------------
+# The note box, sent without leaving the page
+#
+# Wes, 2026-08-28: "When I click add note (and maybe other things now on the
+# project page), it reloads the page now and puts me back at the top of the
+# page. This is unacceptable - the tool should be seamless and should not throw
+# the user's view around when they are on the page."
+#
+# The note form is the first in-place form carrying FILES and the first that
+# has to be emptied afterwards, and both of those are decisions rather than
+# strings, so they are driven under bun rather than matched in the source.
+# --------------------------------------------------------------------------
+
+def test_sending_a_note_posts_in_place_and_never_navigates(ran):
+    sent = ran["noteSentInPlace"]
+
+    assert sent["prevented"] is True
+    assert sent["navigated"] == 0
+    assert sent["patched"] == 1
+    # Forced, so the patch does not sit in the queue behind some other field
+    # the reader left focused elsewhere on the page.
+    assert sent["forced"] == 1
+    assert [p["action"] for p in sent["posted"]] == ["/project/p/note"]
+
+
+def test_sending_a_note_stashes_no_scroll_position(ran):
+    """The stash is the mechanism that used to put him back at the top.
+
+    It is written by a listener registered ABOVE the in-place handler, so it
+    fires before anything has prevented the submit; it has to exclude this form
+    by name. An entry nothing consumes is not harmless - the next ordinary
+    navigation to this page eats it and scrolls a page just opened."""
+    assert ran["noteSentInPlace"]["stashed"] == []
+
+
+def test_a_note_posts_as_multipart_with_no_content_type_header(ran):
+    """Files only survive as a FormData, and only with the header left off.
+
+    Flattening a FormData into urlencoded fields turns every File into the
+    string "[object File]" and the upload arrives empty. Setting
+    Content-Type: multipart/form-data by hand is the same failure by a
+    different route: only the browser can write the `boundary` parameter that
+    belongs beside it, and without one the server cannot split the body at all.
+    Both failures are silent - a note that arrives with no attachment."""
+    posted = ran["noteSentInPlace"]["posted"][0]
+
+    assert posted["isFormData"] is True
+    assert posted["headers"] == "absent"
+    assert posted["contentType"] is None
+
+
+def test_a_sent_note_leaves_the_box_empty(ran):
+    """The morph will not do this, and is right not to.
+
+    morphNode() returns early on a textarea (its live text is the user's
+    typing), field `value` attributes are in preservedAttr(), and `.rec-row`
+    and `.attach-row-item` are in MORPH_KEEP - all so a background patch cannot
+    stomp a half-written note. After a send, every one of those protections is
+    protecting stale text, and the note would sit in the box looking unsent
+    beside its own copy in the journal."""
+    after = ran["noteSentInPlace"]["after"]
+
+    assert after["textarea"] == ""
+    assert after["fileCount"] == 0
+    assert after["shelfRowRemoved"] is True
+    # The quoted passage went out with the note; left up, it rides along on the
+    # NEXT note too.
+    assert after["chipRemoved"] is True
+    assert after["status"] == ""
+
+
+def test_a_refused_note_keeps_every_word_of_it(ran):
+    """The one way this feature could lose his work outright.
+
+    A post the server refused delivered nothing, so the box still holds the
+    only copy. Clearing on the way out rather than on success would throw away
+    a note he had just typed, with an alert as the only trace."""
+    refused = ran["noteRefusedKeepsTheText"]
+
+    assert refused["alerted"] == 1
+    assert refused["patched"] == 0
+    assert refused["after"]["textarea"] == "a note I just typed"
+    assert refused["after"]["fileCount"] == 1
+    assert refused["after"]["shelfRowRemoved"] is False
+    assert refused["after"]["chipRemoved"] is False
+
+
+def test_an_in_place_form_with_no_files_still_posts_urlencoded(ran):
+    """Multipart is opt-in on the form's own shape, not a change to all of them."""
+    plain = ran["plainFormStillUrlencoded"]
+
+    assert plain["isFormData"] is False
+    assert plain["contentType"] == "application/x-www-form-urlencoded"
+    assert plain["body"] == "done=1"
+
+
+def test_which_note_button_was_pressed_rides_along(ran):
+    """`then` decides whether a run starts, so losing it is not cosmetic.
+
+    A FormData built from the form alone does not carry the submitter - only
+    the browser's own submission does. Dropped, "queue note" arrives as a bare
+    note and note_runs_now starts the agent he had just asked it not to."""
+    assert ran["submitterRidesAlong"]["then"] == "queue"
+    # set(), not append(): the form renders a `then` of its own, and a second
+    # one leaves the server reading whichever it happens to see first.
+    assert ran["submitterRidesAlong"]["thenCount"] == 1
+
+
+def test_clearing_is_the_compose_markers_doing_and_nothing_elses(ran):
+    """Without [data-compose] nothing is emptied.
+
+    The settings page is full of in-place forms whose fields are meant to
+    survive the post that saves them - emptying every in-place form's fields
+    would blank them all."""
+    kept = ran["withoutComposeMarkerNothingIsCleared"]
+
+    assert kept["textarea"] == "a note I just typed"
+    assert kept["fileCount"] == 1
+    assert kept["shelfRowRemoved"] is False
+    assert kept["chipRemoved"] is False
+
+
+def test_the_note_form_actually_carries_both_markers():
+    """The wiring, which no amount of driving app.js can see.
+
+    Every test above proves what a [data-inplace][data-compose] form does. This
+    is the one that proves the note box IS one - the whole feature is a
+    two-attribute edit to a template, and losing it would leave the machinery
+    correct and unreachable."""
+    html = PROJECT_HTML.read_text(encoding="utf-8")
+    form = re.search(r'<form[^>]*class="note-form"[^>]*>', html, re.S)
+    assert form, "the note form is not in project.html any more"
+
+    assert "data-inplace" in form.group(0)
+    assert "data-compose" in form.group(0)
+    # Both of these are what isMultipartForm() reads, and they are also the
+    # no-script path: with scripting off the browser's own multipart submit is
+    # what carries a dropped file.
+    assert "multipart/form-data" in form.group(0)
+    assert 'name="files"' in html
+
+
+def test_a_declared_multipart_form_posts_multipart_with_no_file_in_it(ran):
+    """The enctype half of isMultipartForm(), on its own.
+
+    Two markers decide whether a form posts multipart - `enctype` and the
+    presence of an <input type=file> - and the note form carries both, so a
+    fixture that has both cannot tell which one is doing the work. A mutation
+    sweep deleting the enctype check changed no behavior whatsoever, because
+    the file input was quietly answering for it.
+
+    The declaration has to be the one that wins: a form saying
+    multipart/form-data is a form whose ROUTE was written to parse multipart,
+    and that is true whether or not a file happens to be attached when it is
+    submitted. Posting it urlencoded because the picker was empty would send a
+    shape the route cannot read."""
+    declared = ran["enctypeAloneIsEnough"]
+
+    assert declared["isFormData"] is True
+    assert declared["headers"] == "absent"
+
+
+def test_the_other_forms_he_presses_most_are_in_place_too():
+    """Wes, 2026-08-28: "When I click add note (and maybe other things now on
+    the project page), it reloads the page now and puts me back at the top."
+
+    "And maybe other things" is the half of that note the note box alone does
+    not answer. These four are the ones pressed from partway down a long page,
+    where a navigation is most jarring: adding a todo (which you do several of
+    in a row), asking a question, starting a run and stopping one.
+
+    Asserted per form rather than as "no form navigates", because plenty of
+    them still should - deleting a project genuinely goes somewhere else, and
+    the settings-style selects submit through `this.form.submit()`, which does
+    not fire a submit event at all and so cannot be made in-place by an
+    attribute."""
+    html = PROJECT_HTML.read_text(encoding="utf-8")
+
+    def form_tag(action: str) -> str:
+        m = re.search(r'<form[^>]*action="' + re.escape(action) + r'"[^>]*>', html, re.S)
+        assert m, f"no form posting to {action} any more"
+        return m.group(0)
+
+    slug = "{{ project.slug }}"
+    # Compose boxes: emptied after the post, like the note box.
+    for action in (f"/project/{slug}/todo", f"/project/{slug}/ask"):
+        tag = form_tag(action)
+        assert "data-inplace" in tag, action
+        assert "data-compose" in tag, action
+
+    # Buttons: nothing to empty, so no data-compose.
+    for action in (f"/project/{slug}/run", "/run/{{ active_run.run_id }}/cancel"):
+        tag = form_tag(action)
+        assert "data-inplace" in tag, action
+        assert "data-compose" not in tag, action
+
+
+def test_deleting_a_project_still_navigates():
+    """The one form on this page that MUST keep navigating.
+
+    It destroys the page it is on. Patched in place it would refetch a project
+    that no longer exists and paint a 404 into the middle of the layout."""
+    html = PROJECT_HTML.read_text(encoding="utf-8")
+    m = re.search(r'<form[^>]*action="/project/\{\{ project\.slug \}\}/delete"[^>]*>', html, re.S)
+
+    assert m, "the delete form is gone"
+    assert "data-inplace" not in m.group(0)

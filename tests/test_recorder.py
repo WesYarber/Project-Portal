@@ -109,3 +109,31 @@ def test_the_mic_button_doubles_as_done_while_a_take_is_open(ran):
 def test_a_denied_mic_disables_the_button_and_says_so(ran):
     assert ran["denied"]["disabled"] is True
     assert ran["denied"]["status"] == "microphone unavailable"
+
+
+def test_the_recorder_claims_the_file_it_just_attached(ran):
+    """So the staged-file shelf leaves the memo to this shelf.
+
+    A voice memo goes into the same <input type=file> as any dropped
+    screenshot, so the shelf added on 2026-08-28 would list it as an ordinary
+    file - a second row for one recording, with a delete button that knows
+    nothing about the playback row above it. The recorder registers the name it
+    used and the shelf skips it.
+
+    A registration rather than a guess from the name: "starts with voice-memo-"
+    would also hide a file the user happened to call that, and there would be
+    no playback row for it either, so it would be unremovable.
+
+    A mutation sweep found this uncovered - the shelf's own harness writes the
+    claim by hand to build its fixture, so nothing there can see whether the
+    recorder ever makes one."""
+    take = ran["take"]
+
+    assert take["claimed"] == [take["name"]]
+
+
+def test_deleting_a_take_releases_its_claim(ran):
+    """Left behind, the name is a permanent instruction to hide any file called
+    that - so attaching a real file under the deleted memo's name would show
+    nothing on the shelf and give no way to take it back off."""
+    assert ran["afterDelete"]["claimed"] == []

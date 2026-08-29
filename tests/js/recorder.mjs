@@ -242,6 +242,15 @@ await (async () => {
     micReleased: stoppedTracks,
     rowText: rowMeta(row),
     rowHasAudio: !!(row && row.childNodes.some((c) => c.tagName === "AUDIO")),
+    // The recorder CLAIMS the file it just put in the input, so the staged-file
+    // shelf leaves it alone. Without this the memo gets a second row down
+    // there - an ordinary file row beside its own playback row - with two
+    // different delete buttons for one recording.
+    //
+    // Asserted here rather than in the shelf's own harness because that one
+    // sets the claim by hand to build its fixture, so it cannot see whether
+    // the recorder ever makes one. A sweep found exactly that hole.
+    claimed: Object.keys(input._recordedNames || {}),
   };
 
   // --- 4. Delete pulls the file back out of the input ------------------------
@@ -251,6 +260,10 @@ await (async () => {
     files: input.files.length,
     rows: shelf.childNodes.length,
     urlRevoked: revoked,
+    // And the claim is released with it. Left behind, the name would be a
+    // permanent instruction to the staged shelf to hide any file called that -
+    // so re-attaching a file under the deleted memo's name would show nothing.
+    claimed: Object.keys(input._recordedNames || {}),
   };
 
   // --- 5. Discard: nothing is attached, the mic is still released ------------

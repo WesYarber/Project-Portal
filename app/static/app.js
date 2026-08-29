@@ -480,12 +480,70 @@ window.addEventListener("load", function () {
 //
 // Opt-in per form (`data-inplace`) rather than "every POST on this page". The
 // rule for what may carry it is that submitting CONSUMES the form - a ticked
-// row, an answered question, a dismissed banner. A compose box you keep typing
-// into (add a todo, write a note) stays an ordinary navigating form, because
-// there the fields are still yours after the post and releaseFocus() below
-// would take the cursor out from under you.
+// row, an answered question, a dismissed banner.
+//
+// A compose box was excluded here for a while on the grounds that "the fields
+// are still yours after the post". They are not. Wes, 2026-08-28: "When I click
+// add note (and maybe other things now on the project page), it reloads the page
+// now and puts me back at the top of the page. This is unacceptable - the tool
+// should be seamless and should not throw the user's view around when they are
+// on the page."
+//
+// He is right, and the old reasoning had it backwards: sending a note is
+// exactly the gesture that consumes the box. What you typed is gone from your
+// hands and into the journal, so blurring the field is correct (on a phone it
+// also puts the keyboard away), and the fields have to be EMPTIED rather than
+// preserved - which the morph will not do on its own, because it deliberately
+// keeps live field values so a background patch cannot stomp what you are
+// mid-way through typing. `data-compose` marks those forms, and
+// clearComposeForm() below empties one once its post has been accepted.
 function canPostInPlace() {
   return !!(window.fetch && window.DOMParser && window.FormData);
+}
+
+// A form that carries files has to post as multipart. Detected from the form
+// rather than declared, because the two markers that would say so - enctype and
+// an <input type=file> - are both already on the form for the no-script path.
+function isMultipartForm(form) {
+  if (!form || !form.getAttribute) return false;
+  if ((form.getAttribute("enctype") || "").toLowerCase() === "multipart/form-data") return true;
+  return !!(form.querySelector && form.querySelector('input[type="file"]'));
+}
+
+// Empty a compose form after its contents have been accepted by the server.
+//
+// Everything here is state the morph is right to leave alone during an ordinary
+// background patch, which is why none of it can be left to the morph: a
+// textarea's live text is the user's typing (morphNode returns early on one), a
+// FileList is not in the server's render at all, and `.rec-row` is in
+// MORPH_KEEP precisely so a patch cannot eat a voice memo you have not sent.
+// After a send, all three are stale rather than precious.
+function clearComposeForm(form) {
+  if (!form || !form.querySelectorAll) return;
+  form.querySelectorAll("textarea, input[type=text]").forEach(function (el) {
+    el.value = "";
+    // autosize() sized the box to what was in it; an empty box that stays six
+    // rows tall reads as a send that did not happen.
+    if (typeof autosize === "function") autosize(el);
+  });
+  form.querySelectorAll('input[type="file"]').forEach(function (input) {
+    if (typeof DataTransfer !== "undefined") input.files = new DataTransfer().files;
+    else input.value = "";
+  });
+  // Client-built shelves: recorded takes and staged uploads. Their object URLs
+  // are revoked on the way out so a long session of dropping and sending files
+  // does not hold every one of them in memory.
+  form.querySelectorAll(".rec-row, .attach-row-item").forEach(function (row) {
+    if (row._objectUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(row._objectUrl);
+    row.remove();
+  });
+  // The quoted passage went out with the note; leaving the chip up would put it
+  // on the NEXT note too.
+  form.querySelectorAll(".quote-chip").forEach(function (chip) { chip.remove(); });
+  form.querySelectorAll("[data-attach-status]").forEach(function (el) {
+    el.textContent = "";
+    el.classList.remove("error");
+  });
 }
 
 // Where an in-place submit should post, or null if this submit is not ours.
@@ -552,12 +610,13 @@ document.addEventListener("submit", function (ev) {
   if (!action) return;
   ev.preventDefault();
   var form = ev.target;
-  var fields = {};
-  new FormData(form).forEach(function (value, name) { fields[name] = value; });
+  var data = new FormData(form);
   // The pressed button's own name and value. `new FormData(form)` leaves it
   // out - only the browser's own submission carries it - so without this a
-  // tapped quick option posts an empty `choice` and answers the question blank.
-  if (ev.submitter && ev.submitter.name) fields[ev.submitter.name] = ev.submitter.value;
+  // tapped quick option posts an empty `choice` and answers the question blank,
+  // and a note sent with "queue note" arrives with no `then` at all and starts
+  // a run he did not ask for.
+  if (ev.submitter && ev.submitter.name) data.set(ev.submitter.name, ev.submitter.value);
   releaseFocus(form);
   // Forced: the patch that follows is the answer to a button this reader just
   // pressed, so it does not wait behind a text box they left focused somewhere
@@ -569,9 +628,32 @@ document.addEventListener("submit", function (ev) {
   // section is here to stop. The morph would strip the class anyway (the fresh
   // HTML has no busy form in it); this is what covers a post that was REFUSED,
   // where there is no morph at all and the control has to come back.
-  postForm(action, fields, function () { return liveReload(true); })
-    .then(function () { clearBusy(form); });
+  //
+  // A compose form is emptied inside onDone, BEFORE the patch rather than after
+  // it. The morph reads the live DOM to decide what to change, so a textarea
+  // still holding the sent text at that moment is text the morph then protects,
+  // and the note would sit in the box looking unsent next to its own copy in
+  // the journal. It runs only on the success path, for the same reason the busy
+  // mark does: a post the server refused must leave what you typed alone.
+  var compose = !!(form.matches && form.matches("[data-compose]"));
+  var done = function () {
+    if (compose) clearComposeForm(form);
+    return liveReload(true);
+  };
+  var posted = isMultipartForm(form)
+    ? postMultipart(action, data, done)
+    : postForm(action, formFields(data), done);
+  posted.then(function () { clearBusy(form); });
 });
+
+// A FormData flattened to the plain object postForm wants. Only reached for a
+// form with no files in it, so a File value here would be a bug rather than a
+// case to handle.
+function formFields(data) {
+  var fields = {};
+  data.forEach(function (value, name) { fields[name] = value; });
+  return fields;
+}
 
 // --- Attachments: drop, paste, record --------------------------------------
 // Everything here funnels into the form's own <input type=file>. Nothing is
@@ -629,6 +711,216 @@ function removeFile(input, name) {
   input.files = dt.files;
 }
 
+// Rename one staged file, in place and in order.
+//
+// A File's name is read-only, so a rename is a new File built from the same
+// bytes - and because the whole FileList has to be rebuilt to swap one entry,
+// this walks the list rather than removing and re-adding, which would move the
+// renamed file to the end. Wes reorders nothing here, but a picture jumping to
+// the bottom of the shelf because you fixed its name is exactly the "nothing
+// moves that he didn't move" complaint.
+//
+// Returns the name actually used, or "" if the rename could not happen: an
+// empty name, a name already taken by another staged file (the server stores by
+// name, and two files claiming one name is a silent overwrite), or a browser
+// with no File constructor.
+function renameFile(input, from, to) {
+  if (typeof DataTransfer === "undefined" || typeof File !== "function") return "";
+  var want = (to || "").trim();
+  if (!want || want === from) return "";
+  var existing = input.files || [];
+  var i;
+  for (i = 0; i < existing.length; i++) {
+    if (existing[i].name === want) return "";
+  }
+  var dt = new DataTransfer();
+  var renamed = "";
+  for (i = 0; i < existing.length; i++) {
+    var f = existing[i];
+    if (f.name === from) {
+      // lastModified is carried over so the file the server receives is the
+      // same file, differing only in what it is called.
+      dt.items.add(new File([f], want, { type: f.type, lastModified: f.lastModified }));
+      renamed = want;
+    } else {
+      dt.items.add(f);
+    }
+  }
+  if (!renamed) return "";
+  input.files = dt.files;
+  return renamed;
+}
+
+// Names the recorder put into the input, so the staged shelf can leave them to
+// the recorder's own shelf instead of listing every voice memo twice.
+//
+// A set carried on the input rather than a name pattern: "starts with
+// voice-memo-" would also swallow a file the user happened to call that, and
+// silently hide it from the only list that can remove it.
+function recordedNames(input) {
+  if (!input._recordedNames) input._recordedNames = {};
+  return input._recordedNames;
+}
+
+// One row per staged file: look at it, rename it, take it back off the note.
+//
+// Rebuilt from input.files every time rather than patched, because the FileList
+// is the only source of truth about what will actually be posted - a shelf kept
+// in step by hand would eventually disagree with it, and the direction it would
+// disagree in is "shows a file that is no longer going to be sent".
+//
+// Object URLs are revoked on every rebuild. Dropping ten screenshots into a
+// note and changing your mind about them would otherwise pin all ten in memory
+// until the page was navigated away from.
+function renderAttachShelf(input, shelf) {
+  if (!shelf) return;
+  // How a row's own remove/rename button asks for the redraw, without every
+  // button in every row closing over the renderer. initDropzones overwrites
+  // this with its fuller refresh (which also updates the oversize status line);
+  // the default here is what makes the shelf correct on its own, so that
+  // "whether a removed file disappears from the list" does not depend on who
+  // happened to call this first.
+  if (!input._afterFiles) {
+    input._afterFiles = function () { renderAttachShelf(input, shelf); };
+  }
+  var i;
+  var old = shelf.querySelectorAll(".attach-row-item");
+  for (i = 0; i < old.length; i++) {
+    if (old[i]._objectUrl && window.URL && URL.revokeObjectURL) URL.revokeObjectURL(old[i]._objectUrl);
+  }
+  shelf.textContent = "";
+  var files = input.files || [];
+  var recorded = recordedNames(input);
+  var max = parseInt(input.getAttribute("data-max-bytes") || "0", 10);
+  for (i = 0; i < files.length; i++) {
+    // A voice memo already has a row with a player on it, on the recorder's own
+    // shelf. Listing it again here would offer two different delete buttons for
+    // one file.
+    if (recorded[files[i].name]) continue;
+    shelf.appendChild(attachRow(input, shelf, files[i], max));
+  }
+}
+
+function attachRow(input, shelf, file, max) {
+  var row = document.createElement("div");
+  row.className = "attach-row-item";
+  var oversize = max > 0 && file.size > max;
+  if (oversize) row.classList.add("oversize");
+
+  // View: the picture itself where there is one, since that is what "what have
+  // I included" means for a screenshot. Everything else gets its extension,
+  // which is the most any of this can honestly show without opening the file.
+  var thumb = document.createElement("span");
+  thumb.className = "attach-row-thumb";
+  if (file.type && file.type.indexOf("image/") === 0 && window.URL && URL.createObjectURL) {
+    var img = document.createElement("img");
+    row._objectUrl = URL.createObjectURL(file);
+    img.src = row._objectUrl;
+    img.alt = file.name;
+    thumb.appendChild(img);
+  } else {
+    var dot = file.name.lastIndexOf(".");
+    thumb.textContent = dot > 0 ? file.name.slice(dot + 1).toLowerCase().slice(0, 4) : "file";
+    thumb.classList.add("attach-row-ext");
+  }
+
+  var body = document.createElement("span");
+  body.className = "attach-row-body";
+  var nameEl = document.createElement("span");
+  nameEl.className = "attach-row-name";
+  nameEl.textContent = file.name;
+  var sizeEl = document.createElement("span");
+  sizeEl.className = "small muted attach-row-size";
+  sizeEl.textContent = oversize ? fileSize(file.size) + " - too big to send" : fileSize(file.size);
+  body.appendChild(nameEl);
+  body.appendChild(sizeEl);
+
+  var actions = document.createElement("span");
+  actions.className = "attach-row-actions";
+
+  // Rename is offered only where it can actually work. A browser with no File
+  // constructor cannot rebuild a file under a new name, and a button that does
+  // nothing is worse than one that is not there.
+  if (typeof File === "function" && typeof DataTransfer !== "undefined") {
+    var rename = document.createElement("button");
+    rename.type = "button";
+    rename.className = "btn secondary small";
+    rename.textContent = "rename";
+    rename.addEventListener("click", function () {
+      // An inline field rather than prompt(): prompt() is blocked in an
+      // installed iOS home-screen app, which is where he does most of this.
+      startRename(input, shelf, row, nameEl, file.name);
+    });
+    actions.appendChild(rename);
+  }
+
+  var remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "btn danger small";
+  remove.textContent = "remove";
+  remove.addEventListener("click", function () {
+    removeFile(input, file.name);
+    if (input._afterFiles) input._afterFiles();
+  });
+  actions.appendChild(remove);
+
+  row.appendChild(thumb);
+  row.appendChild(body);
+  row.appendChild(actions);
+  return row;
+}
+
+// Swap the name for a text field, apply on Enter or blur, abandon on Escape.
+function startRename(input, shelf, row, nameEl, current) {
+  if (row.querySelector(".attach-row-rename")) return;
+  var field = document.createElement("input");
+  field.type = "text";
+  field.className = "attach-row-rename";
+  field.value = current;
+  field.setAttribute("aria-label", "new name for " + current);
+  nameEl.hidden = true;
+  nameEl.insertAdjacentElement("afterend", field);
+  field.focus();
+  // The extension selected along with the stem would be retyped by anyone
+  // fixing a name, so the selection stops at the dot.
+  var dot = current.lastIndexOf(".");
+  if (field.setSelectionRange) field.setSelectionRange(0, dot > 0 ? dot : current.length);
+
+  var settled = false;
+  function finish(apply) {
+    if (settled) return;
+    settled = true;
+    var want = field.value;
+    field.remove();
+    nameEl.hidden = false;
+    if (!apply) return;
+    if (renameFile(input, current, want) && input._afterFiles) input._afterFiles();
+  }
+  field.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") {
+      // Or the note is submitted by the form around it.
+      ev.preventDefault();
+      finish(true);
+    } else if (ev.key === "Escape") {
+      // Stopped here so the page-wide Escape handler does not also read this
+      // as "close whatever is open".
+      ev.preventDefault();
+      ev.stopPropagation();
+      finish(false);
+    }
+  });
+  field.addEventListener("blur", function () { finish(true); });
+}
+
+// Bytes as something a person reads. The server's own filter is the Jinja
+// `filesize`; this is the client-side twin, and the two only ever describe
+// files, so they agree on where the units start.
+function fileSize(bytes) {
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + " KB";
+  return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+}
+
 function initDropzones() {
   document.querySelectorAll("[data-dropzone]").forEach(function (form) {
     if (form._enhanced) return;
@@ -636,13 +928,21 @@ function initDropzones() {
     var input = form.querySelector('input[type="file"]');
     if (!input) return;
     var status = form.querySelector("[data-attach-status]");
+    var shelf = form.querySelector("[data-attach-shelf]");
 
     function refresh() {
+      renderAttachShelf(input, shelf);
       if (!status) return;
       var warning = oversizeWarning(input);
-      status.textContent = warning || fileLabel(input);
+      // With a shelf on the page every file is already named on it, so the
+      // status line goes back to being what it was for: the one thing the rows
+      // cannot say, which is that something is too big to send at all.
+      status.textContent = warning || (shelf ? "" : fileLabel(input));
       status.classList.toggle("error", !!warning);
     }
+    // Hung off the input so a row's own remove/rename button can ask for the
+    // redraw without every one of them closing over this function.
+    input._afterFiles = refresh;
     input.addEventListener("change", refresh);
     refresh();
 
@@ -820,6 +1120,10 @@ function initRecorder(form, input, refresh) {
     var name = "voice-memo-" + new Date().toISOString().replace(/[:.]/g, "-") + "." + ext;
     var file = new File([blob], name, { type: type });
     if (!addFiles(input, [file])) return;
+    // Claimed before the redraw, or the staged shelf lists this memo as an
+    // ordinary file alongside the playback row added two lines down - two rows
+    // and two delete buttons for one recording.
+    recordedNames(input)[name] = true;
     refresh();
     addTakeRow(file, blob, length);
   }
@@ -842,6 +1146,7 @@ function initRecorder(form, input, refresh) {
     del.textContent = "delete";
     del.addEventListener("click", function () {
       removeFile(input, file.name);
+      delete recordedNames(input)[file.name];
       URL.revokeObjectURL(url);
       row.remove();
       refresh();
@@ -2267,11 +2572,30 @@ function enhanceSelect(sel) {
 function postForm(action, fields, onDone) {
   var body = new URLSearchParams();
   Object.keys(fields || {}).forEach(function (k) { body.append(k, fields[k]); });
-  return fetch(action, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: body.toString(),
-  })
+  return postBody(
+    action,
+    body.toString(),
+    { "Content-Type": "application/x-www-form-urlencoded" },
+    onDone
+  );
+}
+
+// The same post, carrying a FormData instead - which is how files travel.
+//
+// The Content-Type header is deliberately ABSENT rather than set to
+// multipart/form-data: only the browser can write the boundary parameter that
+// belongs beside it, and a hand-set header without one makes the server read
+// the body as a single unparseable part. Every upload arrives empty, with no
+// error anywhere, which is why this is a separate function with the reason
+// written on it rather than an `if` inside postForm.
+function postMultipart(action, formData, onDone) {
+  return postBody(action, formData, null, onDone);
+}
+
+function postBody(action, body, headers, onDone) {
+  var init = { method: "POST", body: body };
+  if (headers) init.headers = headers;
+  return fetch(action, init)
     .then(function (r) {
       if (!r.ok) {
         // The route said no (a run in flight, a parent with children). Its
@@ -2771,8 +3095,12 @@ document.addEventListener("DOMContentLoaded", initNoteMenu);
 // longer match what the server would render.
 
 // Live nodes that exist only client-side and must survive a morph.
+// `.attach-row-item` for the same reason `.rec-row` is here: a staged file is
+// client-only state that the server's render knows nothing about, so a
+// background patch that rebuilt the note form would throw away a screenshot
+// dropped in but not yet sent.
 var MORPH_KEEP = ".draft-note, .ctx-menu, #pull-refresh, #img-lightbox, " +
-  "#sel-actions, .quote-chip, .rec-row";
+  "#sel-actions, .quote-chip, .rec-row, .attach-row-item";
 
 function isKeepNode(node) {
   return node.nodeType === 1 && node.matches && node.matches(MORPH_KEEP);

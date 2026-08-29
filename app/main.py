@@ -36,6 +36,7 @@ from app import (
     fileview,
     headroom,
     hookguard,
+    journalwindow,
     jumpkeys,
     launch,
     limits,
@@ -1193,8 +1194,16 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
     # than in this feed. Wes, 2026-08-16: "I also want the questions to be asked
     # and answered all up at the 'Ask' area instead of in line in the journal."
     # Excluded in SQL, so a chatty thread does not eat slots in the 200 entries
-    # of journal this page shows.
-    journal = db.list_journal(project["id"], limit=200, exclude=db.SIDE_THREAD)
+    # of journal this page holds.
+    #
+    # Fetched in full but rendered through a window (app/journalwindow.py): the
+    # rows are cheap, and what actually cost this page four fifths of its 596 KB
+    # was rendering two hundred entries of markdown into it on every load.
+    # `?journal=all` asks for the rest, and survives a live patch by itself
+    # because liveRefreshNow() re-fetches location.href, query string and all.
+    journal_all = request.query_params.get("journal") == "all"
+    journal_rows = db.list_journal(project["id"], limit=200, exclude=db.SIDE_THREAD)
+    journal, journal_hidden = journalwindow.window(journal_rows, show_all=journal_all)
     ask_rows = db.ask_thread(project["id"])
     ask_pending = ask.pending(project["id"])
     questions = db.open_questions(project["id"])
@@ -1221,6 +1230,8 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
         {
             "project": project,
             "journal": journal,
+            "journal_hidden": journal_hidden,
+            "journal_all": journal_all,
             "questions": questions,
             "dismissed_questions": db.dismissed_questions(project["id"]),
             "deleted_questions": db.deleted_questions(project["id"]),

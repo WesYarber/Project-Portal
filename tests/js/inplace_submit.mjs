@@ -114,8 +114,20 @@ function makeForm(spec) {
   const attrs = Object.assign({ action: spec.action || "/todo/7/toggle" }, spec.attrs || {});
   if (spec.inplace) attrs["data-inplace"] = "";
   if (spec.confirm) attrs["data-confirm"] = spec.confirm;
+  // A compose form: the note box. `enctype` and a file input are what
+  // isMultipartForm() reads, and both are on the real form already for the
+  // no-script path, so the fixture carries them the same way.
+  if (spec.compose) attrs["data-compose"] = "";
+  if (spec.multipart) attrs.enctype = "multipart/form-data";
   const buttons = spec.buttons || [];
   const inside = spec.contains || [];
+  // What clearComposeForm() empties. Held as real stub nodes so the assertion
+  // is "the box is empty afterwards" rather than "a function was called".
+  const fileInput = spec.fileInput || null;
+  const textFields = spec.textFields || [];
+  const shelfRows = spec.shelfRows || [];
+  const chips = spec.chips || [];
+  const statuses = spec.statuses || [];
   const classes = [];
   const form = {
     tagName: "FORM",
@@ -130,13 +142,18 @@ function makeForm(spec) {
     removeAttribute: (n) => { delete attrs[n]; },
     matches: (sel) => {
       if (sel === "form[data-inplace]") return "data-inplace" in attrs;
+      if (sel === "[data-compose]") return "data-compose" in attrs;
       return false;
     },
-    // Only ever asked for "[formaction]", which is the one thing that decides
-    // whether a missing submitter is recoverable.
     querySelector: (sel) => {
-      if (sel !== "[formaction]") return null;
-      return buttons.filter((b) => b.getAttribute("formaction"))[0] || null;
+      // The one thing that decides whether a missing submitter is recoverable.
+      if (sel === "[formaction]") {
+        return buttons.filter((b) => b.getAttribute("formaction"))[0] || null;
+      }
+      // The second half of isMultipartForm(): a form carrying a file input is
+      // multipart whatever its enctype says.
+      if (sel === 'input[type="file"]') return fileInput;
+      return null;
     },
     // clearBusy sweeps its own form for marked controls. "button" is answered
     // too, and not because anything in app.js asks for it: it is what lets a
@@ -145,6 +162,11 @@ function makeForm(spec) {
     // fixture that cannot express the wrong behavior cannot catch it.
     querySelectorAll: (sel) => {
       if (sel === "button") return buttons;
+      if (sel === "textarea, input[type=text]") return textFields;
+      if (sel === 'input[type="file"]') return fileInput ? [fileInput] : [];
+      if (sel === ".rec-row, .attach-row-item") return shelfRows;
+      if (sel === ".quote-chip") return chips;
+      if (sel === "[data-attach-status]") return statuses;
       if (sel !== "[data-busy]") return [];
       return buttons.filter((b) => b.hasAttribute("data-busy"));
     },
@@ -226,6 +248,13 @@ function build(scene) {
   globalThis.location = { pathname: "/project/portal", hash: "" };
   globalThis.history = {};
   globalThis.URLSearchParams = URLSearchParams;
+  // clearComposeForm() empties a file input by assigning it a fresh, empty
+  // FileList - which can only be got from a DataTransfer. Present here so the
+  // real path is the one under test rather than the `input.value = ""`
+  // fallback for browsers that have no DataTransfer.
+  globalThis.DataTransfer = class {
+    constructor() { this.files = []; }
+  };
 
   // The two capability gates the code reads, both present unless a scene turns
   // one off to check the no-JS fallback.
@@ -248,13 +277,40 @@ function build(scene) {
     return new Promise((resolve) => { world.releasePatch = resolve; });
   };
 
+  // `set` as well as `forEach`, because the submitter's name/value is written
+  // onto the FormData now rather than onto a plain object beside it - a
+  // multipart post has no plain-object stage to write it into. `set` rather
+  // than `append` is the contract being modeled: pressing "queue note" must
+  // REPLACE any `then` already in the form, never add a second one.
   globalThis.FormData = class {
     constructor(form) { this.pairs = Object.keys(form.fields).map((k) => [k, form.fields[k]]); }
     forEach(cb) { this.pairs.forEach(([k, v]) => cb(v, k)); }
+    set(k, v) {
+      const at = this.pairs.findIndex(([name]) => name === k);
+      if (at >= 0) this.pairs[at] = [k, v];
+      else this.pairs.push([k, v]);
+    }
+    get(k) { const p = this.pairs.find(([name]) => name === k); return p ? p[1] : null; }
   };
 
   globalThis.fetch = (action, opts) => {
-    world.posted.push({ action, body: opts.body, method: opts.method });
+    // Both halves of what a multipart post has to get right are recorded: that
+    // the body is the FormData itself (not a flattened string, which would
+    // leave every file behind), and that NO Content-Type header was set (only
+    // the browser can write the boundary that belongs beside it, and a header
+    // without one makes the server read the whole body as one bad part).
+    world.posted.push({
+      action,
+      body: opts.body,
+      method: opts.method,
+      isFormData: opts.body instanceof globalThis.FormData,
+      // Explicitly null rather than left undefined: JSON.stringify drops an
+      // undefined value, and a key that is simply MISSING makes "no
+      // Content-Type was set" indistinguishable from "the harness forgot to
+      // record it" on the Python side.
+      contentType: opts.headers ? opts.headers["Content-Type"] || null : null,
+      headers: opts.headers === undefined ? "absent" : "present",
+    });
     return Promise.resolve({
       ok: scene.serverSaysNo !== true,
       json: () => Promise.resolve({ detail: "a run is in flight" }),
@@ -681,6 +737,206 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
     busy: form.hasAttribute("data-busy"),
     secondPrevented: second.defaultPrevented,
   };
+}
+
+// --- The note box: sent without leaving the page ---------------------------
+//
+// Wes, 2026-08-28: "When I click add note (and maybe other things now on the
+// project page), it reloads the page now and puts me back at the top of the
+// page. This is unacceptable - the tool should be seamless and should not throw
+// the user's view around when they are on the page."
+//
+// The note form is the first [data-inplace] form that carries FILES, and the
+// first that has to be EMPTIED afterwards, so both of those are driven here
+// rather than matched in the source.
+
+// A compose form standing in for the note box: a textarea with a note in it, a
+// file input holding a dropped screenshot, a staged row on the shelf, a quote
+// chip and the attach-status line.
+function makeComposeForm(spec) {
+  const opts = spec || {};
+  const textarea = { tagName: "TEXTAREA", value: "a note I just typed" };
+  const fileInput = { files: ["shot.png"], value: "C:\\fakepath\\shot.png" };
+  const shelfRow = { removed: false, remove() { this.removed = true; } };
+  const chip = { removed: false, remove() { this.removed = true; } };
+  const statusClasses = ["error"];
+  const status = {
+    textContent: "1 file: shot.png",
+    classList: makeClassList(statusClasses),
+  };
+  const form = makeForm({
+    inplace: true,
+    compose: opts.compose !== false,
+    multipart: opts.multipart !== false,
+    action: "/project/p/note",
+    fields: { note: "a note I just typed", then: "" },
+    buttons: opts.buttons || [],
+    fileInput: opts.noFiles ? null : fileInput,
+    textFields: [textarea],
+    shelfRows: [shelfRow],
+    chips: [chip],
+    statuses: [status],
+  });
+  return { form, textarea, fileInput, shelfRow, chip, status };
+}
+
+function composeState(parts) {
+  return {
+    textarea: parts.textarea.value,
+    fileCount: parts.fileInput ? parts.fileInput.files.length : null,
+    shelfRowRemoved: parts.shelfRow.removed,
+    chipRemoved: parts.chip.removed,
+    status: parts.status.textContent,
+  };
+}
+
+// 21. Sending a note posts over fetch as multipart, patches the page in place,
+//     and empties the box. Nothing navigates, so nothing can scroll.
+{
+  build({});
+  const parts = makeComposeForm();
+  const ev = dispatchSubmit(parts.form);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  out.noteSentInPlace = {
+    prevented: ev.defaultPrevented,
+    navigated: world.plainSubmits.length,
+    patched: world.reloaded,
+    forced: world.forcedReloads,
+    posted: world.posted.map((p) => ({
+      action: p.action,
+      isFormData: p.isFormData,
+      contentType: p.contentType,
+      headers: p.headers,
+    })),
+    // The scroll stash is the thing that used to put him back at the top. An
+    // in-place form must not write one at all: an entry nothing consumes fires
+    // on the next ordinary navigation to this page instead.
+    stashed: world.stashed,
+    after: composeState(parts),
+  };
+}
+
+// 22. The same note, refused by the server. What he typed has to survive: the
+//     note did not go anywhere, so emptying the box would lose it outright.
+{
+  build({ serverSaysNo: true });
+  const parts = makeComposeForm();
+  dispatchSubmit(parts.form);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  out.noteRefusedKeepsTheText = {
+    alerted: world.alerts.length,
+    patched: world.reloaded,
+    after: composeState(parts),
+  };
+}
+
+// 23. A form with no files posts the old way - urlencoded, with a
+//     Content-Type. The multipart branch is opt-in on the form's own shape, not
+//     a change to how every in-place form posts.
+{
+  build({});
+  const form = makeForm({ inplace: true, fields: { done: "1" } });
+  dispatchSubmit(form);
+  await Promise.resolve();
+  await Promise.resolve();
+  out.plainFormStillUrlencoded = {
+    isFormData: world.posted[0].isFormData,
+    contentType: world.posted[0].contentType,
+    body: world.posted[0].body,
+  };
+}
+
+// Read a posted body WITHOUT assuming which kind it is.
+//
+// This is not defensive coding for its own sake - it is what keeps a mutation
+// sweep honest. Under the mutation that makes a note post urlencoded, the body
+// is a plain STRING with no `.get`, and a scene that called `.get` on it threw
+// and took the whole harness down with it. bun then exits non-zero, the
+// module-scoped `ran` fixture raises, and pytest reports that as
+// `ERROR tests/...::test_x` rather than `FAILED tests/...::test_x` - so the
+// sweep's FAILED parser saw nothing and filed a mutation its tests DO catch as
+// a miss. A scene that assumes the fixed behavior cannot observe the broken
+// one, which is the whole job.
+function bodyPairs(body) {
+  if (body && Array.isArray(body.pairs)) return body.pairs;
+  // A urlencoded string, which is what the non-multipart path posts.
+  if (typeof body === "string") {
+    return body.split("&").filter(Boolean).map((p) => {
+      const at = p.indexOf("=");
+      const k = at < 0 ? p : p.slice(0, at);
+      const v = at < 0 ? "" : p.slice(at + 1);
+      return [decodeURIComponent(k.replace(/\+/g, " ")), decodeURIComponent(v.replace(/\+/g, " "))];
+    });
+  }
+  return [];
+}
+
+function bodyField(body, name) {
+  const hit = bodyPairs(body).find(([k]) => k === name);
+  return hit ? hit[1] : null;
+}
+
+function bodyCount(body, name) {
+  return bodyPairs(body).filter(([k]) => k === name).length;
+}
+
+// 24. Which button was pressed rides along. "queue note" must arrive as
+//     then=queue: dropped, the server reads the note as an ordinary add and
+//     `note_runs_now` starts a run he explicitly asked it not to.
+{
+  build({});
+  const queue = makeButton({ name: "then", value: "queue" });
+  const parts = makeComposeForm({ buttons: [queue] });
+  dispatchSubmit(parts.form, { submitter: queue });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  out.submitterRidesAlong = {
+    then: bodyField(world.posted[0].body, "then"),
+    // set(), not append(): the form already carries an empty `then`, and a
+    // second one would leave the server reading whichever came first.
+    thenCount: bodyCount(world.posted[0].body, "then"),
+  };
+}
+
+// 24b. A form that DECLARES multipart but has no file input in it still posts
+//      as multipart. Two markers decide this and the note form carries both, so
+//      without a fixture that separates them either one alone would look
+//      load-bearing while doing nothing - a sweep deleting the enctype check
+//      changed no behavior at all, because the file input was answering for it.
+//
+//      It is the declaration that has to win: a form saying multipart/form-data
+//      is a form whose route was written to parse multipart, whether or not
+//      there is a file in it at the moment it is submitted.
+{
+  build({});
+  const parts = makeComposeForm({ noFiles: true });
+  dispatchSubmit(parts.form);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  out.enctypeAloneIsEnough = {
+    isFormData: world.posted[0].isFormData,
+    headers: world.posted[0].headers,
+  };
+}
+
+// 25. A compose form that is NOT marked data-compose keeps its text. The
+//     clearing is the marker's doing, not something every in-place post now
+//     does to any field it can find - the settings page is full of in-place
+//     forms whose fields are meant to survive.
+{
+  build({});
+  const parts = makeComposeForm({ compose: false });
+  dispatchSubmit(parts.form);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  out.withoutComposeMarkerNothingIsCleared = composeState(parts);
 }
 
 console.log(JSON.stringify(out, null, 2));
