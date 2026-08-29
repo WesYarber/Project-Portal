@@ -222,3 +222,56 @@ flag-consuming loop in `_end_of_regex` could not be caught by any test because
 its presence changed no output anywhere — so it was deleted rather than
 documented as an exception, which is this file's opening premise applied to
 itself.
+
+## 9. `ERROR` is not `FAILED`, and a crashed harness reads as an escape
+
+2026-08-28, and it is §3 and §6 arriving together through a door neither names.
+
+A sweep over the seamless-note change reported two escapes that were nothing of
+the kind. The mutations made a note post urlencoded instead of multipart, so the
+body handed to the stub `fetch` stopped being a FormData and became a plain
+string. One scene in `tests/js/inplace_submit.mjs` called `.get()` on it. bun
+threw, the **module-scoped** `ran` fixture that shells out to bun raised, and
+pytest reported that as
+
+```
+ERROR tests/test_inplace_submit.py::test_a_note_posts_as_multipart...
+```
+
+never as `FAILED`. The harness parsed only `^FAILED (\S+)`, found nothing, and
+filed a mutation whose tests catch it perfectly as uncaught.
+
+Two fixes, and both are needed, because they fail in opposite directions:
+
+1. **Parse `ERROR` as well as `FAILED`.** Any suite whose tests sit behind a
+   session- or module-scoped fixture can report a real catch this way, and the
+   more expensive the fixture the more likely it is to be scoped that broadly.
+2. **A scene must not assume the fixed behavior.** The whole job of a scene is
+   to observe the broken tree, so anything it reads from the code under test has
+   to be read defensively — here, a helper that pulls a field out of a body
+   without caring whether it is a FormData or a urlencoded string. A scene that
+   throws takes every *other* mutation's verdict down with it.
+
+The tell is the same one §6 gives, worn differently: **a MISSED whose pytest run
+did not actually run the tests.** Check that the owning test executed at all
+before believing it passed. "0 failed" and "never ran" print almost identically.
+
+### And a mutation can land somewhere other than where you aimed it
+
+From the same sweep. `MORPH_KEEP` is built by string concatenation:
+
+```js
+var MORPH_KEEP = ".draft-note, .ctx-menu, #pull-refresh, #img-lightbox, " +
+  "#sel-actions, .quote-chip, .rec-row, .attach-row-item";
+```
+
+so the pattern `".rec-row, .attach-row-item"` — with its leading quote — **does
+not occur in it**. The opening quote is back at `"#sel-actions`. The pattern
+matched a `querySelectorAll` elsewhere in the file instead, and was caught, by
+that call site's test rather than the declared one.
+
+`src.count(find) == 1` does not save you here: the pattern was unique, it was
+just somewhere else. A `WRONG OWNER` verdict is therefore worth reading as
+"where did this actually land?" before it is read as "which test is weak?" —
+anchor a pattern on something structural (a closing quote and semicolon, a line
+ending) rather than on a substring that could sit inside a longer literal.
