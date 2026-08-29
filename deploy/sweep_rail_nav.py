@@ -181,7 +181,11 @@ MUTATIONS = [
 
 def run_suite() -> tuple[int, set[str], bool]:
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", *SUITE, "-q", "--no-header", "-p", "no:randomly"],
+        # -n0: pytest.ini parallelizes by default, but a sweep runs one small file
+        # at a time (where that buys nothing) and then PARSES this output, which
+        # interleaves across workers.
+        [sys.executable, "-m", "pytest", *SUITE, "-q", "--no-header",
+         "-p", "no:randomly", "-n0"],
         cwd=ROOT,
         capture_output=True,
         text=True,

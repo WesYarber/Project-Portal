@@ -219,7 +219,9 @@ SUMMARY = re.compile(r"^\d+ (passed|failed)|=+ .*(passed|failed)", re.M)
 
 def run_suite() -> tuple[set[str], int, bool]:
     proc = subprocess.run(
-        [str(PY), "-m", "pytest", *SUITE, "-q", "-p", "no:randomly", "--no-header", "-rf"],
+        # -n0: see sweep_rail_nav.py - this output is parsed, so keep it serial.
+        [str(PY), "-m", "pytest", *SUITE, "-q", "-p", "no:randomly",
+         "--no-header", "-rf", "-n0"],
         capture_output=True,
         text=True,
         cwd=str(ROOT),
