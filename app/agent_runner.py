@@ -13,9 +13,10 @@ from string import Template
 from typing import Awaitable, Callable, Optional
 
 from app import (
-    apiretry, attachments, config, db, headroom, journalfile, limits, memory, notes,
-    orphans, people, promptbudget, qdedupe, runlimit, runlog, spawnauth, strays,
-    subprojects, todos, unparsedreport, verifydepth, worklock,
+    apiretry, attachments, config, crossproject, db, headroom, journalfile, limits,
+    memory, notes, orphans, people, portalmcp, promptbudget, qdedupe, runlimit,
+    runlog, spawnauth, strays, subprojects, todos, unparsedreport, verifydepth,
+    worklock,
 )
 
 log = logging.getLogger("portal.agent_runner")
@@ -857,6 +858,21 @@ def build_prompt(
         family_txt = ""
     if family_txt:
         parts.append(family_txt)
+
+    # Directly under the family listing, because it is the same question one
+    # step out: which OTHER work on this board does this project's work depend
+    # on knowing about. The MCP tools that read those projects are in the system
+    # prompt already - what they cannot supply is the fact that
+    # `commander-case-product-renderer` and `commander-case` are about the same
+    # object. Empty when nothing is related, and on every task that carries no
+    # MCP server. See app/crossproject.py.
+    try:
+        related_txt = crossproject.prompt_section(project, portalmcp.carries_tools(task))
+    except Exception:  # pragma: no cover - defensive
+        log.exception("Could not build the related-projects section for %s", project["slug"])
+        related_txt = ""
+    if related_txt:
+        parts.append(related_txt)
 
     # Who uses this portal, when that is more than one person - above the notes
     # on purpose, because the very next section is signed and an agent has to

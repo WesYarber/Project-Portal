@@ -289,6 +289,30 @@ body.anim-off *, body.anim-off *::before, body.anim-off *::after {
 }
 @keyframes portal-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.72; } }
 
+/* The set masthead, for a theme whose chrome is not monospaced (see
+   THEME_TYPE and _banner.html). Not a variant of the ASCII one - it shares
+   only the outer `.banner`, so the two never have to agree about anything but
+   the space they occupy.
+
+   Sized in `em` off a single font-size, so a theme that re-points --font-prose
+   to a serif with a different cap height still gets a masthead in proportion
+   to itself. `1ch` of tracking-free display type, not the terminal's letter-
+   spacing, and no glow: the whole point is that nothing here is a CRT. */
+.banner-set {
+  font-family: var(--font-prose);
+  font-size: 2.4rem;
+  font-weight: 800;
+  line-height: 0.98;
+  letter-spacing: -0.02em;
+  color: var(--terminal-fg);
+  text-shadow: none;
+  margin-bottom: 1.6rem;
+}
+@media (min-width: 640px) { .banner-set { font-size: 3.2rem; } }
+.banner-word { white-space: nowrap; }
+.banner-set .o-blue { color: var(--portal-blue); }
+.banner-set .o-orange { color: var(--portal-orange); }
+
 /* The banner now sits above the nav tabs rather than inside the dashboard's
    content, so its bottom margin only has to clear the tabs. */
 .banner { margin-bottom: 1rem; }

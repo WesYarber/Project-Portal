@@ -225,6 +225,7 @@ def _build_registry() -> dict[str, Field]:
         Field("stop_report_nudge", _text, checkbox=True),
         Field("hook_audit", _text, checkbox=True),
         Field("mcp_tools", _text, checkbox=True),
+        Field("cross_project", _text, checkbox=True),
         Field("model_watch", _text, checkbox=True),
         Field("research_model", _choice(config.MODEL_VALUES, config.RESEARCH_MODEL)),
         Field("spend_down_model", _choice(config.MODEL_VALUES, config.DEFAULT_MODEL)),

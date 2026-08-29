@@ -662,6 +662,12 @@ def body_classes() -> str:
     # light stock gets a class: dark is the shipped look and has no rules.
     if theme_stock() == "light":
         classes.append("theme-stock-light")
+    # And the type, for the same reason and independently of it: a theme whose
+    # chrome is proportional re-faces the window title, the tabs, the badges,
+    # the buttons and the form fields, and that list is written once rather
+    # than per theme. Only `prose` gets a class - `mono` is the shipped voice.
+    if theme_type() == "prose":
+        classes.append("theme-type-prose")
     return " ".join(classes)
 
 
@@ -704,6 +710,19 @@ def theme_stock() -> str:
     the one place the bug would not show is a screenshot of the page body.
     """
     return config.THEME_STOCK.get(theme(), config.DEFAULT_THEME_STOCK)
+
+
+def theme_type() -> str:
+    """"mono" or "prose" for the theme on screen.
+
+    Separate from the stock because the two questions genuinely are: workbench
+    and blueprint are dark themes with nothing monospaced in them, which the
+    stock alone could not express. A theme missing from the table falls to
+    `mono`, which is the shipped look and therefore the safe default - the
+    failure mode is a theme that renders in Fira Code, not one that renders
+    with no font at all.
+    """
+    return config.THEME_TYPE.get(theme(), config.DEFAULT_THEME_TYPE)
 
 
 def theme_chrome() -> str:
@@ -852,6 +871,10 @@ templates.env.globals["restart_pending_runs"] = worker.restart_pending_runs
 templates.env.globals["body_classes"] = body_classes
 templates.env.globals["theme"] = theme
 templates.env.globals["theme_stock"] = theme_stock
+# Read by _banner.html, which is the one place a theme's voice reaches CONTENT
+# rather than styling: the block-drawing masthead is glyphs, and no stylesheet
+# may empty those - so the branch lives in the template.
+templates.env.globals["theme_type"] = theme_type
 templates.env.globals["theme_chrome"] = theme_chrome
 templates.env.globals["section_order"] = section_order
 templates.env.globals["SECTIONS"] = sections.SECTIONS
@@ -868,6 +891,7 @@ templates.env.globals["APPEARANCE_DEFAULTS"] = config.APPEARANCE_DEFAULTS
 templates.env.globals["APPEARANCE_CLASS_PREFIX"] = config.APPEARANCE_CLASS_PREFIX
 templates.env.globals["THEME_CHROME"] = config.THEME_CHROME
 templates.env.globals["THEME_STOCK"] = config.THEME_STOCK
+templates.env.globals["THEME_TYPE"] = config.THEME_TYPE
 templates.env.globals["status_choices"] = config.status_choices
 templates.env.globals["display_state"] = db.display_state
 def byline(entry) -> str:
@@ -2941,13 +2965,21 @@ async def settings_page(request: Request) -> HTMLResponse:
             "my_theme": appearance(me()).get(
                 "ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]
             ),
-            # The stock, not the theme name: the CRT layers are inert under
-            # EVERY light theme, so the panel that says so has to ask the
-            # question that way round or the third light theme silently starts
-            # claiming its scanlines work.
+            # The stock, not the theme name: everything the printed structure
+            # undoes is undone under EVERY light theme, so the panel that says
+            # so has to ask the question that way round or the third light
+            # theme silently starts claiming otherwise.
             "my_stock": config.THEME_STOCK.get(
                 appearance(me()).get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]),
                 config.DEFAULT_THEME_STOCK,
+            ),
+            # And the type, which is the one the CRT dials actually answer to.
+            # It was the stock until workbench and blueprint existed - two DARK
+            # themes with nothing terminal in them - and asking it the old way
+            # round had the panel promising scanlines on a Linear-shaped app.
+            "my_type": config.THEME_TYPE.get(
+                appearance(me()).get("ui_theme", config.APPEARANCE_DEFAULTS["ui_theme"]),
+                config.DEFAULT_THEME_TYPE,
             ),
             # How this person has arranged a project page, and the same thing
             # as one line of prose. `appearance(me())` for the same reason the

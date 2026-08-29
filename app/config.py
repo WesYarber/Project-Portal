@@ -284,15 +284,31 @@ APPEARANCE_CHOICES: dict[str, list[tuple[str, str]]] = {
     # options." Adding one is three edits and no new mechanism: a value here, a
     # chrome color in THEME_CHROME, and a palette block in static/themes.css -
     # plus a line in THEME_STOCK saying whether it prints on light or dark
-    # stock, which is what decides whether it inherits the CRT structure or the
-    # printed structure. See the sheet's header for what a theme may and may
-    # not do.
+    # stock, and a line in THEME_TYPE saying whether its chrome speaks in a
+    # monospaced voice. Those two decide which structure it inherits; see the
+    # sheet's header for what a theme may and may not do.
+    #
+    # Wes, 2026-08-28: "I want to envision and experiment some completely
+    # different themes for this page. No ties to anything existing about the
+    # terminal theme, monospaced text, nothing. Even different layouts are
+    # acceptable. Give me multiple ideas that I can explore and consider."
+    #
+    # The five below the rule are that ask, taken as five different design
+    # languages rather than five palettes: a drafting sheet, a modern product
+    # app, a broadsheet, a Swiss poster and a calm document. None of them is
+    # monospaced, which is what THEME_TYPE exists for - before them, "not the
+    # terminal's typeface" was something only a light theme could be.
     "ui_theme": [
         ("terminal", "terminal - the dark CRT look"),
         ("midnight", "midnight - deep indigo, soft neon"),
         ("amber", "amber - a warm monochrome CRT"),
         ("paper", "paper - warm, light, printed"),
         ("meadow", "meadow - soft green, light, floral"),
+        ("workbench", "workbench - dark product app, no terminal in it"),
+        ("blueprint", "blueprint - a drafting sheet, deep blue and cyan"),
+        ("editorial", "editorial - a broadsheet, serif, one red"),
+        ("press", "press - Swiss poster, huge type, hard rules"),
+        ("quiet", "quiet - a calm document, warm white, soft green"),
     ],
     "crt_scanlines": [
         ("all", "everywhere"),
@@ -408,6 +424,11 @@ THEME_CHROME: dict[str, str] = {
     "amber": "#140f06",
     "paper": "#f0e8da",
     "meadow": "#eef1e6",
+    "workbench": "#0d0e12",
+    "blueprint": "#102b41",
+    "editorial": "#f0ece5",
+    "press": "#eae6dc",
+    "quiet": "#f6f5f3",
 }
 
 # Which stock a theme prints on: "dark" or "light". This is not decoration -
@@ -426,8 +447,46 @@ THEME_STOCK: dict[str, str] = {
     "amber": "dark",
     "paper": "light",
     "meadow": "light",
+    "workbench": "dark",
+    "blueprint": "dark",
+    "editorial": "light",
+    "press": "light",
+    "quiet": "light",
 }
 DEFAULT_THEME_STOCK = "dark"
+
+# Whether a theme's chrome speaks in a monospaced voice: "mono" or "prose".
+# The second axis of the same idea as THEME_STOCK, and it exists because Wes
+# asked for themes with "no ties to anything existing about the terminal theme,
+# monospaced text, nothing" - and two of the five that answered that are DARK.
+#
+# Until then the two questions were tangled: the rule list that re-faces the
+# window title, the tabs, the badges, the buttons and the form fields in
+# `--font-prose` was scoped to `theme-stock-light`, so "not monospaced" was
+# something only a light theme could be. Splitting them changes nothing about
+# paper or meadow (both are light AND prose) and lets workbench and blueprint
+# be dark without being terminals.
+#
+# `mono` is the shipped answer and carries no class, exactly like `dark`: the
+# terminal look is still the total absence of any rule from themes.css.
+#
+# What this may NOT do is re-point --font-mono. That variable means "the font
+# for things that have to line up", not "the chrome font" - pointed at a
+# proportional face, the dashboard's box-drawing wordmark renders as a hatch.
+# A prose theme names the chrome instead, which is what the rule list does.
+THEME_TYPE: dict[str, str] = {
+    "terminal": "mono",
+    "midnight": "mono",
+    "amber": "mono",
+    "paper": "prose",
+    "meadow": "prose",
+    "workbench": "prose",
+    "blueprint": "prose",
+    "editorial": "prose",
+    "press": "prose",
+    "quiet": "prose",
+}
+DEFAULT_THEME_TYPE = "mono"
 
 APPEARANCE_DEFAULTS = {key: choices[0][0] for key, choices in APPEARANCE_CHOICES.items()}
 # Two of the CRT layers ship on their MIDDLE option rather than their first,

@@ -2087,10 +2087,12 @@ function initAppearancePreview() {
     var field = document.querySelector(".theme-field");
     var chrome = {};
     var stock = {};
+    var types = {};
     var favicons = {};
     try {
       chrome = JSON.parse((field && field.dataset.themeChrome) || "{}");
       stock = JSON.parse((field && field.dataset.themeStock) || "{}");
+      types = JSON.parse((field && field.dataset.themeType) || "{}");
       favicons = JSON.parse((field && field.dataset.themeFavicon) || "{}");
     } catch (e) {
       /* a malformed table costs the browser chrome its tint, not the preview */
@@ -2142,12 +2144,19 @@ function initAppearancePreview() {
       var scheme = stock[sel.value] || "dark";
       document.body.classList.toggle("theme-stock-light", scheme === "light");
       document.documentElement.style.colorScheme = scheme;
-      // The CRT dials are inert under a light theme, and the panel fades them
+      // And the type class, the other half of the same job. It is a separate
+      // question from the stock - workbench and blueprint are dark themes with
+      // nothing monospaced in them - so a preview that only swapped the stock
+      // showed them in Fira Code with bracketed tabs.
+      var voice = types[sel.value] || "mono";
+      document.body.classList.toggle("theme-type-prose", voice === "prose");
+      // The CRT dials are inert under any prose theme, and the panel fades them
       // to say so. Server-rendered from the SAVED theme, so a preview has to
-      // move it too or the page shows scanlines it is not applying.
+      // move it too or the page shows scanlines it is not applying. Keyed on
+      // the type and not the stock, because that is what kills the layers.
       document.querySelectorAll(".field-grid").forEach(function (grid) {
         if (grid.querySelector('[name="crt_scanlines"]')) {
-          grid.classList.toggle("layers-inert", scheme === "light");
+          grid.classList.toggle("layers-inert", voice === "prose");
         }
       });
     });

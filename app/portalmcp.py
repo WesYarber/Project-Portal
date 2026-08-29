@@ -16,7 +16,7 @@ the one tool on it is `ask` - file the question now, notify now, and *wait* for
 the answer for a couple of minutes before carrying on. A decision that used to
 cost a whole run cycle now costs about ninety seconds of wall clock.
 
-## Why one tool
+## What earns a tool
 
 Every tool definition is in the system prompt of every run that carries it, so
 tools are not free and a tool that duplicates the report earns nothing. The
@@ -25,9 +25,19 @@ report is a good channel: it is schema-validated at the tool-call layer since
 Stop hook. Todos, stage moves, summaries and learnings all arrive *at the end*
 and are wanted at the end.
 
-Asking is the only one where the timing is the whole value. So `ask` is the
-whole surface, and anything a run can usefully say at the end stays in the
-report where it already works.
+A tool has to do something the report cannot, and two things qualify:
+
+- **`ask`** - timing is the whole value. A question in a report is answered
+  after the run is over; a question from a tool is answered while the run can
+  still act on it.
+- **`projects` / `project_context` / `project_files`** - the report cannot
+  fetch. A run that needs to know what a *related* project already worked out
+  had exactly one source for it: Wes, retyping it into a note. Those three come
+  from `app/crossproject.py`, which owns the whole decision - who may read whom,
+  what a project's context is, and how a file leaves another workspace.
+
+Anything a run can usefully say at the end stays in the report where it already
+works.
 
 ## The transport, and why it is a relay again
 
@@ -72,7 +82,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from app import config, db, notify, people, quickreplies
+from app import config, crossproject, db, notify, people, quickreplies
 
 log = logging.getLogger("portal.mcp")
 
@@ -126,10 +136,20 @@ def enabled() -> bool:
     return (db.get_setting("mcp_tools") or "1") != "0"
 
 
+def carries_tools(task: str) -> bool:
+    """Whether a run on this task is given the portal's MCP server at all.
+
+    Public because the prompt builder needs the same answer: a prompt section
+    that tells a run to use `project_context` is worse than no section at all
+    when the run was never handed the tool. See `crossproject.prompt_section`.
+    """
+    return enabled() and task in ASKING_TASKS
+
+
 def begin(run_id: int, project_id: int, task: str = "build") -> Optional[str]:
     """Register a run's scope and return the `--mcp-config` JSON that points the
     CLI at this portal. Pair with `end(run_id)`."""
-    if not enabled() or task not in ASKING_TASKS:
+    if not carries_tools(task):
         return None
     token = _secrets.token_urlsafe(16)
     _SCOPES[run_id] = _Scope(token=token, project_id=int(project_id), run_id=int(run_id))
@@ -181,6 +201,10 @@ def tools(run_id: int, token: str) -> Optional[list[dict]]:
     somebody else, and a tool description telling it to "ask Wes" would point
     every mid-run decision at the wrong person - the same bug `people.principal`
     exists to fix in the contract.
+
+    The cross-project tools are appended only when there is something to read:
+    on a brand-new install with one project they would be three tool definitions
+    in every system prompt that can only ever answer "there is nothing".
     """
     scope = _scope(run_id, token)
     if scope is None:
@@ -188,6 +212,20 @@ def tools(run_id: int, token: str) -> Optional[list[dict]]:
     person = people.principal(scope.project_id)
     name = people.name_of(person)
     _they, them, their, _theirs = people.pronouns_of(person)
+    return _ask_tool(name, them, their) + _cross_tools(scope.project_id, name)
+
+
+def _cross_tools(project_id: int, name: str) -> list[dict]:
+    try:
+        if not crossproject.enabled() or not crossproject.readable(project_id):
+            return []
+        return crossproject.tool_specs(name)
+    except Exception:  # noqa: BLE001 - a broken listing must not cost the run `ask`
+        log.exception("Could not build the cross-project tools for %s", project_id)
+        return []
+
+
+def _ask_tool(name: str, them: str, their: str) -> list[dict]:
     return [
         {
             "name": "ask",
@@ -252,16 +290,36 @@ async def call(run_id: int, token: str, name: str, arguments: Any) -> dict:
             "Put the question in your report instead.",
             is_error=True,
         )
-    if name != "ask":
-        return _result(f"No such tool: {name}", is_error=True)
     if not isinstance(arguments, dict):
         arguments = {}
+    if name in crossproject.TOOL_NAMES:
+        return _cross(scope, name, arguments)
+    if name != "ask":
+        return _result(f"No such tool: {name}", is_error=True)
     try:
         return await _ask(scope, arguments)
     except Exception:  # noqa: BLE001 - a broken tool must not kill the run
         log.exception("ask failed on run %s", run_id)
         return _result(
             "The portal could not file that question. Put it in your report instead.",
+            is_error=True,
+        )
+
+
+def _cross(scope: _Scope, name: str, arguments: dict) -> dict:
+    """One cross-project read. Uncapped, unlike `ask`, and deliberately so:
+    reading costs nobody's attention, and a run that reads a related project
+    twice more than it needed to has wasted only its own context."""
+    try:
+        return _result(crossproject.handle(scope.project_id, name, arguments))
+    except crossproject.Denied as refusal:
+        # A refusal is information, not a crash: the run is told which projects
+        # it *can* read rather than being left to guess at slugs.
+        return _result(str(refusal), is_error=True)
+    except Exception:  # noqa: BLE001 - a broken tool must not kill the run
+        log.exception("%s failed on run %s", name, scope.run_id)
+        return _result(
+            f"The portal could not answer `{name}`. Carry on without it.",
             is_error=True,
         )
 

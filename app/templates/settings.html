@@ -180,7 +180,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,mcp_tools,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,mcp_tools,cross_project,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -257,6 +257,10 @@
       <div class="field checkbox-row">
         <input type="checkbox" id="mcp_tools" name="mcp_tools" {{ 'checked' if (settings.mcp_tools or '1') == '1' else '' }}>
         <label for="mcp_tools">Let a run ask you mid-run{% call info() %}A run can file a question the moment it hits a decision only you can make, and wait a couple of minutes for your reply, instead of parking it until its report - the question reaches your phone immediately with its one-tap answers, and the run carries on with your answer in hand. At most 3 per run, deduped against what is already open, and a question you don't answer in time is simply left waiting as usual. Off means questions only ever arrive with a finished run.{% endcall %}</label>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="cross_project" name="cross_project" {{ 'checked' if (settings.cross_project or '1') == '1' else '' }}>
+        <label for="cross_project">Let projects read each other{% call info() %}An agent working on one project can look up another one it is related to &ndash; that project's brief, todo list, recent journal and workspace files &ndash; instead of you re-explaining the shared context by hand. It only ever sees projects you are on, its prompt names the ones whose slugs put them in the same family of work, and it still cannot write anywhere but its own workspace. Off means every project starts from zero knowledge of the others.{% endcall %}</label>
       </div>
       {# Wes tracks model releases himself and wants the newest one adopted the day it
          ships. This is that job, done by the portal instead. #}
@@ -570,7 +574,11 @@
         this portal shipped with; <strong>midnight</strong> and <strong>amber</strong> are the same
         shape in deep indigo and in a warm monochrome; <strong>paper</strong> is light and printed,
         with a serif for anything you read, and <strong>meadow</strong> is that printed look in a
-        garden palette. Every button, list and panel is in the same place in all of them &mdash; a
+        garden palette. The last five are not terminals at all and have no monospaced type in
+        them: <strong>workbench</strong> is a dark product app, <strong>blueprint</strong> a
+        drafting sheet, <strong>editorial</strong> a broadsheet in one red, <strong>press</strong>
+        a Swiss poster, and <strong>quiet</strong> a calm white document.
+        Every button, list and panel is in the same place in all of them &mdash; a
         theme changes only how things look, never what is there or where it is. Pick one and the
         page changes under you straight away; nothing is kept until you save.{% endset %}
       {# The favicon map is built by the server (theme_favicons) rather than
@@ -581,6 +589,7 @@
       <div class="field theme-field"
            data-theme-chrome='{{ THEME_CHROME|tojson }}'
            data-theme-stock='{{ THEME_STOCK|tojson }}'
+           data-theme-type='{{ THEME_TYPE|tojson }}'
            data-theme-favicon='{{ theme_favicons()|tojson }}'>
         {{ select_field('ui_theme', 'Theme', theme_help) }}
       </div>
@@ -657,11 +666,15 @@ The suite is green, so the change is in.</pre>
       </div>
 
       <h3 class="settings-subhead">The terminal look</h3>
-      <p class="hint">{% if my_stock == 'light' %}These have no effect while you are on a light
-        theme &mdash; a sheet of paper with scanlines on it is neither thing. They are kept as you
-        set them and come back if you switch back.{% else %}Each layer is independent,
+      {# Keyed on the TYPE, not the stock: the prose type stock is what kills
+         the scanlines and the glow, and two of the prose themes are dark. Ask
+         it the stock's way round and workbench claims scanlines that are not
+         being applied to it. #}
+      <p class="hint">{% if my_type == 'prose' %}These have no effect while you are on a theme
+        that is not a terminal &mdash; a sheet of paper with scanlines on it is neither thing.
+        They are kept as you set them and come back if you switch back.{% else %}Each layer is independent,
         so you can keep the parts you like and drop the parts that make text tiring.{% endif %}</p>
-      <div class="grid grid-2 field-grid{{ ' layers-inert' if my_stock == 'light' else '' }}">
+      <div class="grid grid-2 field-grid{{ ' layers-inert' if my_type == 'prose' else '' }}">
         {{ select_field('crt_scanlines', 'Scanlines') }}
         {{ select_field('crt_glow', 'Phosphor glow') }}
         {{ select_field('crt_animations', 'Animations') }}

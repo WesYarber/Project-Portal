@@ -23,13 +23,23 @@
       here. A one-person install pays nothing for this file existing beyond
       one request that is cached forever.
 
-   3. A theme is A PALETTE. Structure belongs to its STOCK, of which there are
-      two: dark and light. Dark is style.css exactly as shipped and carries no
-      rules at all, so a dark theme is variables and nothing else. Light has to
-      undo the CRT - the scanline overlays, the glow, the borrowed punctuation,
-      the dark `color-scheme` - and that undoing is written once against
-      `theme-stock-light` rather than copied into every light theme. The class
-      rides along beside the theme's own (see main.body_classes).
+   3. A theme is A PALETTE. Structure belongs to its STOCK, and there are two
+      independent stocks, each a yes/no the theme answers in config.py:
+
+        THEME_STOCK  dark or light - what it is printed ON. Dark is style.css
+                     exactly as shipped and carries no rules at all. Light has
+                     to undo the dark `color-scheme`, the lit buttons and the
+                     wells, and that undoing is written once against
+                     `theme-stock-light`.
+        THEME_TYPE   mono or prose - what VOICE its chrome speaks in. Mono is
+                     the shipped voice and carries no rules. Prose re-faces the
+                     chrome, kills the CRT layers and empties the terminal's
+                     borrowed punctuation, once, against `theme-type-prose`.
+
+      Both classes ride along beside the theme's own (see main.body_classes).
+      They were one question until 2026-08-29 and the answer to "is this
+      monospaced" was "is it on white", which is why the portal's only
+      non-terminal themes were also its only light ones.
 
       This is what makes "add a theme" a five-minute job instead of a three
       hundred line one, and it is why meadow exists: it is paper's structure
@@ -37,16 +47,173 @@
 
    Most of the work is done by re-pointing style.css's custom properties.
    Where a rule in style.css hard-codes a color (the CRT accents, mostly), it
-   is restated here rather than variabilised in place: a theme should not be
+   is restated here rather than variabilized in place: a theme should not be
    able to make the shipped look change under Wes, and keeping the override
    local means the terminal look is still exactly the bytes it always was. */
+
+
+/* ==========================================================================
+   THE PROSE TYPE STOCK
+   ==========================================================================
+
+   Wes, 2026-08-28: "No ties to anything existing about the terminal theme,
+   monospaced text, nothing."
+
+   Everything that makes a theme stop sounding like a terminal, written once.
+   This used to live under `theme-stock-light`, which tangled two questions
+   that turned out to be independent: paper is light AND proportional, but
+   workbench and blueprint are DARK and proportional - a Linear-shaped app and
+   a drafting sheet, neither of them a CRT. Scoping "not a terminal typeface"
+   to "printed on white" meant a dark theme could only ever be another CRT.
+
+   Three things live here rather than in a theme's own block, and each one is
+   the reason the split exists:
+
+   1. The chrome is re-faced by NAMING the chrome. --font-mono is never
+      re-pointed, here or anywhere: it means "the font for things that have to
+      line up", and pointed at a proportional face the dashboard's box-drawing
+      wordmark renders as a gray hatch.
+   2. The CRT layers go inert. Scanlines and phosphor glow are dials on the
+      terminal look, not on "the portal" - a Swiss poster with scanlines on it
+      is neither thing - so a prose theme states it rather than trusting a
+      person's dial. The settings panel says so when one is selected.
+   3. The terminal's borrowed punctuation is emptied, never hidden. A TTY has
+      no color, rules or weight, so it borrows `[ dashboard ]`, `//` and `$ `
+      to stand in for them; where a real border and a real weight are
+      available, that punctuation is debris. `content: ""` keeps the
+      pseudo-element and its box, so nothing reflows.
+
+   THIS SECTION IS DELIBERATELY ABOVE THE LIGHT STOCK. Every selector here is
+   the same specificity as its light-stock counterpart, so source order is what
+   decides ties - and the light stock, being the more specific look, must win
+   them. That is what keeps paper and meadow rendering exactly as they did
+   before this section existed. */
+
+/* The chrome, named explicitly rather than through --font-mono. This is the
+   whole list of places the terminal look uses a monospaced face for style
+   rather than for alignment. */
+body.theme-type-prose,
+body.theme-type-prose .terminal-header,
+body.theme-type-prose .terminal-footer,
+body.theme-type-prose .window-title,
+body.theme-type-prose .window-stats,
+body.theme-type-prose .tab-btn,
+body.theme-type-prose .badge,
+body.theme-type-prose .todo-tag,
+body.theme-type-prose h1,
+body.theme-type-prose h2,
+body.theme-type-prose h3,
+body.theme-type-prose button,
+body.theme-type-prose .btn,
+body.theme-type-prose label,
+body.theme-type-prose input[type="text"],
+body.theme-type-prose input[type="number"],
+body.theme-type-prose input[type="password"],
+body.theme-type-prose textarea,
+body.theme-type-prose select { font-family: var(--font-prose); }
+
+/* Anything that is genuinely machine output keeps the monospaced face, because
+   in those the alignment IS the content: an agent transcript, a diff, a file
+   tree, a code block. This is a readability floor, not a decoration - a theme
+   may not make a diff stop lining up. */
+body.theme-type-prose pre,
+body.theme-type-prose code,
+body.theme-type-prose .console-out,
+body.theme-type-prose .file-tree,
+body.theme-type-prose .mono {
+  font-family: 'Fira Code', ui-monospace, 'SF Mono', 'Courier New', monospace;
+}
+
+/* Kill the CRT entirely.
+
+   The banner's own overlay is in this list and was the easiest to miss: it is
+   applied by `scan-off` as well as `scan-chrome`, so it is the one scanline
+   layer that survives with the setting turned off - which is exactly why a
+   theme cannot rely on the layer settings and has to state this itself. */
+body.theme-type-prose.scan-all::before,
+body.theme-type-prose.scan-chrome .terminal-header::after,
+body.theme-type-prose.scan-chrome .terminal-footer::after,
+body.theme-type-prose.scan-chrome .console-out::after,
+body.theme-type-prose .banner::after { background: none; }
+body.theme-type-prose,
+body.theme-type-prose * { text-shadow: none; }
+body.theme-type-prose .terminal-window { backdrop-filter: none; -webkit-backdrop-filter: none; }
+body.theme-type-prose .tab-btn:hover,
+body.theme-type-prose .tab-btn.active { text-shadow: none; font-weight: 700; }
+
+/* The two halos `body * { text-shadow: none }` cannot reach, because both are
+   written at a higher specificity than a universal selector can carry: the
+   ASCII banner's portal glyphs and the title bar's little wordmark. Both
+   spell out `rgba(56, 189, 248, 0.45)` - the CRT's cyan, as a literal - so on
+   every theme that is not a terminal they were painting a blue halo out of a
+   palette nobody chose. Paper and meadow have worn it since the day they
+   shipped; it was only visible once a theme with no other blue in it existed.
+   The glyphs keep their own color and lose only the light behind them. */
+body.theme-type-prose .banner pre.portal-blue,
+body.theme-type-prose .banner pre.portal-orange,
+body.theme-type-prose .wordmark .o-blue,
+body.theme-type-prose .wordmark .o-orange { text-shadow: none; }
+body.theme-type-prose.glow-all,
+body.theme-type-prose.glow-prose { text-shadow: none; }
+
+/* Tracking. The terminal's wide letter-spacing is a monospaced mannerism; a
+   proportional face is drawn with its own fit and reads worse spaced out. */
+body.theme-type-prose .terminal-header { letter-spacing: 0; }
+body.theme-type-prose h1,
+body.theme-type-prose h2,
+body.theme-type-prose h3 { letter-spacing: -0.01em; }
+
+/* The borrowed punctuation, emptied. The [ show ] / [ hide ] pair keeps its
+   words and loses only its brackets, because those words are the control. */
+body.theme-type-prose .badge::before,
+body.theme-type-prose .badge::after,
+body.theme-type-prose .todo-tag::before,
+body.theme-type-prose .todo-tag::after,
+body.theme-type-prose .tab-btn::before,
+body.theme-type-prose .tab-btn::after,
+body.theme-type-prose h2::before,
+body.theme-type-prose .fold-section > summary::before,
+body.theme-type-prose .danger-zone > summary::before,
+body.theme-type-prose .empty-state::before { content: ""; }
+body.theme-type-prose .fold-section > summary::after { content: "show"; }
+body.theme-type-prose .fold-section[open] > summary::after { content: "hide"; }
+/* The tabs lose their brackets, so they need their own spacing back or they
+   run together. Padding, not a margin: the whole tab stays the click target
+   it was. */
+body.theme-type-prose .tab-btn { padding-left: 0.55rem; padding-right: 0.55rem; }
+body.theme-type-prose h2 { border-bottom: 1px solid var(--window-border); padding-bottom: 0.2rem; }
+body.theme-type-prose .badge {
+  border-radius: 2px;
+  letter-spacing: 0.02em;
+  padding: 0.12rem 0.5rem;
+}
+
+/* Softer edges than a CRT's. The light stock restates all four of these at its
+   own printed radii and comes later in the file, so this reaches the dark
+   prose themes only - which is the whole reason it is a rule here rather than
+   four `border-radius` declarations inside workbench's palette block, where
+   test_a_dark_theme_needs_no_structure_at_all would rightly refuse them. */
+body.theme-type-prose .terminal-window { border-radius: 10px; }
+body.theme-type-prose .card,
+body.theme-type-prose .panel { border-radius: 8px; }
+body.theme-type-prose button:not(.info-dot),
+body.theme-type-prose .btn { border-radius: 7px; }
+body.theme-type-prose input[type="text"],
+body.theme-type-prose input[type="number"],
+body.theme-type-prose input[type="password"],
+body.theme-type-prose textarea,
+body.theme-type-prose select { border-radius: 7px; }
 
 
 /* ==========================================================================
    THE LIGHT STOCK
    ==========================================================================
    Everything a light theme needs undone, once. Each rule takes its colors from
-   the palette below, so nothing here knows which light theme is on screen. */
+   the palette below, so nothing here knows which light theme is on screen.
+
+   Type is NOT here - see the prose stock above. Every light theme is also a
+   prose theme, so nothing moved out of this section changed what paper and
+   meadow render; it just stopped being unavailable to a dark one. */
 
 
 /* The one place style.css cannot reach: <html> carries an inline background
@@ -84,46 +251,17 @@ html:has(> body.theme-midnight) { background-color: hsl(255, 42%, 8%) !important
 html:has(> body.theme-amber) { background-color: hsl(30, 45%, 5%) !important; }
 html:has(> body.theme-paper) { background-color: hsl(38, 30%, 93%) !important; }
 html:has(> body.theme-meadow) { background-color: hsl(84, 30%, 90%) !important; }
+html:has(> body.theme-workbench) { background-color: hsl(228, 17%, 6%) !important; }
+html:has(> body.theme-blueprint) { background-color: hsl(207, 60%, 16%) !important; }
+html:has(> body.theme-editorial) { background-color: hsl(40, 26%, 92%) !important; }
+html:has(> body.theme-press) { background-color: hsl(43, 24%, 89%) !important; }
+html:has(> body.theme-quiet) { background-color: hsl(30, 15%, 96%) !important; }
 
-/* The chrome, named explicitly rather than through --font-mono (see above).
-   This is the whole list of places the terminal look uses a monospaced face
-   for style rather than for alignment. */
-body.theme-stock-light,
-body.theme-stock-light .terminal-header,
-body.theme-stock-light .terminal-footer,
-body.theme-stock-light .window-title,
-body.theme-stock-light .window-stats,
-body.theme-stock-light .tab-btn,
-body.theme-stock-light .badge,
-body.theme-stock-light .todo-tag,
-body.theme-stock-light h1,
-body.theme-stock-light h2,
-body.theme-stock-light h3,
-body.theme-stock-light button,
-body.theme-stock-light .btn,
-body.theme-stock-light label,
-body.theme-stock-light input[type="text"],
-body.theme-stock-light input[type="number"],
-body.theme-stock-light input[type="password"],
-body.theme-stock-light textarea,
-body.theme-stock-light select { font-family: var(--font-prose); }
-
-/* Kill the CRT entirely. The scanline and glow layers are dials on the
-   terminal look, not on "the portal", so under paper they are inert whatever
-   they are set to - a sheet of paper with scanlines on it is neither thing.
-   The settings panel says so when paper is selected.
-
-   The banner's own overlay is in this list and was the easiest to miss: it is
-   applied by `scan-off` as well as `scan-chrome`, so it is the one scanline
-   layer that survives with the setting turned off - which is exactly why a
-   theme cannot rely on the layer settings and has to state this itself. */
-body.theme-stock-light.scan-all::before,
-body.theme-stock-light.scan-chrome .terminal-header::after,
-body.theme-stock-light.scan-chrome .terminal-footer::after,
-body.theme-stock-light.scan-chrome .console-out::after,
-body.theme-stock-light .banner::after { background: none; }
-body.theme-stock-light,
-body.theme-stock-light * { text-shadow: none; }
+/* The chrome font, the CRT kill and the borrowed punctuation all used to be
+   here and are now in the prose type stock above - they are questions about
+   the typeface, not about the stock, and a dark theme is allowed to ask them.
+   Every light theme is a prose theme, so nothing about paper or meadow
+   moved. */
 
 /* The window frame becomes a sheet: no blur, no glow, one soft drop shadow
    the way a page sits on a desk. */
@@ -133,7 +271,6 @@ body.theme-stock-light .terminal-window {
   -webkit-backdrop-filter: none;
   border-radius: 4px;
 }
-body.theme-stock-light .terminal-header { letter-spacing: 0; }
 /* The traffic lights are a macOS window joke and belong to the terminal
    theme. They stay - hiding a thing is a layout change and this file does not
    make those - but they become three quiet dots of the accent palette. */
@@ -142,51 +279,12 @@ body.theme-stock-light .window-dot.close { background-color: color-mix(in srgb, 
 body.theme-stock-light .window-dot.minimize { background-color: color-mix(in srgb, var(--ansi-yellow) 38%, transparent); }
 body.theme-stock-light .window-dot.maximize { background-color: color-mix(in srgb, var(--ansi-green) 38%, transparent); }
 
-/* Headings get the serif's own weight rather than the terminal's tracking. */
-body.theme-stock-light h1,
-body.theme-stock-light h2,
-body.theme-stock-light h3 { letter-spacing: -0.01em; }
-
 /* Cards are sheets on the desk, so they take an edge and the faintest lift
    instead of the dark inset the CRT theme uses. */
 body.theme-stock-light .card,
 body.theme-stock-light .panel {
   box-shadow: 0 1px 2px var(--stock-shadow-soft);
   border-radius: 3px;
-}
-
-/* The typographic conventions of a terminal, all of which are the same idea:
-   a TTY has no color, no rules and no weight, so it borrows punctuation to
-   stand in for them. `[ dashboard ]` for a tab, `//` for a heading, `$ ` for
-   an empty prompt, `[brackets]` round a chip. On paper every one of those is
-   available for real - a border, a weight, a rule - so the punctuation is
-   left over from a constraint that no longer applies, and reads as debris.
-
-   They are emptied, never hidden: `content: ""` keeps the pseudo-element and
-   its box, so nothing reflows and no affordance disappears. The [ show ] /
-   [ hide ] pair keeps its words and loses only its brackets, because those
-   words are the control itself. */
-body.theme-stock-light .badge::before,
-body.theme-stock-light .badge::after,
-body.theme-stock-light .todo-tag::before,
-body.theme-stock-light .todo-tag::after,
-body.theme-stock-light .tab-btn::before,
-body.theme-stock-light .tab-btn::after,
-body.theme-stock-light h2::before,
-body.theme-stock-light .fold-section > summary::before,
-body.theme-stock-light .danger-zone > summary::before,
-body.theme-stock-light .empty-state::before { content: ""; }
-body.theme-stock-light .fold-section > summary::after { content: "show"; }
-body.theme-stock-light .fold-section[open] > summary::after { content: "hide"; }
-/* The tabs lose their brackets, so they need their own spacing back or they
-   run together. Padding, not a margin: the whole tab stays the click target
-   it was. */
-body.theme-stock-light .tab-btn { padding-left: 0.55rem; padding-right: 0.55rem; }
-body.theme-stock-light h2 { border-bottom: 1px solid var(--window-border); padding-bottom: 0.2rem; }
-body.theme-stock-light .badge {
-  border-radius: 2px;
-  letter-spacing: 0.02em;
-  padding: 0.12rem 0.5rem;
 }
 
 /* Buttons: printed, not lit. style.css hard-codes the CRT's cyan wash and a
@@ -236,17 +334,6 @@ body.theme-stock-light select:focus {
    rows, which style.css already does - it just needs a lighter rule. */
 body.theme-stock-light th { letter-spacing: 0.02em; }
 
-/* Anything that is genuinely machine output keeps the monospace face even
-   here, because in those the alignment IS the content: an agent transcript,
-   a diff, a file tree, a code block. This is a readability floor, not a
-   decoration - a theme may not make a diff stop lining up. */
-body.theme-stock-light pre,
-body.theme-stock-light code,
-body.theme-stock-light .console-out,
-body.theme-stock-light .file-tree,
-body.theme-stock-light .mono {
-  font-family: 'Fira Code', ui-monospace, 'SF Mono', 'Courier New', monospace;
-}
 body.theme-stock-light pre,
 body.theme-stock-light .console-out {
   background: var(--stock-sunk);
@@ -267,10 +354,6 @@ body.theme-stock-light .heat-1 { background: var(--heat-1); }
 body.theme-stock-light .heat-2 { background: var(--heat-2); }
 body.theme-stock-light .heat-3 { background: var(--heat-3); }
 body.theme-stock-light .heat-4 { background: var(--heat-4); }
-
-/* The nav tab's hover/active glow is a CRT effect written as a literal. */
-body.theme-stock-light .tab-btn:hover,
-body.theme-stock-light .tab-btn.active { text-shadow: none; font-weight: 700; }
 
 /* The "since you last looked" banner and the other tinted panels are washes
    of the accents, which land differently on a light stock. Kept as washes,
@@ -335,7 +418,7 @@ body.theme-midnight .heat-4 { background: var(--portal-blue); }
    one-tap answer buttons. */
 /* The three button washes style.css spells out as CRT literals: the default
    blue, the affirmative green and the destructive red. Restated rather than
-   variabilised in style.css, on the same principle as the rest of this file -
+   variabilized in style.css, on the same principle as the rest of this file -
    a new theme must not be able to shift the shipped terminal look by a shade. */
 body.theme-midnight button,
 body.theme-midnight .btn { background: rgba(167, 139, 250, 0.10); }
@@ -395,7 +478,7 @@ body.theme-amber .heat-3 { background: rgba(255, 176, 46, 0.78); }
 body.theme-amber .heat-4 { background: hsl(38, 100%, 60%); }
 /* The three button washes style.css spells out as CRT literals: the default
    blue, the affirmative green and the destructive red. Restated rather than
-   variabilised in style.css, on the same principle as the rest of this file -
+   variabilized in style.css, on the same principle as the rest of this file -
    a new theme must not be able to shift the shipped terminal look by a shade. */
 body.theme-amber button,
 body.theme-amber .btn { background: rgba(255, 176, 46, 0.10); }
@@ -532,3 +615,331 @@ body.theme-meadow {
   --heat-3: hsla(128, 40%, 32%, 0.72);
   --heat-4: hsl(128, 40%, 28%);
 }
+
+
+/* ==========================================================================
+   THE FIVE DIRECTIONS
+   ==========================================================================
+
+   Wes, 2026-08-28: "I want to envision and experiment some completely
+   different themes for this page. No ties to anything existing about the
+   terminal theme, monospaced text, nothing. Even different layouts are
+   acceptable. Give me multiple ideas that I can explore and consider."
+
+   Five design languages rather than five palettes, each named for the thing it
+   is imitating. All five are prose themes (see THEME_TYPE), so none of them
+   has a monospaced word in it outside a diff or a transcript, where the
+   alignment is the content.
+
+   What they are NOT is five layouts. `themes.css` bans display, position and
+   visibility outright, because a theme that can move or hide a control is a
+   look you cannot get back out of - and the settings page has to stay
+   reachable in every one of them. Where a direction wanted a structural move
+   (blueprint's title block down the right, workbench's three panes), the
+   portal already has a real switch for it that is not a theme: `ui_sidebar`
+   moves the rail, `ui_density` tightens the rows, and the project page's
+   section order is draggable. Those are the mechanism for what a theme may not
+   do; this file is the palette and the voice. */
+
+
+/* Workbench ---------------------------------------------------------------
+   A modern product app - Linear, Height, Vercel. Dark, but with nothing
+   terminal in it: a real sans, hairline borders on near-black panels, one
+   saturated indigo accent, and no glow of any kind. The dark theme that is
+   not a CRT, which is the whole reason THEME_TYPE exists. */
+
+body.theme-workbench {
+  --terminal-fg: hsl(225, 21%, 92%);
+  --terminal-dim: hsl(226, 13%, 59%);
+  /* Near-transparent rather than a color: this variable feeds the window's
+     outer glow, and a product app has no glow. */
+  --terminal-glow: rgba(0, 0, 0, 0);
+
+  --bg-color: hsl(228, 17%, 6%);
+  --window-bg: hsl(226, 16%, 10%);
+  --window-border: hsl(226, 17%, 20%);
+  --header-bg: hsl(227, 16%, 12%);
+  --panel-bg: hsl(228, 16%, 8%);
+
+  --font-prose: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
+                Roboto, 'Helvetica Neue', sans-serif;
+  --font-body: var(--font-prose);
+
+  --ansi-blue: hsl(228, 100%, 71%);
+  --ansi-cyan: hsl(190, 80%, 62%);
+  --ansi-green: hsl(155, 60%, 53%);
+  --ansi-yellow: hsl(38, 91%, 55%);
+  --ansi-red: hsl(345, 84%, 67%);
+  --ansi-magenta: hsl(280, 78%, 72%);
+  --portal-blue: hsl(228, 100%, 71%);
+  --portal-orange: hsl(345, 84%, 67%);
+}
+body.theme-workbench .heat-1 { background: rgba(109, 140, 255, 0.30); }
+body.theme-workbench .heat-2 { background: rgba(109, 140, 255, 0.54); }
+body.theme-workbench .heat-3 { background: rgba(109, 140, 255, 0.78); }
+body.theme-workbench .heat-4 { background: var(--portal-blue); }
+
+/* style.css washes every button in the CRT's cyan and lights it on hover.
+   Restated flat: a filled row on a panel, no glow, no lift. */
+body.theme-workbench button,
+body.theme-workbench .btn { background: hsl(227, 16%, 15%); }
+body.theme-workbench button:hover,
+body.theme-workbench .btn:hover { background: hsl(227, 16%, 20%); }
+body.theme-workbench button.go,
+body.theme-workbench .btn.go {
+  background: rgba(63, 207, 142, 0.12);
+  border-color: rgba(63, 207, 142, 0.40);
+}
+body.theme-workbench button.go:hover,
+body.theme-workbench .btn.go:hover { background: rgba(63, 207, 142, 0.22); color: var(--ansi-green); }
+body.theme-workbench button.danger,
+body.theme-workbench .btn.danger { background: rgba(242, 102, 139, 0.10); }
+body.theme-workbench button.danger:hover,
+body.theme-workbench .btn.danger:hover { background: rgba(242, 102, 139, 0.20); color: var(--ansi-red); }
+body.theme-workbench button.quick-option { background: rgba(109, 140, 255, 0.12); }
+body.theme-workbench button.quick-option:hover { background: rgba(109, 140, 255, 0.24); }
+
+
+/* Blueprint ---------------------------------------------------------------
+   A drafting sheet. Deep blue ground, thin cyan rules, amber and coral for the
+   two things a drawing ever marks in another ink. The grid is the one piece of
+   the mockup that survives literally - two repeating gradients, no image and
+   no request - and it is a background, which a theme is allowed to set. */
+
+body.theme-blueprint {
+  --terminal-fg: hsl(202, 55%, 91%);
+  --terminal-dim: hsl(202, 38%, 63%);
+  --terminal-glow: rgba(86, 210, 240, 0.10);
+
+  --bg-color: hsl(207, 60%, 16%);
+  --window-bg: rgba(11, 33, 52, 0.82);
+  --window-border: hsl(203, 48%, 35%);
+  --header-bg: hsl(207, 54%, 20%);
+  --panel-bg: rgba(8, 26, 42, 0.55);
+
+  --font-prose: 'Avenir Next', Avenir, 'Nunito Sans', ui-sans-serif, system-ui,
+                'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-prose);
+
+  --ansi-blue: hsl(205, 88%, 72%);
+  --ansi-cyan: hsl(192, 85%, 64%);
+  --ansi-green: hsl(163, 62%, 60%);
+  --ansi-yellow: hsl(41, 100%, 72%);
+  --ansi-red: hsl(8, 100%, 74%);
+  --ansi-magenta: hsl(320, 72%, 76%);
+  --portal-blue: hsl(192, 85%, 64%);
+  --portal-orange: hsl(41, 100%, 72%);
+}
+/* The drawing grid. 24px squares, one shade above the sheet, so it reads at a
+   glance and disappears behind anything you are actually looking at. */
+body.theme-blueprint {
+  background-image:
+    repeating-linear-gradient(0deg, transparent 0 23px, hsl(207, 55%, 20%) 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, hsl(207, 55%, 20%) 23px 24px);
+}
+body.theme-blueprint .heat-1 { background: rgba(86, 210, 240, 0.30); }
+body.theme-blueprint .heat-2 { background: rgba(86, 210, 240, 0.54); }
+body.theme-blueprint .heat-3 { background: rgba(86, 210, 240, 0.78); }
+body.theme-blueprint .heat-4 { background: var(--portal-blue); }
+
+body.theme-blueprint button,
+body.theme-blueprint .btn { background: rgba(86, 210, 240, 0.08); }
+body.theme-blueprint button:hover,
+body.theme-blueprint .btn:hover { background: rgba(86, 210, 240, 0.16); }
+body.theme-blueprint button.go,
+body.theme-blueprint .btn.go {
+  background: rgba(122, 226, 190, 0.12);
+  border-color: rgba(122, 226, 190, 0.45);
+}
+body.theme-blueprint button.go:hover,
+body.theme-blueprint .btn.go:hover { background: rgba(122, 226, 190, 0.22); color: var(--ansi-green); }
+body.theme-blueprint button.danger,
+body.theme-blueprint .btn.danger { background: rgba(255, 143, 122, 0.10); }
+body.theme-blueprint button.danger:hover,
+body.theme-blueprint .btn.danger:hover { background: rgba(255, 143, 122, 0.20); color: var(--ansi-red); }
+body.theme-blueprint button.quick-option { background: rgba(86, 210, 240, 0.10); }
+body.theme-blueprint button.quick-option:hover { background: rgba(86, 210, 240, 0.22); }
+
+
+/* Editorial ---------------------------------------------------------------
+   A broadsheet. The portal is mostly a thing you READ - the journal is an
+   essay your agent wrote you - so: near-white stock, a serif display face,
+   near-black ink, and exactly ONE accent, an oxide red, used sparingly enough
+   that it still means something. Everything that would be a second color on
+   another theme is a shade of the ink here. */
+
+body.theme-editorial {
+  --terminal-fg: hsl(60, 5%, 10%);
+  --terminal-dim: hsl(53, 5%, 36%);
+  --terminal-glow: rgba(26, 26, 24, 0.08);
+
+  --bg-color: hsl(40, 26%, 92%);
+  --window-bg: hsl(40, 33%, 98%);
+  --window-border: hsl(41, 15%, 82%);
+  --header-bg: hsl(40, 28%, 95%);
+  --panel-bg: hsl(40, 40%, 99%);
+
+  --font-prose: 'Iowan Old Style', 'Charter', 'Georgia Pro', Georgia,
+                'Times New Roman', serif;
+  --font-body: var(--font-prose);
+
+  /* One red, and the rest of the roles resolved as ink. A broadsheet has no
+     blue and no green; what it has is a rule, a weight, and the one color it
+     saves for the thing that needs you. Blue and cyan are dark ink so a link
+     still reads as darker-than-the-page rather than as another hue; green is
+     the only concession, held far down and desaturated, because "it worked"
+     must not look identical to "it failed" on a page anybody skims. */
+  --ansi-blue: hsl(45, 6%, 26%);
+  --ansi-cyan: hsl(45, 6%, 34%);
+  --ansi-green: hsl(120, 22%, 27%);
+  --ansi-yellow: hsl(32, 55%, 33%);
+  --ansi-red: hsl(9, 68%, 38%);
+  --ansi-magenta: hsl(9, 30%, 38%);
+  --portal-blue: hsl(45, 8%, 20%);
+  --portal-orange: hsl(9, 68%, 38%);
+
+  --stock-raised: hsl(40, 30%, 96%);
+  --stock-sunk: hsl(40, 20%, 94%);
+  --stock-on-accent: hsl(40, 33%, 98%);
+  --stock-shadow: rgba(40, 36, 28, 0.10);
+  --stock-shadow-soft: rgba(40, 36, 28, 0.05);
+  --stock-tooth: rgba(120, 110, 90, 0.030);
+  --stock-tooth-faint: rgba(120, 110, 90, 0.020);
+  --heat-idle: hsl(40, 12%, 86%);
+  --heat-1: hsla(9, 68%, 42%, 0.24);
+  --heat-2: hsla(9, 68%, 42%, 0.48);
+  --heat-3: hsla(9, 68%, 42%, 0.74);
+  --heat-4: hsl(9, 68%, 38%);
+}
+
+
+/* Press -------------------------------------------------------------------
+   Swiss poster. Hard black rules, flat blocks of one loud orange, zero
+   rounding and zero shadow: nothing is decorated, everything is SIZED. The
+   most legible of the five at a glance and the most opinionated to live in.
+
+   The two rules of its own are the two things that make it that look rather
+   than "editorial in orange" - the radii go back to square, and the borders
+   go to ink. Both are properties this file is allowed to set. */
+
+body.theme-press {
+  --terminal-fg: hsl(0, 0%, 7%);
+  --terminal-dim: hsl(0, 0%, 38%);
+  --terminal-glow: rgba(17, 17, 17, 0.06);
+
+  --bg-color: hsl(43, 24%, 89%);
+  --window-bg: hsl(45, 26%, 96%);
+  --window-border: hsl(0, 0%, 7%);
+  --header-bg: hsl(12, 100%, 56%);
+  --panel-bg: hsl(45, 20%, 93%);
+
+  --font-prose: 'Helvetica Neue', Helvetica, 'Inter', 'Arial Black', Arial,
+                ui-sans-serif, system-ui, sans-serif;
+  --font-body: var(--font-prose);
+
+  --ansi-blue: hsl(223, 100%, 40%);
+  --ansi-cyan: hsl(223, 100%, 32%);
+  --ansi-green: hsl(150, 100%, 24%);
+  --ansi-yellow: hsl(30, 100%, 34%);
+  --ansi-red: hsl(12, 100%, 42%);
+  --ansi-magenta: hsl(320, 80%, 38%);
+  --portal-blue: hsl(223, 100%, 45%);
+  --portal-orange: hsl(12, 100%, 48%);
+
+  --stock-raised: hsl(45, 26%, 96%);
+  --stock-sunk: hsl(45, 18%, 90%);
+  --stock-on-accent: hsl(45, 30%, 97%);
+  --stock-shadow: rgba(0, 0, 0, 0);
+  --stock-shadow-soft: rgba(0, 0, 0, 0);
+  --stock-tooth: rgba(0, 0, 0, 0);
+  --stock-tooth-faint: rgba(0, 0, 0, 0);
+  --heat-idle: hsl(43, 14%, 82%);
+  --heat-1: hsla(12, 100%, 50%, 0.28);
+  --heat-2: hsla(12, 100%, 50%, 0.55);
+  --heat-3: hsla(12, 100%, 50%, 0.80);
+  --heat-4: hsl(12, 100%, 48%);
+}
+/* Square, and ruled in ink. A poster has no rounded corner and no drop
+   shadow; the hierarchy is scale and weight alone. */
+body.theme-press .terminal-window,
+body.theme-press .card,
+body.theme-press .panel,
+body.theme-press button,
+body.theme-press .btn,
+body.theme-press .badge,
+body.theme-press input[type="text"],
+body.theme-press input[type="number"],
+body.theme-press input[type="password"],
+body.theme-press textarea,
+body.theme-press select { border-radius: 0; }
+body.theme-press .terminal-window { box-shadow: none; border-width: 2px; }
+/* The header band is the loud color, so its own text has to come off it in
+   the paper stock rather than in ink. */
+body.theme-press .terminal-header { color: hsl(45, 30%, 97%); border-bottom-width: 2px; }
+body.theme-press .window-title,
+body.theme-press .window-stats,
+body.theme-press .wordmark { color: hsl(45, 30%, 97%); }
+body.theme-press .window-title,
+body.theme-press .window-stats { opacity: 0.92; }
+/* The title bar's two portal glyphs are drawn in --portal-blue and
+   --portal-orange, which on every other theme sit on the page. Here they sit
+   on the loud band itself, and press's orange IS that band - so the second O
+   vanished into it. Ink, which is the only other color a poster has. */
+body.theme-press .wordmark .o-orange { color: hsl(0, 0%, 7%); }
+
+
+/* Quiet -------------------------------------------------------------------
+   The calm-document look - Notion, Bear, Craft. Warm near-white, one soft
+   green, hairline separators and a lot of air. The bet is that this is the one
+   that is nicest to open forty times a day on a phone: nothing shouts, nothing
+   is dense, and every control is a comfortable tap target. */
+
+body.theme-quiet {
+  --terminal-fg: hsl(43, 10%, 13%);
+  --terminal-dim: hsl(40, 5%, 45%);
+  --terminal-glow: rgba(79, 122, 94, 0.08);
+
+  --bg-color: hsl(30, 15%, 96%);
+  --window-bg: hsl(0, 0%, 100%);
+  --window-border: hsl(45, 8%, 90%);
+  --header-bg: hsl(40, 14%, 98%);
+  --panel-bg: hsl(40, 20%, 99%);
+
+  --font-prose: -apple-system, BlinkMacSystemFont, 'Inter', ui-sans-serif,
+                system-ui, 'Segoe UI', Roboto, sans-serif;
+  --font-body: var(--font-prose);
+
+  --ansi-blue: hsl(210, 34%, 40%);
+  --ansi-cyan: hsl(188, 32%, 34%);
+  --ansi-green: hsl(139, 21%, 34%);
+  --ansi-yellow: hsl(35, 61%, 40%);
+  --ansi-red: hsl(4, 52%, 47%);
+  --ansi-magenta: hsl(275, 24%, 45%);
+  --portal-blue: hsl(139, 21%, 39%);
+  --portal-orange: hsl(35, 61%, 42%);
+
+  --stock-raised: hsl(40, 14%, 97%);
+  --stock-sunk: hsl(40, 12%, 95%);
+  --stock-on-accent: hsl(0, 0%, 100%);
+  --stock-shadow: rgba(60, 55, 45, 0.07);
+  --stock-shadow-soft: rgba(60, 55, 45, 0.04);
+  --stock-tooth: rgba(0, 0, 0, 0);
+  --stock-tooth-faint: rgba(0, 0, 0, 0);
+  --heat-idle: hsl(40, 10%, 91%);
+  --heat-1: hsla(139, 21%, 39%, 0.24);
+  --heat-2: hsla(139, 21%, 39%, 0.46);
+  --heat-3: hsla(139, 21%, 39%, 0.70);
+  --heat-4: hsl(139, 21%, 34%);
+}
+/* Rounder than the printed stock's 3px: this is a document in an app, not a
+   sheet on a desk, and the roundness is most of what makes it read as calm. */
+body.theme-quiet .terminal-window { border-radius: 12px; }
+body.theme-quiet .card,
+body.theme-quiet .panel { border-radius: 10px; }
+body.theme-quiet button:not(.info-dot),
+body.theme-quiet .btn { border-radius: 8px; }
+body.theme-quiet input[type="text"],
+body.theme-quiet input[type="number"],
+body.theme-quiet input[type="password"],
+body.theme-quiet textarea,
+body.theme-quiet select { border-radius: 8px; }

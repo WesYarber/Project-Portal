@@ -1,3 +1,25 @@
+{# The dashboard masthead, in one of two voices.
+
+   Wes, 2026-08-28, asking for the five directions: "No ties to anything
+   existing about the terminal theme, monospaced text, nothing."
+
+   The block-drawing wordmark is the single most terminal thing on the page,
+   and no theme can touch it: `themes.css` may set color and type, but the
+   glyphs themselves are CONTENT, and a rule that could empty them would be a
+   rule that could empty anything. So the branch is here, where the mechanism
+   for "what a theme may not do" lives - beside `ui_sidebar` and the section
+   order rather than inside the stylesheet.
+
+   `theme_type()` and not the theme name, for the same reason THEME_STOCK is a
+   table: the sixth prose theme gets the set masthead without an edit here. #}
+{% if theme_type() == 'prose' %}
+{# Set in the theme's own face. Real text, not a picture of text, so it needs
+   neither role="img" nor an aria-label - a screen reader reads the words. #}
+<div class="banner banner-set">
+  <div class="banner-word">PR<span class="o-blue">O</span>JECT</div>
+  <div class="banner-word">P<span class="o-orange">O</span>RTAL</div>
+</div>
+{% else %}
 {# ASCII wordmark. Each line is split into segments so the two O glyphs can be
    colored independently - they are the blue and orange portals. #}
 <div class="banner" aria-label="Project Portal" role="img">
@@ -38,3 +60,4 @@
 ╚═╝  ╚═╝   ╚═╝   ╚═╝  ╚═╝╚══════╝</pre>
   </div>
 </div>
+{% endif %}
