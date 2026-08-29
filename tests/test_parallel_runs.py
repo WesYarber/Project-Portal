@@ -17,6 +17,7 @@ This file is about two agents inside one project.
 from __future__ import annotations
 
 import asyncio
+import logging
 import subprocess
 
 import pytest
@@ -588,3 +589,111 @@ def test_the_waiting_line_is_written_once_not_once_per_tick(temp_data_dir):
 
     bodies = [r["content_md"] for r in db.list_journal(project_id=project["id"])]
     assert sum("will be merged as soon as" in b for b in bodies) == 1
+
+
+# --------------------------------------------------------------------------
+# Deleting the project the checkouts belong to
+# --------------------------------------------------------------------------
+#
+# A parallel checkout lives at `data/parallel/<slug>-run<id>`, outside the
+# workspace, so deleting a project used to leave it behind whichever box was
+# ticked. Worse, it was left behind *actively*: `projects_with_branches()`
+# reads that directory listing every worker tick and `_drain_parallel_branches`
+# then skips any slug the database no longer knows, so the leftovers were
+# re-listed once a minute forever with nothing able to clear them.
+
+def test_deleting_a_project_removes_its_parallel_checkouts(client, temp_data_dir):
+    project = make_project()
+    make_workspace(project["slug"])
+    run_id = db.create_run(project["id"], "build", "opus", parallel=True)
+    tree = parallel.open_worktree(project["slug"], run_id)
+    commit_in(tree, "feature.py", "x\n", "the parallel work")
+    db.finish_run(run_id, "ok")
+    assert tree.is_dir()
+
+    client.post(f"/project/{project['slug']}/delete",
+                data={"confirm": project["slug"], "delete_workspace": "1"},
+                follow_redirects=False)
+
+    assert not tree.exists()
+    assert parallel.projects_with_branches() == []
+
+
+def test_the_checkouts_go_even_when_the_workspace_is_kept(client, temp_data_dir):
+    """The box Wes ticks is about his files, not about the portal's bookkeeping.
+    Keeping the workspace keeps the branch - that is where the commits are -
+    but the checkout still has to go, because nothing would ever drain it."""
+    project = make_project()
+    workspace = make_workspace(project["slug"])
+    run_id = db.create_run(project["id"], "build", "opus", parallel=True)
+    tree = parallel.open_worktree(project["slug"], run_id)
+    commit_in(tree, "feature.py", "x\n", "the parallel work")
+    db.finish_run(run_id, "ok")
+
+    client.post(f"/project/{project['slug']}/delete",
+                data={"confirm": project["slug"]},
+                follow_redirects=False)
+
+    assert not tree.exists()
+    assert workspace.is_dir(), "the workspace was not asked for"
+    # The work itself survives in the repo Wes chose to keep.
+    assert parallel.branch_for(run_id) in _git(workspace, "branch", "--list",
+                                               "--format=%(refname:short)")
+
+
+def test_another_projects_checkouts_are_left_alone(temp_data_dir):
+    """`_DIR_RE` splits on the last `-run<digits>`, and slugs are free text, so
+    this is the guard against `thing` reaping `thing-two`'s checkouts."""
+    make_workspace("thing")
+    make_workspace("thing-two")
+    mine = parallel.open_worktree("thing", 1)
+    theirs = parallel.open_worktree("thing-two", 2)
+
+    assert parallel.discard_all("thing") == [1]
+
+    assert not mine.exists()
+    assert theirs.is_dir()
+
+
+def test_discarding_with_no_parallel_directory_at_all_is_quiet(temp_data_dir, caplog):
+    """Most projects have never had a parallel run, so `data/parallel/` does not
+    exist and deleting one of them takes this path.
+
+    Asserting the empty list is not enough to hold the `is_dir()` guard up: a
+    missing directory makes `iterdir()` raise FileNotFoundError, which is an
+    OSError, so the defensive `except` below returns the same empty list. What
+    the guard is actually for is the *log* - without it the most ordinary
+    delete on the board files a warning saying the portal could not read a
+    directory, which is a support question about nothing.
+    """
+    make_workspace()
+    assert not parallel.root().exists()
+    with caplog.at_level(logging.WARNING, logger="app.parallel"):
+        assert parallel.discard_all("thing") == []
+    assert caplog.records == [], (
+        "a project that never had a parallel run must delete without complaint"
+    )
+
+
+def test_every_checkout_of_one_project_goes_not_just_the_first(temp_data_dir):
+    make_workspace()
+    first = parallel.open_worktree("thing", 3)
+    second = parallel.open_worktree("thing", 4)
+
+    assert parallel.discard_all("thing") == [3, 4]
+
+    assert not first.exists()
+    assert not second.exists()
+
+
+def test_a_stray_file_in_the_parallel_directory_is_not_mistaken_for_a_checkout(
+    temp_data_dir,
+):
+    make_workspace()
+    parallel.open_worktree("thing", 5)
+    stray = parallel.root() / "thing-run6"
+    stray.write_text("not a directory\n", encoding="utf-8")
+
+    assert parallel.discard_all("thing") == [5]
+
+    assert stray.is_file()

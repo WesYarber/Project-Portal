@@ -299,6 +299,42 @@ def projects_with_branches() -> list[str]:
     return slugs
 
 
+def discard_all(slug: str) -> list[int]:
+    """Drop every parallel checkout belonging to `slug`, returning the run ids.
+
+    Called when a project is deleted. Nothing else ever would: the drain tick
+    reads `projects_with_branches()` off this directory listing and then skips
+    any slug the database no longer knows, so a deleted project's worktrees sit
+    in `data/parallel/` forever and are re-listed once a minute to be ignored
+    again.
+
+    Only the checkouts go. If the workspace is being deleted too its branches
+    die with the repo, and if it is being kept then the branch is the surviving
+    copy of that agent's commits - the same rule `_remove_worktree` follows.
+    Deleting the directories is what stops the pointless scan either way.
+    """
+    base = root()
+    if not base.is_dir():
+        return []
+    workspace = workspace_for(slug)
+    dropped: list[int] = []
+    try:
+        entries = sorted(base.iterdir(), key=lambda p: p.name)
+    except OSError as exc:  # pragma: no cover - defensive
+        log.warning("Could not list %s: %s", base, exc)
+        return []
+    for item in entries:
+        m = _DIR_RE.match(item.name)
+        if not item.is_dir() or not m or m.group("slug") != slug:
+            continue
+        _remove_worktree(workspace, item)
+        dropped.append(int(m.group("run")))
+    if dropped:
+        log.info("Removed %d parallel checkout(s) for deleted project %s",
+                 len(dropped), slug)
+    return dropped
+
+
 def pending(slug: str) -> list[int]:
     """Run ids whose parallel branch still exists, oldest first."""
     code, out, _ = _git(workspace_for(slug), "branch", "--list",

@@ -493,3 +493,44 @@ def the_run_memory_pool_is_never_written_to_real_systemd(monkeypatch):
         return limit is not None and runlimit.pool_available()
 
     monkeypatch.setattr(runlimit, "apply_pool", stub)
+
+
+@pytest.fixture(autouse=True)
+def worker_module_state_is_never_inherited(monkeypatch):
+    """Every test starts from `app.worker`'s module-import state.
+
+    The worker keeps its live state in module globals - the manual-run queue,
+    the in-flight task map, the "already said this" sets, the restart latch.
+    They are process-wide, so what one test leaves behind the next one in that
+    process inherits, and only a handful of files clean up after themselves.
+
+    Serial running hid this almost perfectly: run the files in the same order
+    every time and the leaks happen to fall where nothing reads them. They stop
+    being invisible the moment the suite is distributed across workers, because
+    then the set of tests sharing a process changes from run to run. Found on
+    2026-08-29 while parallelizing the suite, as four tests that failed once in
+    ten runs and never in the same combination - `_start_one` called twice
+    because a *previous file* had left an id in `manual_queue`, and a research
+    burst that came back as a build.
+
+    That is not a parallelism bug, it is an order-dependency the suite has
+    always had, and it is worth closing on its own account: a test that passes
+    only because of what ran before it is not testing what it says it is.
+    """
+    from app import worker
+
+    while not worker.manual_queue.empty():
+        worker.manual_queue.get_nowait()
+    monkeypatch.setattr(worker, "_inflight", {})
+    monkeypatch.setattr(worker, "_lease_free_since", {})
+    monkeypatch.setattr(worker, "_PARALLEL_SAID", {})
+    monkeypatch.setattr(worker, "_pending_restart", None)
+    monkeypatch.setattr(worker, "_restarting", False)
+    monkeypatch.setattr(worker, "_last_stray_sweep", None)
+    monkeypatch.setattr(worker, "_audit_pruned_day", None)
+    monkeypatch.setattr(worker, "_model_checked_day", None)
+    yield
+    # The queue is the one that cannot be monkeypatched back, since tests put
+    # into the same object the worker reads from.
+    while not worker.manual_queue.empty():
+        worker.manual_queue.get_nowait()

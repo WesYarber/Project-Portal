@@ -31,6 +31,7 @@ import json
 import os
 import stat
 import textwrap
+import time
 
 import pytest
 
@@ -225,6 +226,12 @@ def restart_state(monkeypatch):
 
         class Done:
             returncode = 0
+            # A faithful stand-in for CompletedProcess. Without these, any
+            # caller that reads the output - `strays._list_units` does - dies
+            # with an AttributeError from inside a test about something else,
+            # which reads as a bug in the worker rather than in this stub.
+            stdout = ""
+            stderr = ""
         return Done()
 
     monkeypatch.setattr(worker.subprocess, "run", record)
@@ -234,6 +241,13 @@ def restart_state(monkeypatch):
     # clears it is the process ending - so every test that arms it has to hand
     # back a module that has not been restarted.
     monkeypatch.setattr(worker, "_restarting", False)
+    # `_tick` also sweeps strays, which is several `systemctl` calls that would
+    # land in `calls` above and drown the restart these tests are watching for.
+    # Whether it fires at all is a module-global time throttle, so left alone
+    # these tests pass or fail on what ran BEFORE them in the same process -
+    # serially they inherit a throttle some earlier test set, and under xdist
+    # they get a fresh worker and no throttle. Pin it either way.
+    monkeypatch.setattr(worker, "_last_stray_sweep", time.monotonic())
     return calls
 
 

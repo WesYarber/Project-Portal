@@ -91,9 +91,18 @@ new pattern goes with the case that proves it fires.
 ## Running the tests
 
 ```bash
-venv/bin/python -m pytest -q          # the whole suite
+venv/bin/python -m pytest -q          # the whole suite, ~40s
 venv/bin/python -m pytest tests/test_leakscan.py -q
+venv/bin/python -m pytest -q -n0      # same suite, serial, ~3min
 ```
+
+`pytest.ini` runs the suite across 8 processes, so the whole thing is about
+40 seconds rather than three minutes. Two things follow. Output interleaves and
+the run order is no longer the file order, so pass `-n0` when a failure has to
+be read in sequence. And a test that passes serially but fails in parallel is
+usually not a flake - it is module-global state leaking between files, which
+`tests/conftest.py` resets for `app.worker` and which is a real defect wherever
+else it turns up.
 
 The JavaScript tests under `tests/js/` need [Bun](https://bun.sh) and are run
 with `bun test`. They are not part of the pytest suite.

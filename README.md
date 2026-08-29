@@ -640,6 +640,7 @@ adding real sandboxing.
   monospace. Installed (standalone) there's no browser reload button, so
   `initPullToRefresh` puts the pull-down gesture back — only in that mode,
   since an ordinary tab already has it.
-- `tests/` — pytest. Run with `venv/bin/python -m pytest tests/ -q` (needs
-  `pip install pytest`). Every test gets a throwaway data dir and a fresh
-  DB via `tests/conftest.py`; nothing touches the live `data/portal.db`.
+- `tests/` — pytest. Run with `venv/bin/python -m pytest -q`; `pytest.ini`
+  spreads it over 8 processes, so 4,500 tests take about 40 seconds (add `-n0`
+  for a serial run). Every test gets a throwaway data dir and a fresh DB via
+  `tests/conftest.py`; nothing touches the live `data/portal.db`.

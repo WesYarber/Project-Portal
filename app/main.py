@@ -75,6 +75,10 @@ from app import (
     webpush,
     worker,
 )
+# Under a name of its own, for the same reason the worker does it: a bare
+# `parallel` reads as the portal-wide concurrency cap, not as two agents inside
+# one project.
+from app import parallel as parallel_runs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 # httpx logs full request URLs at INFO, which would leak the Telegram bot
@@ -1883,6 +1887,17 @@ async def delete_project_route(
     if active["active"] and active["project_id"] == project["id"]:
         raise HTTPException(status_code=409, detail="Stop the running agent before deleting.")
 
+    # Always, whichever box was ticked: a parallel checkout is not inside the
+    # workspace, so deleting the workspace strands it, and keeping the
+    # workspace strands it just as thoroughly - the drain tick lists these
+    # directories and then skips any slug the database no longer knows, so
+    # nothing would ever clear them.
+    #
+    # Before _remove_workspace only so that git gets to remove its own
+    # worktree while the repo it belongs to is still there. It is tidiness,
+    # not correctness: _remove_worktree falls back to rmtree, and a sweep
+    # confirmed the checkout goes either way round.
+    parallel_runs.discard_all(slug)
     if delete_workspace:
         _remove_workspace(slug)
     db.delete_project(project["id"])

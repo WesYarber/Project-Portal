@@ -7,3 +7,7 @@ markdown
 pygments
 python-multipart
 pytest
+# Not optional: pytest.ini passes `-n 8`, so a venv with pytest and without
+# this one fails at startup with "unrecognized arguments: -n" rather than
+# running the suite serially.
+pytest-xdist
