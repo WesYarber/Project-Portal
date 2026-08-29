@@ -252,13 +252,13 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # collapse to one, leaving 8.9 KB, and 6 keeps roughly the last two thirds
     # of the real decisions. Older ones are named as left out, not hidden.
     "prompt_answered_kb": "6",
-    # Appearance: how much of the CRT treatment to apply (see APPEARANCE below).
-    "ui_theme": "terminal",
-    "crt_scanlines": "all",
-    "crt_glow": "prose",
-    "crt_animations": "on",
-    "ui_font": "mono",
-    "ui_density": "comfortable",
+    # The appearance keys are NOT written out here. They are spread in from
+    # APPEARANCE_DEFAULTS below, once, so that the table a fresh install is
+    # seeded from and the table a running page falls back to cannot disagree.
+    # They were two hand-kept copies of the same six values until 2026-08-29,
+    # which is a divergence nobody would ever see: the seeded row wins on a new
+    # install and the fallback wins on an old one, so the same portal would
+    # look different depending on when it was installed.
 }
 
 # Appearance ------------------------------------------------------------------
@@ -430,8 +430,32 @@ THEME_STOCK: dict[str, str] = {
 DEFAULT_THEME_STOCK = "dark"
 
 APPEARANCE_DEFAULTS = {key: choices[0][0] for key, choices in APPEARANCE_CHOICES.items()}
-# The shipped default for glow is the middle option, not the first one.
+# Two of the CRT layers ship on their MIDDLE option rather than their first,
+# and for the same reason: the effect is charming on the frame and tiring on
+# the words. The choice lists are ordered most-treatment-first because that is
+# the order a person reading a dropdown expects; where the shipped answer is
+# not the top of that list, it is stated here.
+#
+# glow: "prose" - crisp inputs, buttons and tables.
+# scanlines: "chrome" - the frame and the agent console, and nothing you read.
+#
+# Wes, 2026-08-29, on the README screenshots: "I noticed in the GitHub
+# screenshots that the scan lines are in front of the text - I want you to make
+# my current 'Wes' settings the default settings for a new installation." His
+# own install has been on `chrome` for a long time; the shipped default was
+# still `all`, so every fresh install - and every screenshot taken from the
+# demo board, which seeds from this table - wore scanlines over its body text.
+# This is the only appearance key on which his install differed from the
+# defaults, so this line is the whole of that request. (His pacing settings and
+# his Telegram token also differ, and are deliberately NOT copied here: the
+# pacing is a personal spend-down of one Max subscription, and a token is a
+# secret. See the 2026-08-29 journal entry.)
 APPEARANCE_DEFAULTS["crt_glow"] = "prose"
+APPEARANCE_DEFAULTS["crt_scanlines"] = "chrome"
+
+# The seed table and the runtime fallback are now the same values by
+# construction rather than by two people remembering to edit both.
+DEFAULT_SETTINGS.update(APPEARANCE_DEFAULTS)
 
 # Dashboard sorting -----------------------------------------------------------
 # name -> (label, SQL ORDER BY). The SQL is interpolated into the query, so this

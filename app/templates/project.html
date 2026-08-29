@@ -1107,34 +1107,6 @@
    would otherwise list "Journal" twice. #}
 <div class="card scroll-cap scroll-cap-journal" id="journal" data-jump="journal-box"
      data-jump-nav="off">
-  {# The rest of the journal, on request rather than on every load. Wes,
-     2026-08-28: "It also seems to take much longer to reload a page, and my key
-     commands to jump to a certain area of the page do not work when it is
-     taking this time to load."
-
-     Measured: this page was 596 KB of HTML and 490 KB of it was two hundred
-     rendered journal entries. The jump keys are bound at DOMContentLoaded,
-     which cannot fire until all of that has been parsed - so the keys were not
-     broken, they did not exist yet.
-
-     A plain link, not a fetch: `?journal=all` is a real address he can bookmark
-     or open in a second tab, it works with scripting off, and liveRefreshNow()
-     re-fetches location.href - so a live patch while the journal is expanded
-     keeps it expanded, with no client-side state to go stale.
-
-     It sits at the TOP of the box because the box reads newest-first: older is
-     up, the same direction the reader is already going. #}
-  {% if journal_hidden %}
-  <p class="journal-more">
-    <a href="/project/{{ project.slug }}?journal=all#journal">show {{ journal_hidden }} older entr{{ 'y' if journal_hidden == 1 else 'ies' }}</a>
-    <span class="small muted">kept off this page so it loads fast</span>
-  </p>
-  {% elif journal_all %}
-  <p class="journal-more">
-    <a href="/project/{{ project.slug }}#journal">show fewer</a>
-    <span class="small muted">the whole journal is on this page</span>
-  </p>
-  {% endif %}
   {% for j in journal %}
   {% set pending = note_pending(j) %}
   {# No side-thread rows here to badge any more: asks and their answers are
@@ -1207,6 +1179,41 @@
     {% endif %}
   </div>
   {% endfor %}
+  {# The rest of the journal, on request rather than on every load. Wes,
+     2026-08-28: "It also seems to take much longer to reload a page, and my key
+     commands to jump to a certain area of the page do not work when it is
+     taking this time to load."
+
+     Measured: this page was 596 KB of HTML and 490 KB of it was two hundred
+     rendered journal entries. The jump keys are bound at DOMContentLoaded,
+     which cannot fire until all of that has been parsed - so the keys were not
+     broken, they did not exist yet.
+
+     A plain link, not a fetch: `?journal=all` is a real address he can bookmark
+     or open in a second tab, it works with scripting off, and liveRefreshNow()
+     re-fetches location.href - so a live patch while the journal is expanded
+     keeps it expanded, with no client-side state to go stale.
+
+     It sits at the END of the box, after the last entry. Wes, 2026-08-29: "for
+     the 'show 170 older entries' stuff in the journal, move that to the very
+     end of the scroll rather than the top." It was at the top on the reasoning
+     that the box reads newest-first, so older is up - but that reasoning is
+     about direction and this is about ORDER OF ARRIVAL. Jumping to the journal
+     put a slow, page-doubling link under the cursor before a single entry had
+     been read, which is the one thing this control should never be: it is the
+     floor you reach when you have run out of journal, not a door you are
+     offered on the way in. #}
+  {% if journal_hidden %}
+  <p class="journal-more">
+    <a href="/project/{{ project.slug }}?journal=all#journal">show {{ journal_hidden }} older entr{{ 'y' if journal_hidden == 1 else 'ies' }}</a>
+    <span class="small muted">kept off this page so it loads fast</span>
+  </p>
+  {% elif journal_all %}
+  <p class="journal-more">
+    <a href="/project/{{ project.slug }}#journal">show fewer</a>
+    <span class="small muted">the whole journal is on this page</span>
+  </p>
+  {% endif %}
 </div>
 {% else %}
 <p class="empty-state">No journal entries yet.</p>

@@ -191,6 +191,48 @@ def test_asking_for_all_of_it_gets_all_of_it(client, loaded):
     assert "show fewer" in body
 
 
+def test_show_older_sits_after_the_last_entry_not_before_the_first(client, loaded):
+    """Wes, 2026-08-29: "for the 'show 170 older entries' stuff in the journal,
+    move that to the very end of the scroll rather than the top."
+
+    Asserted by position in the document rather than by presence, because
+    presence is what the tests above already cover and position is the whole of
+    what he asked for. Both the newest entry (the first one rendered) and the
+    oldest one on the page (the last) have to come before the control, or it is
+    only "further down", not "the very end".
+
+    Anchored on `class="journal-more"` rather than on the label text, because
+    the label text is not unique on a real page: the note in which Wes ASKED
+    for this move contains the words "show 170 older entries", and it renders
+    as a journal entry near the top of the very page the control sits at the
+    bottom of. Searching for the words finds his sentence first."""
+    body = client.get("/project/portal").text
+
+    control = body.index('class="journal-more"')
+    newest = body.index(f"entry number {journalwindow.MAX_ENTRIES + 11}")
+    oldest_shown = body.index("entry number 12")
+
+    assert newest < control
+    assert oldest_shown < control
+    # It is the control, and it is the only one.
+    assert "show 12 older entries" in body[control:]
+    assert body.count('class="journal-more"') == 1
+    # Nothing of the journal feed may follow it.
+    assert "journal-entry" not in body[control:]
+
+
+def test_show_fewer_sits_at_the_end_too(client, loaded):
+    """The expanded page's control is the same control in the same place: at
+    the bottom of a 42-entry scroll, not floating above it."""
+    body = client.get("/project/portal?journal=all").text
+
+    control = body.index('class="journal-more"')
+
+    assert body.index("entry number 0") < control
+    assert "show fewer" in body[control:]
+    assert "journal-entry" not in body[control:]
+
+
 def test_a_short_journal_offers_no_link_at_all(client, temp_data_dir):
     """The control is noise on a project that has nothing hidden."""
     project = db.create_project("Small", description="x", stage="active", slug="small")

@@ -200,7 +200,12 @@ def test_her_choice_does_not_reach_his_screen(client, two):
     his = _body_classes(client.get("/").text)
 
     assert "scan-off" in hers and "font-sans" in hers
-    assert "scan-all" in his and "font-mono" in his
+    # His is the install's look, untouched - named through the constant so this
+    # keeps asserting "she did not move him" rather than a particular default.
+    assert f"scan-{config.APPEARANCE_DEFAULTS['crt_scanlines']}" in his
+    assert "font-mono" in his
+    # And she really did change something, or the assertion above is vacuous.
+    assert config.APPEARANCE_DEFAULTS["crt_scanlines"] != "off"
 
 
 def test_saving_the_panel_writes_to_whoever_is_reading_it(client, two):

@@ -927,17 +927,22 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
 
 /* Journal / logs --------------------------------------------------------- */
 
-/* "show N older entries", at the top of the journal box. Reads as a quiet
-   note rather than a control, because expanding the journal is the slow path
-   and nothing should invite a tap on it. */
+/* "show N older entries", at the END of the journal box, below the last entry
+   (Wes, 2026-08-29). Reads as a quiet note rather than a control, because
+   expanding the journal is the slow path and nothing should invite a tap on it.
+
+   The rule above the text rather than below it: sitting last in the box, this
+   is the line that closes the scroll, so the separator belongs between it and
+   the final entry. `margin-bottom: 0` keeps it flush with the bottom of the
+   card instead of leaving a gap under the last thing on the page. */
 .journal-more {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
   gap: 0.6rem;
-  margin: 0 0 1.2rem;
-  padding-bottom: 0.8rem;
-  border-bottom: 1px dashed var(--window-border);
+  margin: 0;
+  padding-top: 0.9rem;
+  border-top: 1px dashed var(--window-border);
 }
 .journal-more a { font-size: 0.85rem; }
 

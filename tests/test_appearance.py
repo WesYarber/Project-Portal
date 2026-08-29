@@ -39,10 +39,17 @@ def body_class_set(client) -> set[str]:
 
 
 def test_defaults_render_as_body_classes(client):
+    """That each layer's shipped default reaches <body> - not what any one of
+    them happens to be. Read from APPEARANCE_DEFAULTS rather than spelled out,
+    so changing a default (as crt_scanlines did on 2026-08-29) is one edit in
+    config.py and not a hunt for literals in the suite; the value itself is
+    pinned by test_a_fresh_install_keeps_scanlines_off_the_text."""
     body = client.get("/").text
-    for expected in ("scan-all", "glow-prose", "anim-on", "font-mono", "density-comfortable"):
-        assert expected in body_class_set(client)
-        assert expected in body
+    classes = body_class_set(client)
+    for key, prefix in config.APPEARANCE_CLASS_PREFIX.items():
+        expected = f"{prefix}-{config.APPEARANCE_DEFAULTS[key]}"
+        assert expected in classes, key
+        assert expected in body, key
 
 
 def test_each_layer_can_be_turned_off_independently(client):
@@ -58,6 +65,42 @@ def test_scanlines_can_be_limited_to_chrome(client):
     body = client.get("/").text
     assert "scan-chrome" in body
     assert "anim-off" in body
+
+
+def test_a_fresh_install_keeps_scanlines_off_the_text(client):
+    """Wes, 2026-08-29, on the README screenshots: "I noticed in the GitHub
+    screenshots that the scan lines are in front of the text - I want you to
+    make my current 'Wes' settings the default settings for a new
+    installation."
+
+    A brand-new database, nobody's personal overrides, nothing posted: the body
+    class a stranger's first page load carries. `scan-all` is what put the
+    lines over the body text in docs/images/*.png."""
+    body = client.get("/").text
+
+    assert "scan-chrome" in body
+    assert "scan-all" not in body
+
+
+def test_the_seed_table_and_the_runtime_fallback_cannot_disagree(temp_data_dir):
+    """Both of these are "the default appearance", and until 2026-08-29 they
+    were two hand-kept copies that had drifted apart on crt_scanlines.
+
+    The drift is invisible in ordinary use, which is what makes it worth a
+    test: DEFAULT_SETTINGS wins on a fresh install (db.init seeds it) and
+    APPEARANCE_DEFAULTS wins on an install predating the key, so the same
+    portal on the same version would look different depending on when it was
+    installed."""
+    for key, value in config.APPEARANCE_DEFAULTS.items():
+        assert config.DEFAULT_SETTINGS[key] == value, key
+
+
+def test_every_appearance_default_is_one_of_its_own_choices(temp_data_dir):
+    """A default that is not in its choice list is a dropdown that opens on
+    nothing selected and a body class matching no CSS rule - a look nobody
+    chose and no setting can restore."""
+    for key, choices in config.APPEARANCE_CHOICES.items():
+        assert config.APPEARANCE_DEFAULTS[key] in {v for v, _ in choices}, key
 
 
 def test_unknown_appearance_value_falls_back_to_the_default(client):
