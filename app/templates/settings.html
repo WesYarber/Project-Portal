@@ -260,7 +260,7 @@
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="cross_project" name="cross_project" {{ 'checked' if (settings.cross_project or '1') == '1' else '' }}>
-        <label for="cross_project">Let projects read each other{% call info() %}An agent working on one project can look up another one it is related to &ndash; that project's brief, todo list, recent journal and workspace files &ndash; instead of you re-explaining the shared context by hand. It only ever sees projects you are on, its prompt names the ones whose slugs put them in the same family of work, and it still cannot write anywhere but its own workspace. Off means every project starts from zero knowledge of the others.{% endcall %}</label>
+        <label for="cross_project">Let projects read and ask each other{% call info() %}An agent working on one project can look up another one it is related to &ndash; that project's brief, todo list, recent journal and workspace files &ndash; instead of you re-explaining the shared context by hand. It can also put a question to another project and get an answer from an agent that reads that project's own files, for what a brief and a file tree cannot say. It only ever sees projects you are on, its prompt names the ones whose slugs put them in the same family of work plus any you have linked by hand on a project page, the answering agent is read-only, and neither one can write anywhere but its own workspace. Off means every project starts from zero knowledge of the others.{% endcall %}</label>
       </div>
       {# Wes tracks model releases himself and wants the newest one adopted the day it
          ships. This is that job, done by the portal instead. #}

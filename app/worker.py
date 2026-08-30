@@ -2396,6 +2396,76 @@ async def note_arrived(project: db.sqlite3.Row) -> bool:
     return True
 
 
+async def answer_arrived(question: db.sqlite3.Row) -> bool:
+    """Put an agent on a freshly answered question, exactly as a note does.
+
+    Wes, 2026-08-29: "answering a question should prompt a run as if a new note
+    was just added." An answer IS an instruction - an agent stopped and asked
+    precisely because it could not proceed without one - so leaving it to sit
+    until the next scheduled run made replying the slowest way to say something,
+    while typing the same words into the note box acted immediately.
+
+    `note_arrived` rather than `queue_manual_run`, so answering matches the plain
+    green "add note" in both directions: it wakes a put-down project, and it does
+    NOT force a run past a gate, a pause or an occupied workspace. The answer is
+    journaled by `answer_question_and_resume` before this is called, so whatever
+    runs next carries it either way - this only decides whether "next" is now.
+
+    Three answers get no run:
+
+    * One an agent is holding still for inside `mcp__portal__ask`. That reply is
+      about to be delivered *within the run already waiting on it*, seconds from
+      now. This is why the guard is `portalmcp.waiting_run` and not a general "is
+      the project busy" check: an occupied workspace is `note_arrived`'s business
+      and it declines by itself, but a run waiting on THIS answer is the one case
+      where doing nothing is the entire point.
+    * One whose project has since been deleted. `questions.project_id` is NOT
+      NULL, so the row always names a project - but nothing deletes the questions
+      when a project goes, and a stale notification can still be tapped days
+      later. There is no workspace left to run in.
+    * One that still leaves this project with an open question. Wes, 2026-08-30:
+      "if there are other withstanding questions (that are not deleted or saved
+      for later), don't automatically run the agent when a question is answered,
+      but instead, only do this when the last withstanding question is answered."
+      Answering three questions used to start a run on the first, which then went
+      to work knowing one of the three things the agent had said it needed. Every
+      answer is journalled the moment it is given, so the run that does start
+      carries all of them - see `answer_settles_the_project` for what "still
+      open" means, and note it counts only THIS project's questions: a question
+      open on some other project has no bearing on this one's agent.
+
+    Returns True if a run was queued.
+    """
+    if question is None:
+        return False
+    if portalmcp.waiting_run(int(question["id"])) is not None:
+        return False
+    project = db.get_project(int(question["project_id"]))
+    if project is None:
+        return False
+    if not answer_settles_the_project(question):
+        return False
+    return await note_arrived(project)
+
+
+def answer_settles_the_project(question: db.sqlite3.Row) -> bool:
+    """Is there nothing left on this project for a person to answer?
+
+    Only `status = 'open'` counts, which is exactly the list Wes named: a
+    question he deleted is answered with `db.DELETED_ANSWER` and can never be
+    asked again, and one he saved for later is a deliberate "not now" - neither
+    is something the next run is still waiting on, so neither holds a run back.
+
+    The question being answered is excluded by id rather than relied upon to
+    have been settled already. Every caller does settle it first, but this way
+    the rule reads as the question Wes asked - "are there OTHER questions open?"
+    - and cannot be turned off by a caller that asks in the other order.
+    """
+    return db.count_open_questions(
+        int(question["project_id"]), exclude_id=int(question["id"])
+    ) == 0
+
+
 CANCEL_RESULTS = {"cancelled", "orphaned", "not_running", "missing"}
 
 

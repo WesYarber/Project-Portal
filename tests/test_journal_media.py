@@ -149,9 +149,13 @@ def test_project_journal_resolves_relative_image(client):
 
 
 def test_dashboard_activity_resolves_against_the_entry_project(client):
+    """The dashboard's feed is fetched from /activity/feed since 2026-08-29
+    rather than rendered inline, so the fragment is where this now reads. The
+    rule is the same one: an image path in a feed that mixes projects has to
+    resolve against the project the ENTRY came from, not the page's."""
     project = _project()
     db.add_journal(project["id"], "agent", "progress", "![shot](dash.png)")
-    page = client.get("/").text
+    page = client.get("/activity/feed").text
     assert 'src="/raw/manabase/dash.png"' in page
 
 

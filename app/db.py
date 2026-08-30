@@ -323,6 +323,24 @@ CREATE TABLE IF NOT EXISTS project_people (
     PRIMARY KEY (project_id, person_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_people_person ON project_people(person_id);
+
+-- Projects a person has declared related to one another, for the pairs
+-- `crossproject`'s slug heuristic cannot see: `commander-case` depends on
+-- `3d-vectorizer` and the two slugs share not one token.
+--
+-- The pair is UNORDERED and stored once, with the smaller id in `a_id`. Two
+-- rows for one relationship would let a link exist in one direction only,
+-- which is a thing a person would have to notice and repair by hand - and
+-- "related" is not a direction. Every writer goes through `link_projects`,
+-- which does the ordering, so nothing else in the app has to remember it.
+CREATE TABLE IF NOT EXISTS project_links (
+    a_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    b_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (a_id, b_id),
+    CHECK (a_id < b_id)
+);
+CREATE INDEX IF NOT EXISTS idx_project_links_b ON project_links(b_id);
 """
 
 
@@ -708,8 +726,60 @@ def mark_run_reverted(run_id: int) -> None:
         conn.commit()
 
 
+def reconcile_orphaned_runs_on_boot() -> None:
+    """Settle runs left 'running' by a previous portal process, and journal the
+    ones whose agent outlived it. **Only the portal service may call this**, once,
+    from its startup handler.
+
+    This used to hang off the end of `init_db()`, which was wrong in a way that
+    took a while to show itself. `init_db()` is not a startup-only function: it
+    is the ordinary way anything reaches this database, so every ad-hoc
+    `python -c "from app import db; db.init_db(); ..."` an agent types to read
+    the real board ran it too. Each one found the *live* runs, correctly
+    observed that their scopes were still active, "adopted" them, and wrote
+    every one of their projects a journal entry announcing a service restart
+    that had not happened.
+
+    On 2026-08-29 that put seven such notices on four projects inside two
+    minutes while the service sat at NRestarts=0 and an uptime of two hours -
+    one run of an exploring agent, eleven `init_db()` calls. Wes had pressed
+    "parallel run" seconds earlier, so what he saw was his journal filling with
+    restart notices the moment he started a second agent, and he reported it as
+    the parallel run interrupting the one already going. Nothing had interrupted
+    anything; the bookkeeping was writing fiction into the record.
+
+    So the split is the fix, and it is the boring one: `init_db()` migrates
+    schema and seeds defaults, which is safe to run from anywhere at any time,
+    and settling live run state is a separate, explicit act performed by the one
+    process that is entitled to conclude a restart just happened - because it is
+    the thing that just started.
+    """
+    conn = get_conn()
+    with _LOCK:
+        adopted = _reconcile_orphaned_runs(conn)
+        conn.commit()
+
+    for run_id, project_id in adopted:
+        log.info("Run %s survived the restart; adopted rather than orphaned", run_id)
+        if project_id is not None:
+            add_journal(
+                project_id, "system", "status",
+                f"The service restarted while run {run_id} was still working. Its "
+                f"agent survived the restart (each run gets its own systemd scope, "
+                f"which a service restart does not touch), so the run was adopted "
+                f"rather than declared dead - and this project stays locked to it, "
+                f"so no second agent is started into the same workspace.",
+            )
+
+
 def init_db() -> None:
-    """Create schema if missing and seed data on first creation."""
+    """Create schema if missing and seed data on first creation.
+
+    Deliberately safe to call from a throwaway script: it migrates and seeds,
+    and it never touches the state of a run that is currently going. Settling
+    those belongs to `reconcile_orphaned_runs_on_boot`, which the service calls
+    for itself at startup.
+    """
     is_new = not config.DB_PATH.exists()
     conn = get_conn()
     with _LOCK:
@@ -788,20 +858,7 @@ def init_db() -> None:
                 taken.add(slot)
                 conn.execute("UPDATE questions SET slot = ? WHERE id = ?", (slot, row["id"]))
 
-        adopted = _reconcile_orphaned_runs(conn)
         conn.commit()
-
-    for run_id, project_id in adopted:
-        log.info("Run %s survived the restart; adopted rather than orphaned", run_id)
-        if project_id is not None:
-            add_journal(
-                project_id, "system", "status",
-                f"The service restarted while run {run_id} was still working. Its "
-                f"agent survived the restart (each run gets its own systemd scope, "
-                f"which a service restart does not touch), so the run was adopted "
-                f"rather than declared dead - and this project stays locked to it, "
-                f"so no second agent is started into the same workspace.",
-            )
 
     _migrate_learnings_cap()
 
@@ -1724,6 +1781,57 @@ def memberless_project_ids() -> set[int]:
     return {int(row["id"]) for row in rows}
 
 
+def _link_pair(one: int, other: int) -> tuple[int, int]:
+    """The two ids in storage order. See the `project_links` schema comment."""
+    a, b = int(one), int(other)
+    return (a, b) if a < b else (b, a)
+
+
+def link_projects(one: int, other: int) -> bool:
+    """Declare two projects related. True if this created the link.
+
+    A project linked to itself is refused by `CHECK (a_id < b_id)`, and
+    `INSERT OR IGNORE` swallows a failed CHECK the same way it swallows a
+    duplicate - so this returns False rather than raising, and no Python guard
+    above it is reachable. A first draft had one; a mutation sweep found that
+    deleting it changed nothing any test could see.
+    """
+    a, b = _link_pair(one, other)
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO project_links (a_id, b_id, created_at) "
+            "VALUES (?, ?, ?)",
+            (a, b, now()),
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def unlink_projects(one: int, other: int) -> bool:
+    """Undeclare the link. True if a link was there to remove."""
+    a, b = _link_pair(one, other)
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "DELETE FROM project_links WHERE a_id = ? AND b_id = ?", (a, b)
+        )
+        conn.commit()
+    return cur.rowcount > 0
+
+
+def linked_project_ids(project_id: int) -> set[int]:
+    """The ids declared related to this one, from either side of the pair."""
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT b_id AS other FROM project_links WHERE a_id = ? "
+            "UNION SELECT a_id AS other FROM project_links WHERE b_id = ?",
+            (int(project_id), int(project_id)),
+        ).fetchall()
+    return {int(row["other"]) for row in rows}
+
+
 def suggested_slug(project: sqlite3.Row) -> Optional[str]:
     """The folder name this project's current title implies, or None.
 
@@ -2564,13 +2672,24 @@ def dismissed_questions(project_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def count_open_questions(project_id: int) -> int:
+def count_open_questions(project_id: int, exclude_id: Optional[int] = None) -> int:
+    """How many questions on this project are still waiting on a person.
+
+    `exclude_id` leaves one question out of the count, which is what
+    `worker.answer_settles_the_project` needs: it asks whether any question
+    OTHER than the one just answered is still open, and it must give the same
+    answer whether or not the caller has already settled that row. Without it
+    the rule would depend on an ordering nothing enforces, and would silently
+    stop firing the day some caller asked before writing.
+    """
     conn = get_conn()
+    sql = "SELECT COUNT(*) AS c FROM questions WHERE project_id = ? AND status = 'open'"
+    params: list[object] = [project_id]
+    if exclude_id is not None:
+        sql += " AND id != ?"
+        params.append(int(exclude_id))
     with _LOCK:
-        row = conn.execute(
-            "SELECT COUNT(*) AS c FROM questions WHERE project_id = ? AND status = 'open'",
-            (project_id,),
-        ).fetchone()
+        row = conn.execute(sql, params).fetchone()
     return int(row["c"])
 
 

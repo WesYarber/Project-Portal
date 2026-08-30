@@ -473,7 +473,9 @@ def test_the_tools_reach_a_run_through_the_mcp_server():
     assert token
 
     names = [t["name"] for t in portalmcp.tools(7, portalmcp._SCOPES[7].token)]
-    assert names == ["ask", "projects", "project_context", "project_files"]
+    assert names == [
+        "ask", "projects", "project_context", "project_files", "ask_project",
+    ]
     portalmcp.end(7)
 
 

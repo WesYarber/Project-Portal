@@ -256,25 +256,43 @@
   </form>
 </div>
 
-<h2>Recent activity</h2>
-{% if recent_journal %}
-{# The same scroll window the project journal gets, so the feed can carry more
-   history without pushing the bottom of the page away. #}
-<div class="card scroll-cap scroll-cap-journal">
-  {% for j in recent_journal %}
-  <div class="journal-entry from-{{ j.author }}">
-    <div class="meta">
-      <span class="badge author-{{ j.author }}">{{ j.author }}</span>
-      <span class="badge">{{ j.kind }}</span>
-      {% if j.project_slug %}<a href="/project/{{ j.project_slug }}">{{ j.project_title }}</a>{% endif %}
-      <span class="small muted">{{ j.ts|timeago }}</span>
-    </div>
-    <div class="content">{{ j.content_md|markdown_media(j.project_slug)|safe }}</div>
+{# Shut, and empty until it is opened. Wes, 2026-08-29: "recent activity on the
+   dashboard should also be more efficiently loaded / don't load everything
+   possible but just load a certain range of entries. It should also be
+   collapsed by default as I almost never use that."
+
+   Both halves of that are one change. The feed was 25 entries rendered inline
+   on every single load of the page he checks most often from his phone - and
+   an agent's journal entry is not a line, it is several KB of markdown with
+   tables in it. Measured on the live board the day this changed: 35 KB of
+   markdown, through `markdown_media`, before the dashboard could be sent.
+
+   So the entries do not merely start hidden, they are not rendered at all: the
+   fold carries `data-lazy-src` and app.js fetches /activity/feed the first time
+   it is opened, the same way a workspace folder in the file tree fills itself.
+   Hiding them with CSS would have cost exactly what it cost before.
+
+   The morph that live-refreshes this page leaves a `[data-lazy-loaded]`
+   subtree alone (see morphNode), so a feed he has opened is not emptied out
+   from under him by the next patch. #}
+{# `data-jump` and not a bare <h2> because the heading is now a summary, and the
+   rail builds its chapters from headings and jump targets. Without it this
+   section would vanish from the side rail's table of contents - the fold would
+   still be there, just unreachable from the one list that claims to name every
+   section on the page. It carries no hotkey (there are eight letters and far
+   more sections), and `jumpTo` opens every <details> down to its target, so
+   jumping here unfolds the feed and loads it in the same gesture. #}
+<details class="fold-section" id="activity" data-jump="activity"
+         data-jump-label="Recent activity" data-lazy-src="/activity/feed">
+  <summary>
+    <span class="fold-section-label">Recent activity</span>
+    <span class="muted small">across your projects</span>
+  </summary>
+  {# The same scroll window the project journal gets, so the feed can carry more
+     history without pushing the bottom of the page away. #}
+  <div class="card scroll-cap scroll-cap-journal lazy-body">
+    <p class="muted small lazy-placeholder">loading...</p>
   </div>
-  {% endfor %}
-</div>
-{% else %}
-<p class="empty-state">No activity yet.</p>
-{% endif %}
+</details>
 
 {% endblock %}

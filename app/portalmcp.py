@@ -82,7 +82,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from app import config, crossproject, db, notify, people, quickreplies
+from app import config, crossproject, db, inquiry, notify, people, quickreplies
 
 log = logging.getLogger("portal.mcp")
 
@@ -158,6 +158,10 @@ def begin(run_id: int, project_id: int, task: str = "build") -> Optional[str]:
 
 def end(run_id: int) -> None:
     _SCOPES.pop(run_id, None)
+    # The inquiry cap is counted per run in a module global of its own, so the
+    # run that is over has to be forgotten or the next run to be handed the same
+    # id (which is every run, on a fresh test database) inherits its tally.
+    inquiry.forget_run(run_id)
 
 
 def mcp_config(run_id: int, token: str) -> dict:
@@ -219,7 +223,11 @@ def _cross_tools(project_id: int, name: str) -> list[dict]:
     try:
         if not crossproject.enabled() or not crossproject.readable(project_id):
             return []
-        return crossproject.tool_specs(name)
+        # No second `inquiry.enabled()` check: it *is* `crossproject.enabled()`,
+        # so the early return above already covers it. A sweep found that
+        # deleting the extra guard changed nothing a test could see, which is
+        # what an unreachable branch looks like from the outside.
+        return crossproject.tool_specs(name) + [inquiry.tool_spec(name)]
     except Exception:  # noqa: BLE001 - a broken listing must not cost the run `ask`
         log.exception("Could not build the cross-project tools for %s", project_id)
         return []
@@ -294,6 +302,8 @@ async def call(run_id: int, token: str, name: str, arguments: Any) -> dict:
         arguments = {}
     if name in crossproject.TOOL_NAMES:
         return _cross(scope, name, arguments)
+    if name == inquiry.TOOL_NAME:
+        return await _inquire(scope, arguments)
     if name != "ask":
         return _result(f"No such tool: {name}", is_error=True)
     try:
@@ -320,6 +330,29 @@ def _cross(scope: _Scope, name: str, arguments: dict) -> dict:
         log.exception("%s failed on run %s", name, scope.run_id)
         return _result(
             f"The portal could not answer `{name}`. Carry on without it.",
+            is_error=True,
+        )
+
+
+async def _inquire(scope: _Scope, args: dict) -> dict:
+    """One project's question put to another. Capped per run inside `inquiry`,
+    which also owns who may ask whom - the same rule as who may read whom."""
+    try:
+        return _result(
+            await inquiry.inquire(
+                scope.project_id,
+                scope.run_id,
+                str(args.get("slug") or ""),
+                str(args.get("question") or ""),
+            )
+        )
+    except crossproject.Denied as refusal:
+        return _result(str(refusal), is_error=True)
+    except Exception:  # noqa: BLE001 - a broken tool must not kill the run
+        log.exception("%s failed on run %s", inquiry.TOOL_NAME, scope.run_id)
+        return _result(
+            f"The portal could not put that question to another project. Carry on "
+            f"without it, or read the project with `project_context`.",
             is_error=True,
         )
 

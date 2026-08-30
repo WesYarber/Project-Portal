@@ -149,6 +149,24 @@ def thread_section(rows: Sequence[sqlite3.Row]) -> str:
     )
 
 
+def journal_section(project_id: int, limit: int = 20) -> str:
+    """The project's recent journal, as a read-only agent is shown it.
+
+    The side thread is excluded here for the same reason `agent_runner` excludes
+    it, and to the opposite end: it does not belong in a journal *tail* at all.
+    A run must not read it, and `build_prompt` reads it in full below instead of
+    in whatever fragment of it fits in the last twenty entries.
+
+    Shared with `app/inquiry.py`, whose answering agent wants exactly this
+    picture of the project it is answering for.
+    """
+    journal = db.list_journal_asc(project_id, limit=limit, exclude=db.SIDE_THREAD)
+    journal_txt = "\n".join(
+        f"- [{row['ts']}] {row['author']}/{row['kind']}: {row['content_md']}" for row in journal
+    ) or "(no journal entries yet)"
+    return f"## Recent journal (last {len(journal)})\n{journal_txt}"
+
+
 def build_prompt(project: sqlite3.Row, question: str) -> str:
     """The whole prompt for an ask. Pure, so it can be asserted on in tests.
 
@@ -159,16 +177,7 @@ def build_prompt(project: sqlite3.Row, question: str) -> str:
     from app import agent_runner  # local: agent_runner imports nothing from here
 
     parts = [ASK_INSTRUCTIONS, agent_runner._project_section(project)]  # noqa: SLF001
-
-    # Excluded here for the same reason agent_runner excludes it, and to the
-    # opposite end: the side thread does not belong in a journal tail at all.
-    # A run must not read it, and an ask reads it in full below instead of in
-    # whatever fragment of it fits in the last twenty entries.
-    journal = db.list_journal_asc(project["id"], limit=20, exclude=db.SIDE_THREAD)
-    journal_txt = "\n".join(
-        f"- [{row['ts']}] {row['author']}/{row['kind']}: {row['content_md']}" for row in journal
-    ) or "(no journal entries yet)"
-    parts.append(f"## Recent journal (last {len(journal)})\n{journal_txt}")
+    parts.append(journal_section(int(project["id"])))
 
     # `start` journals the question before the answer is even attempted, so by
     # the time this prompt is built the newest entry in the thread IS the

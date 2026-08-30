@@ -52,6 +52,11 @@ document.addEventListener("submit", function (ev) {
 // thing that stripped it.
 var BUSY_ATTR = "data-busy";
 
+// When the most recent press went out. Read by pressBlocked() far below, which
+// is what keeps a background patch off a page that is showing an optimistic
+// state the server has not confirmed yet.
+var pressStartedAt = 0;
+
 function formIsBusy(form) {
   return !!(form && form.hasAttribute && form.hasAttribute(BUSY_ATTR));
 }
@@ -64,6 +69,7 @@ function formIsBusy(form) {
 function markBusy(form, submitter) {
   if (!form || !form.setAttribute) return;
   form.setAttribute(BUSY_ATTR, "");
+  pressStartedAt = Date.now();
   if (submitter && submitter.setAttribute) {
     submitter.setAttribute(BUSY_ATTR, "");
     // aria-busy, and deliberately NOT `disabled`. Disabling a submit button
@@ -299,6 +305,7 @@ document.addEventListener("DOMContentLoaded", function () {
   watchForOffline();
   initDropzones();
   initFileTree();
+  initLazyFolds();
   initTitleRename();
   restoreScroll();
 });
@@ -383,6 +390,72 @@ function initFileTree() {
   }, true);
 }
 
+// --- Folds that fetch their own contents ------------------------------------
+//
+// The file tree above does this for workspace folders; this is the same idea
+// with no directory in it, for any <details data-lazy-src="..."> whose body is
+// a .lazy-body. The dashboard's "Recent activity" is the first user: 25 agent
+// journal entries is tens of KB of rendered markdown on a page Wes opens from
+// his phone many times a day and says he almost never scrolls that far down.
+//
+// Rendering it hidden would have cost exactly the same, so the server sends the
+// fold empty and the entries are fetched here the first time it is opened.
+//
+// The same handler serves the "show more" button inside the fetched fragment,
+// which carries its own data-lazy-src with a bigger limit. That one is a click,
+// not a toggle, and it REPLACES the body rather than appending - so pressing it
+// twice cannot double the feed.
+function initLazyFolds() {
+  function fill(box, url, flagOn) {
+    // Set before the request, not after: a fast double-click would otherwise
+    // fire two fetches and render the contents twice.
+    flagOn();
+    box.setAttribute("aria-busy", "true");
+    fetch(url, { headers: { "X-Requested-With": "fetch" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error(r.status);
+        return r.text();
+      })
+      .then(function (html) {
+        box.innerHTML = html;
+        box.removeAttribute("aria-busy");
+      })
+      .catch(function () {
+        // Say so and allow a retry. A fold that silently stayed empty would
+        // read as "there is nothing here", which is a different claim.
+        box.removeAttribute("aria-busy");
+        box.innerHTML =
+          '<p class="muted small lazy-placeholder">could not load - close and reopen to retry</p>';
+        box.parentNode && delete box.parentNode.dataset.lazyLoaded;
+      });
+  }
+
+  document.addEventListener("toggle", function (ev) {
+    var d = ev.target;
+    if (!d.matches || !d.matches("details[data-lazy-src]")) return;
+    if (!d.open || d.dataset.lazyLoaded) return;
+    var box = d.querySelector(".lazy-body");
+    if (!box) return;
+    fill(box, d.dataset.lazySrc, function () { d.dataset.lazyLoaded = "1"; });
+  }, true);
+
+  // "show more", which lives inside the fragment the fetch above brought back.
+  // Delegated for that reason - there is no such button at init time.
+  document.addEventListener("click", function (ev) {
+    var b = ev.target.closest && ev.target.closest("button[data-lazy-src]");
+    if (!b) return;
+    var box = b.closest(".lazy-body");
+    if (!box) return;
+    ev.preventDefault();
+    // Wes: a button with no visible response gets pressed again. The label
+    // changes in the same turn as the click, and the button is disabled so the
+    // second press is swallowed rather than queued.
+    b.disabled = true;
+    b.textContent = "loading...";
+    fill(box, b.dataset.lazySrc, function () {});
+  });
+}
+
 // --- Stay where you were across a submit -----------------------------------
 // Every form here is a POST that redirects back to the same page, and the
 // browser lands that fresh GET at the top. Answering the third question down,
@@ -458,6 +531,148 @@ window.addEventListener("load", function () {
     window.scrollTo(0, p.want);
   }
 });
+
+// --- Showing the result before the server confirms it -----------------------
+// Wes, 2026-08-29: "Apply UI actions on the client immediately instead of
+// waiting on the server and a reload - acknowledge on the 'since you last
+// checked in' banner, add note, run agent - and let the next real page load
+// correct any mismatch."
+//
+// The section above made the PRESS visible. This one makes the RESULT visible,
+// which is the half that was still missing: from the press until the patch
+// lands, the page shows the OLD state under a button that says it is working.
+// The busy mark makes that wait honest; it does not make it short. Two round
+// trips (the POST, then the refetch the morph patches from) is a quarter of a
+// second on the LAN and rather more over Tailscale from a phone.
+//
+// So the page is changed at press time and reconciled afterwards. Nothing here
+// is authoritative: every effect is a guess at what the server is about to
+// render, and the forced patch that follows overwrites it either way.
+//
+// Three verbs, not a general "swap this HTML in". Each of the three actions Wes
+// named is a different SHAPE of change - something goes away, a control changes
+// state, something appears - and a generic version would have to be handed
+// server-rendered markup, which is the round trip this whole section skips.
+//
+// `data-optimistic` is opt-in per form, for the same reason `data-inplace` is:
+// an effect is only safe where this file can predict the server's answer, and
+// most routes on this page it cannot.
+
+// Every effect returns a function that puts the page back, or null when there
+// was nothing to do. The undo is not decoration - postBody() now reports
+// whether the route ACCEPTED the post, and several of these routes refuse
+// (starting a run while one is in flight, a note on a deleted project). A page
+// still showing the run that did not start is worse than one that waited.
+function optimisticEffect(form, submitter) {
+  if (!form || !form.getAttribute) return null;
+  var kind = form.getAttribute("data-optimistic");
+  if (kind === "hide") return optimisticHide(form);
+  if (kind === "pending") return optimisticPending(submitter);
+  if (kind === "note") return optimisticNote(form);
+  return null;
+}
+
+// The banner folds away now. `hidden` rather than removing the node, and that
+// is the morph's attribute policy rather than caution: preservedAttr() refuses
+// to let a patch either add or remove `hidden`, so a background patch landing
+// mid-flight cannot bring the banner back for the quarter second before the
+// server agrees it is gone. Removing the node would look identical and then
+// fail exactly there, with the patch re-inserting it from a render that has not
+// heard about the press yet.
+//
+// It is also what bounds the mismatch Wes allows for. If the post is lost the
+// banner stays hidden until the next REAL page load - which renders fresh HTML
+// with no hidden attribute anywhere in it, so the correction costs nothing and
+// needs no bookkeeping to survive.
+function optimisticHide(form) {
+  var sel = form.getAttribute("data-optimistic-target");
+  var el = sel && document.querySelector ? document.querySelector(sel) : null;
+  if (!el || !el.setAttribute || el.hasAttribute("hidden")) return null;
+  el.setAttribute("hidden", "");
+  return function () { el.removeAttribute("hidden"); };
+}
+
+// The pressed button says now what the server is about to say. Disabled as well
+// as relabeled: "agent running..." over a button that still depresses is an
+// invitation to press it again, and the busy guard above swallows a repeat only
+// until the patch lands and rebuilds the form.
+//
+// Reached only when the browser names a submitter (Safari before 15.4 does
+// not), which costs that browser the effect and nothing else.
+function optimisticPending(submitter) {
+  if (!submitter || !submitter.getAttribute) return null;
+  var label = submitter.getAttribute("data-optimistic-label");
+  if (!label) return null;
+  var wasLabel = submitter.textContent;
+  var wasDisabled = !!submitter.disabled;
+  submitter.textContent = label;
+  submitter.disabled = true;
+  return function () {
+    submitter.textContent = wasLabel;
+    submitter.disabled = wasDisabled;
+  };
+}
+
+// A note is two changes at once, because both are what "sent" looks like: the
+// box empties, and the note appears in the journal above it.
+//
+// Staged files and recorded takes are deliberately NOT cleared here, unlike in
+// clearComposeForm(). Their object URLs are revoked on the way out, so that
+// clear cannot be undone - and a post the server refused must leave a voice
+// memo you have not sent exactly where you left it. They keep the old timing,
+// cleared once the post has actually been accepted.
+function optimisticNote(form) {
+  if (!form.querySelector) return null;
+  var box = form.querySelector("textarea[name='note']");
+  var text = box ? box.value : "";
+  if (!text || !text.trim()) return null;
+  box.value = "";
+  if (typeof autosize === "function") autosize(box);
+  var echo = echoNote(text);
+  return function () {
+    box.value = text;
+    if (typeof autosize === "function") autosize(box);
+    if (echo && echo.remove) echo.remove();
+  };
+}
+
+// A stand-in for the journal entry the server is about to write. Prepended,
+// because the feed is newest-first (db._JOURNAL_ORDER).
+//
+// Marked with a CLASS and never a data-* attribute, and that is load-bearing in
+// the opposite direction to the busy mark above: preservedAttr() refuses to
+// REMOVE a data-* the server did not render, so a data-marked echo would keep
+// its half-sent look forever. `class` is synced straight from the server's
+// render, so the morph turns this node into the real entry - byline, timestamp,
+// attachments, edit controls and all - and the marker comes off in the same
+// patch that fills the rest in.
+//
+// Nor is it in MORPH_KEEP, for that same reason. Everything in that list is
+// client-only state the server knows nothing about; this is a placeholder for
+// something the server is about to know about, so being replaced is the point.
+function echoNote(text) {
+  var feed = document.getElementById ? document.getElementById("journal") : null;
+  if (!feed || !document.createElement) return null;
+  var entry = document.createElement("div");
+  entry.className = "journal-entry from-user note-unsent optimistic-echo";
+  var meta = document.createElement("div");
+  meta.className = "meta";
+  var badge = document.createElement("span");
+  badge.className = "badge badge-unsent";
+  badge.textContent = "sending...";
+  meta.appendChild(badge);
+  var content = document.createElement("div");
+  content.className = "content";
+  // textContent, never innerHTML. This is the one place in this file where a
+  // person's typed text goes back onto the page without passing the server's
+  // markdown renderer, so it is the one place a note could put markup into its
+  // own project page.
+  content.textContent = text;
+  entry.appendChild(meta);
+  entry.appendChild(content);
+  feed.insertBefore(entry, feed.firstChild);
+  return entry;
+}
 
 // --- Acting on a row without leaving the page -------------------------------
 // Wes, 2026-08-04: "Checking a todo task jumps to the top of the page, but it
@@ -618,6 +833,13 @@ document.addEventListener("submit", function (ev) {
   // a run he did not ask for.
   if (ev.submitter && ev.submitter.name) data.set(ev.submitter.name, ev.submitter.value);
   releaseFocus(form);
+  // AFTER the payload is built, and that order is the sharpest trap in this
+  // file. The note effect EMPTIES the textarea it is echoing - run a line
+  // earlier and `new FormData(form)` reads the box it just cleared, so every
+  // note posts blank while the page shows it going out perfectly. The pending
+  // effect disables the pressed button, which is the same bug on the other
+  // form: `then` and `choice` ride on the submitter's own name/value.
+  var undo = optimisticEffect(form, ev.submitter || null);
   // Forced: the patch that follows is the answer to a button this reader just
   // pressed, so it does not wait behind a text box they left focused somewhere
   // else on the page. See refreshHeld().
@@ -643,7 +865,14 @@ document.addEventListener("submit", function (ev) {
   var posted = isMultipartForm(form)
     ? postMultipart(action, data, done)
     : postForm(action, formFields(data), done);
-  posted.then(function () { clearBusy(form); });
+  // `ok` is false when the route REFUSED the post - postBody has already put
+  // its reason in an alert. The optimistic change has to come back off in that
+  // case, or the alert says "a run is in flight" over a button reading "agent
+  // running..." that is describing a run which never started.
+  posted.then(function (ok) {
+    clearBusy(form);
+    if (!ok && undo) undo();
+  });
 });
 
 // A FormData flattened to the plain object postForm wants. Only reached for a
@@ -2578,6 +2807,13 @@ function enhanceSelect(sel) {
 // forgotten. That is what lets a caller hold a busy control until the page has
 // actually caught up. It never rejects: every branch here ends in an alert or a
 // patch, so a caller can chain a cleanup with a plain .then().
+//
+// It resolves TRUE when the route accepted the post and false when it refused
+// or never answered. That distinction used to die inside postBody with the
+// alert, which was fine while the only thing chained on it was clearBusy - the
+// mark comes off either way. It is not fine now that a caller may have already
+// changed the page on the strength of this post (see the optimistic section):
+// an undo needs to know the difference between "done" and "no".
 function postForm(action, fields, onDone) {
   var body = new URLSearchParams();
   Object.keys(fields || {}).forEach(function (k) { body.append(k, fields[k]); });
@@ -2613,12 +2849,19 @@ function postBody(action, body, headers, onDone) {
         return r.json().then(
           function (data) { alert(data.detail || "That didn't work."); },
           function () { alert("That didn't work."); }
-        );
+        ).then(function () { return false; });
       }
-      if (onDone) return onDone();
-      return liveReload();
+      // Resolved THROUGH the patch, not beside it: a caller waiting on this
+      // promise is waiting for the page to have caught up, so `true` must not
+      // arrive while the morph is still running.
+      return Promise.resolve(onDone ? onDone() : liveReload()).then(function () {
+        return true;
+      });
     })
-    .catch(function () { alert("The portal didn't answer - is it restarting?"); });
+    .catch(function () {
+      alert("The portal didn't answer - is it restarting?");
+      return false;
+    });
 }
 
 // Which zone means which stored status is written on the zone itself
@@ -3208,6 +3451,11 @@ function morphNode(live, next) {
   if (live.id === "console-out") return;
   // Folder contents were fetched on demand; the server renders them empty.
   if (live.matches && live.matches(".tree-dir[data-tree-loaded]")) return;
+  // Same for a lazy fold the reader has opened (the dashboard's activity feed).
+  // Without this the next patch would replace a feed he is reading with the
+  // empty shell the server sends, which is Wes's "nothing moves that he did not
+  // move" in its most literal form.
+  if (live.matches && live.matches("details[data-lazy-loaded]")) return;
   morphChildren(live, next);
 }
 
@@ -3295,8 +3543,28 @@ function interactionBlocked() {
   return !!(sel && !sel.isCollapsed);
 }
 
+// A press whose answer has not landed yet. Between the press and the patch the
+// page is knowingly showing a state the server has not confirmed (see the
+// optimistic section), so an unforced background patch would rub that out and
+// the forced one would put it back a moment later - a flicker on the exact
+// control the reader just pressed, which is "nothing moves that he didn't move"
+// in miniature. The patch the press ASKED for is forced, and refreshHeld()
+// never routes a forced patch through here.
+//
+// Time-bounded, and that bound is the whole reason this is not just "is a form
+// busy". A fetch that never settles leaves the mark on forever, and without a
+// ceiling the page would then never refresh again - so an optimistic state old
+// enough to be stale stops being something to protect and becomes exactly the
+// mismatch a patch should be allowed to correct.
+var PRESS_HOLD_MS = 10000;
+
+function pressBlocked() {
+  if (!pressStartedAt || Date.now() - pressStartedAt >= PRESS_HOLD_MS) return false;
+  return !!(document.querySelector && document.querySelector("form[" + BUSY_ATTR + "]"));
+}
+
 function refreshBlocked() {
-  return typingBlocked() || interactionBlocked();
+  return typingBlocked() || interactionBlocked() || pressBlocked();
 }
 
 // --- Holding the view still across a patch ---------------------------------

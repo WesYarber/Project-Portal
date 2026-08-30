@@ -273,6 +273,41 @@ def test_a_press_still_waits_for_what_a_patch_would_destroy(ran):
         assert waits[state + "Forced"] is True, state
 
 
+def test_a_patch_nobody_asked_for_waits_while_a_press_is_still_in_flight(ran):
+    """What keeps an optimistic change from flickering.
+
+    Between the press and the patch, the page is deliberately showing a state
+    the server has not confirmed - the banner already folded away, the note
+    already in the journal. An unforced background patch renders from a server
+    that has not heard about the press yet, so it would put all of that back,
+    and the forced patch would take it off again a fraction of a second later.
+
+    The forced patch is the one that press asked for and it must never wait
+    here: held, it could never land, and the optimistic state would be
+    permanent rather than temporary.
+    """
+    waits = ran["whatAPatchWaitsFor"]
+    assert waits["pressing"] is True
+    assert waits["pressingForced"] is False
+
+
+def test_the_press_hold_lets_go_rather_than_freezing_the_page(ran):
+    """Both ways out, because this is the one guard that could wedge a page.
+
+    A fetch that never settles leaves the busy mark on forever. Held on that
+    alone, a page would stop refreshing for good - a far worse bug than the
+    flicker the hold exists to avoid - so the hold expires and the patch is
+    then free to correct whatever the stale optimistic state got wrong.
+
+    And a press that has LANDED holds nothing, even though the timestamp of it
+    is still fresh: the mark and the clock are read together. Read apart, every
+    page would go dead for ten seconds after any button on it was touched.
+    """
+    waits = ran["whatAPatchWaitsFor"]
+    assert waits["pressingStale"] is False
+    assert waits["pressedAndDone"] is False
+
+
 # --------------------------------------------------------------------------
 # The look
 # --------------------------------------------------------------------------

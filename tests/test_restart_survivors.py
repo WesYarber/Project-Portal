@@ -74,11 +74,15 @@ def _running_run(project_id: int, unit: str | None) -> int:
 
 def _restart_db(monkeypatch, live_units: set[str]):
     """Re-run the boot path against the same database, with systemd answering
-    for `live_units`. This is what a service restart does."""
+    for `live_units`. This is what a service restart does - and note that it is
+    two calls, not one: `init_db()` migrates, and settling live runs is the
+    separate, explicit act only a booting service performs. See the section at
+    the bottom of this file for why they had to come apart."""
     monkeypatch.setattr(
         runlimit, "scope_is_active", lambda unit: unit in live_units
     )
     db.init_db()
+    db.reconcile_orphaned_runs_on_boot()
 
 
 # --- defect 2: the boot sweep now asks instead of assuming --------------------
@@ -128,7 +132,7 @@ def test_a_run_that_was_never_scoped_is_orphaned_without_asking(project, monkeyp
         return True
 
     monkeypatch.setattr(runlimit, "scope_is_active", spy)
-    db.init_db()
+    db.reconcile_orphaned_runs_on_boot()
 
     assert asked == []
     assert db.get_run(run_id)["status"] == "error"
@@ -142,7 +146,7 @@ def test_an_unknown_answer_from_systemd_does_not_invent_a_survivor(project, monk
     run_id = _running_run(project["id"], "portal-run-671-123-1.scope")
 
     monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: None)
-    db.init_db()
+    db.reconcile_orphaned_runs_on_boot()
 
     assert db.get_run(run_id)["status"] == "error"
 
@@ -168,6 +172,104 @@ def test_two_runs_are_settled_independently(project, monkeypatch):
     assert db.get_run(alive)["status"] == "running"
     assert db.get_run(dead)["status"] == "error"
     assert db.running_project_ids() == {project["id"]}
+
+
+# --- init_db() is not a restart, and must not be able to claim it was ---------
+#
+# 2026-08-29. Wes pressed "parallel run" and seconds later his journal filled up
+# with "The service restarted while run 1359 was still working" - four projects,
+# seven times over two minutes. He read it as the second agent having interrupted
+# the first, and asked what was restarting the service.
+#
+# Nothing was. `systemctl show -p NRestarts` said 0 and the process had been up
+# for two hours. The entries came from an agent reading the real board with
+# `python -c "from app import db; db.init_db(); ..."` - eleven times in that one
+# run. `init_db()` ended by settling orphaned runs, so every throwaway script that
+# touched this database found the LIVE runs, correctly saw their scopes were
+# still up, "adopted" them, and journaled a restart into each of their projects.
+#
+# The bookkeeping was writing fiction into the record, and the record is the thing
+# Wes reads. These pin the split that fixed it.
+
+
+def test_reading_the_database_does_not_journal_a_restart(project, monkeypatch):
+    """The report itself. `init_db()` is how anything reaches this database - a
+    one-off script, a live check, an agent poking the real board - and none of
+    those are a service starting up."""
+    _running_run(project["id"], "portal-run-1359-123-1.scope")
+    monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: True)
+
+    db.init_db()
+
+    bodies = [e["content_md"] for e in db.list_journal(project["id"])]
+    assert not any("service restarted" in b for b in bodies)
+
+
+def test_reading_the_database_does_not_settle_a_live_run(project, monkeypatch):
+    """The dangerous half of the same call. `_reconcile_orphaned_runs` clears
+    the only column `running_project_ids()` reads, so an ad-hoc `init_db()` on a
+    box where the scope probe cannot answer would have unlocked an occupied
+    workspace and let the worker start a second agent into it."""
+    run_id = _running_run(project["id"], "portal-run-1359-123-1.scope")
+    monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: None)
+
+    db.init_db()
+
+    assert db.get_run(run_id)["status"] == "running"
+    assert project["id"] in db.running_project_ids()
+
+
+def test_init_db_is_repeatable_without_accumulating_journal_entries(project, monkeypatch):
+    """Eleven calls in one run was what made this visible rather than merely
+    wrong, so the count is worth asserting and not just the absence."""
+    _running_run(project["id"], "portal-run-1359-123-1.scope")
+    monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: True)
+
+    before = len(db.list_journal(project["id"]))
+    for _ in range(11):
+        db.init_db()
+
+    assert len(db.list_journal(project["id"])) == before
+
+
+def test_the_boot_path_still_journals_when_it_really_is_a_boot(project, monkeypatch):
+    """The other side of the split: moving the work must not lose it. The
+    service calls this for itself, and there the message is true."""
+    _running_run(project["id"], "portal-run-671-123-1.scope")
+    monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: True)
+
+    db.reconcile_orphaned_runs_on_boot()
+
+    bodies = [e["content_md"] for e in db.list_journal(project["id"])]
+    assert any("survived the restart" in b for b in bodies)
+
+
+@pytest.mark.asyncio
+async def test_the_service_startup_actually_calls_the_boot_reconciler(monkeypatch):
+    """Pins the wiring rather than the function. Splitting reconciliation out of
+    `init_db()` and then forgetting to call it from `main.on_startup` would leave
+    every genuinely orphaned run marked 'running' forever, locking its project
+    out for good - a worse bug than the one being fixed, and one no test of
+    `db.py` alone would notice."""
+    from app import main
+
+    called: list[bool] = []
+    monkeypatch.setattr(db, "reconcile_orphaned_runs_on_boot",
+                        lambda: called.append(True))
+    # Everything else the handler does reaches outside the test: background
+    # pollers, the worker loop, a memory snapshot. The reconciler is what this
+    # asserts, so the rest is stubbed to nothing.
+    monkeypatch.setattr(main.memory, "snapshot_all", lambda: None)
+    monkeypatch.setattr(main.site, "warnings", lambda: [])
+    monkeypatch.setattr(main.spawnauth, "problems", lambda: [])
+    monkeypatch.setattr(main.asyncio, "create_task", lambda coro: coro.close())
+
+    try:
+        await main.on_startup()
+    finally:
+        main._BACKGROUND_TASKS.clear()
+
+    assert called == [True]
 
 
 # --- the other half: an adopted run has to be able to END ---------------------

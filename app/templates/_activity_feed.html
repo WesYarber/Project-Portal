@@ -1,0 +1,33 @@
+{# The dashboard's "Recent activity" entries, as a standalone fragment.
+
+   Rendered only by /activity, never inline on the dashboard: the fold on
+   index.html arrives shut and EMPTY, and this is fetched the first time it is
+   opened. That is the whole point of the split - see the comment on the fold
+   itself for the weight it takes off the page Wes actually lives on. #}
+{% if recent_journal %}
+{% for j in recent_journal %}
+<div class="journal-entry from-{{ j.author }}">
+  <div class="meta">
+    <span class="badge author-{{ j.author }}">{{ j.author }}</span>
+    <span class="badge">{{ j.kind }}</span>
+    {% if j.project_slug %}<a href="/project/{{ j.project_slug }}">{{ j.project_title }}</a>{% endif %}
+    <span class="small muted">{{ j.ts|timeago }}</span>
+  </div>
+  <div class="content">{{ j.content_md|markdown_media(j.project_slug)|safe }}</div>
+</div>
+{% endfor %}
+{# The next range, on the same fetch path that brought this one. It swaps this
+   body rather than appending, so pressing it twice cannot double the feed, and
+   it stops being rendered once the last fetch came back short of what it asked
+   for - a "show more" that yields nothing is a button that reads as broken. #}
+{% if more_limit %}
+<p class="journal-more">
+  <button type="button" class="linkish" data-lazy-src="/activity/feed?limit={{ more_limit }}">
+    show more activity
+  </button>
+  <span class="small muted">kept off the page so the dashboard loads fast</span>
+</p>
+{% endif %}
+{% else %}
+<p class="empty-state">No activity yet.</p>
+{% endif %}

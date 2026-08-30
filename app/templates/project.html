@@ -82,8 +82,14 @@
   </ul>
   {# data-inplace: the banner is at the top of the page, so clearing it with a
      navigation put you back at the top too. Patched in place it just folds
-     away and the page keeps the line you were reading. #}
-  <form method="post" action="/project/{{ project.slug }}/acknowledge" data-inplace>
+     away and the page keeps the line you were reading.
+
+     data-optimistic="hide": it folds away on the press rather than two round
+     trips later. Nothing here can disagree with the server for long - the
+     forced patch that follows re-renders the banner's absence, and a lost post
+     leaves it hidden only until the next real page load. #}
+  <form method="post" action="/project/{{ project.slug }}/acknowledge"
+        data-inplace data-optimistic="hide" data-optimistic-target="#work-summary">
     <button type="submit" class="btn secondary">acknowledged</button>
   </form>
 </div>
@@ -404,8 +410,28 @@
        a run is exactly the "submitting consumes the form" case - the button
        becomes "agent running..." and the console box below fills in, both of
        which arrive on the patch. #}
-    <form method="post" action="/project/{{ project.slug }}/run" class="inline-form" data-inplace>
-      <button type="submit" {{ 'disabled' if active_run.active }}>
+    {# data-optimistic="pending": the button takes its running label on the
+       press instead of after the POST and the patch. Starting a run is the
+       slowest of the three, so it is the one where the old wait was long
+       enough to read as nothing having happened.
+
+       Why the label is not a lie by the time the patch lands: `run_now` only
+       puts the project id on `worker.manual_queue` and sets `_wake`, so the
+       run ROW does not exist when the route answers. It exists a moment later
+       because `spawn_run` creates it synchronously, with no await between the
+       wake and `db.create_run` - well inside the round trip the browser needs
+       to refetch this page. Where a run genuinely cannot start (the parallel
+       cap, an occupied workspace) the label reverting to "run agent now" is
+       the truth, which is the mismatch correcting itself rather than a bug.
+
+       ON THE PREVIEW SERVER IT ALWAYS REVERTS, and it looks exactly like this
+       feature failing: deploy/preview.py clears `on_startup`, so the worker
+       loop never runs and nothing ever drains that queue. Do not "fix" it
+       there. #}
+    <form method="post" action="/project/{{ project.slug }}/run" class="inline-form"
+          data-inplace data-optimistic="pending">
+      <button type="submit" {{ 'disabled' if active_run.active }}
+              data-optimistic-label="agent running...">
         {% if active_run.active %}agent running...{% elif build_gated %}run planning pass{% else %}run agent now{% endif %}
       </button>
     </form>
@@ -611,6 +637,72 @@
     </form>
     {% endif %}
   </div>
+</details>
+{% endif %}
+
+{# Related projects, declared by hand. The slug heuristic in
+   app/crossproject.py pairs `commander-case-custom-lid` with
+   `commander-case-counter-configurator` for free, but it can never pair
+   `commander-case` with `3d-vectorizer` - the two names share not one token -
+   and that pair is exactly the one Wes has to be the wire for today.
+
+   In this section rather than one of its own: "how this project relates to
+   other projects" is one question, and the sub-project blocks above are the
+   other half of the answer. A section of its own would also be a fourth row in
+   Settings > sections and a chapter in the rail for something that is usually
+   empty.
+
+   `data-jump-nav="off"` with nothing linked, for the same reason the empty
+   splitter opts out: the rail lists places on this page worth going to, and an
+   empty fold is not one. #}
+{% if cross_project_on %}
+<details class="fold-section" id="related" {{ 'open' if linked_projects }}
+         {% if not linked_projects %}data-jump-nav="off"{% endif %}>
+  <summary>
+    <span class="fold-section-label">Related projects</span>
+    <span class="muted small">
+      {%- if linked_projects %}{{ linked_projects|length }} linked
+      {%- else %}none linked{% endif -%}
+    </span>
+  </summary>
+
+  {% if linked_projects %}
+  <ul class="linked-projects">
+    {% for r in linked_projects %}
+    <li>
+      <a href="/project/{{ r.slug }}">{{ r.title }}</a>
+      <span class="badge status-{{ display_state(r) }}">{{ display_state(r)|status_badge }}</span>
+      <code class="small muted">{{ r.slug }}</code>
+      <form method="post" action="/project/{{ project.slug }}/unlink" class="inline-form">
+        <input type="hidden" name="other_id" value="{{ r.id }}">
+        <button type="submit" class="small secondary" aria-label="unlink {{ r.title }}">unlink</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="small muted">
+    An agent working here is told about these by name and can read their
+    briefs, todo lists, journals and workspace files - so you do not have to
+    re-explain one project to another. The link works both ways: runs over
+    there are told about this project too.
+  </p>
+  {% else %}
+  <p class="small muted">
+    Link a project whose context an agent here would need. Projects with
+    similar names are already paired automatically; this is for the pairs no
+    name could reveal - a store project and the tool that makes its artwork.
+    Runs on both sides are then told about the other and can read it.
+  </p>
+  {% endif %}
+
+  {% if link_candidates %}
+  <form method="post" action="/project/{{ project.slug }}/link" class="convert-form link-form">
+    <select name="other_id" aria-label="project to link">
+      {% for p in link_candidates %}<option value="{{ p.id }}">{{ p.title }}</option>{% endfor %}
+    </select>
+    <button type="submit">link it</button>
+  </form>
+  {% endif %}
 </details>
 {% endif %}
 {% endmacro %}
@@ -863,9 +955,16 @@
      background patch cannot stomp a half-typed note), which is exactly wrong
      the moment the note has been sent - without it the note sits in the box
      looking unsent, beside its own copy in the journal. #}
+  {# data-optimistic="note": the box empties and the note appears at the top of
+     the journal on the press, rather than after the POST and the patch that
+     follows it. The echo is a placeholder - the morph turns it into the
+     server's own entry (byline, timestamp, attachments, edit controls) as soon
+     as the patch lands, and a refused post puts what you typed back in the
+     box. Staged files and voice takes are NOT cleared here; see
+     optimisticNote() for why that clear cannot be undone. #}
   <form method="post" action="/project/{{ project.slug }}/note"
         enctype="multipart/form-data" class="note-form" data-dropzone
-        data-inplace data-compose>
+        data-inplace data-compose data-optimistic="note">
     <div class="field">
       {# enterkeyhint=enter asks a phone keyboard for a return key rather than a
          "go" key: on mobile Enter must insert a newline, never submit. #}

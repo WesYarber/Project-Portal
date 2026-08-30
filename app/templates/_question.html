@@ -63,7 +63,14 @@
         placeholder="{{ 'Add anything else, or answer by typing...' if options else 'Your answer...' }}"></textarea>
     </div>
     <div class="button-row">
-      <button type="submit">answer</button>
+      <button type="submit"
+              title="Record this answer and start a run on it now, if this was the last question open on the project">answer</button>
+      {# The same opt-out "queue note" is beside the note box, and for the same
+         reason: sometimes the answer is for the agent to read next time it runs
+         rather than a reason to start one. It posts to the same route with
+         `then=queue`, which is the only thing the route reads it for. #}
+      <button type="submit" name="then" value="queue" class="secondary"
+              title="Record this answer for the agent's next run - don't start a run now">queue answer</button>
       {% if saved %}
       <button type="submit" formnovalidate formaction="/questions/{{ q.id }}/reopen"
               class="secondary">put back on the questions page</button>

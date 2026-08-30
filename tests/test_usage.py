@@ -1,6 +1,7 @@
 """Run budget (permanent + temporary + per-project) and live-run visibility."""
 from __future__ import annotations
 
+import re
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -243,10 +244,35 @@ def test_project_page_without_runs_renders(client, project):
 
 
 def test_another_projects_run_is_not_shown_as_active_here(client, project):
+    """With parallel runs, the newest run in flight is often somebody else's.
+
+    This used to search the whole page for the words "agent running...", which
+    stopped being a question about the button on 2026-08-29: the run form now
+    carries `data-optimistic-label="agent running..."` so app.js can put that
+    label on at press time, and the phrase is in the markup whatever the state.
+
+    So the button itself is what is asserted - its rendered text and whether it
+    is disabled - plus the absence of the cancel form that only appears beside a
+    run this page owns. All three still go the wrong way if this project's page
+    starts reporting another project's agent.
+    """
     other = db.create_project("Other", stage="active", build_approved=True, slug="other")
     db.create_run(other["id"], "build", "opus")
     body = client.get(f"/project/{project['slug']}").text
-    assert "agent running..." not in body
+    button = re.search(
+        rf'<form[^>]*action="/project/{project["slug"]}/run"[^>]*>\s*'
+        r"<button([^>]*)>(.*?)</button>",
+        body,
+        re.S,
+    )
+    assert button, "the run form is not on the page at all"
+    attrs, label = button.group(1), button.group(2)
+    # The label the reader SEES, kept apart from the attributes - the optimistic
+    # label lives in one of those and says "agent running..." on every render.
+    assert "agent running..." not in label
+    assert "run agent now" in label
+    assert "disabled" not in attrs
+    assert "stop this run" not in body
 
 
 def test_settings_page_shows_the_budget_controls(client):

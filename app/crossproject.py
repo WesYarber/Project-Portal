@@ -63,8 +63,28 @@ shared token instead paired `secret-shopper-helper` with
 
 Derived, not declared, because a declared link is a form Wes would have to fill
 in for thirty projects before the feature did anything at all - and his slugs
-already carry the grouping. A declared "related projects" field is the obvious
-next step *on top of* this, not instead of it.
+already carry the grouping.
+
+A **declared** link now sits on top of that, for the pairs the heuristic cannot
+see: `commander-case` depends on `3d-vectorizer` and the two slugs share not one
+token, so no rule about prefixes will ever pair them. The link is a row in
+`project_links`, made from the project page, and it is:
+
+- **Unordered.** "Related" has no direction, and a link that showed on one page
+  and not the other is a thing a person would have to notice and repair by hand.
+  Declaring it on `commander-case` means a run on `3d-vectorizer` is told about
+  `commander-case` too, which is the half Wes would otherwise be the wire for.
+- **Ahead of the derived ones, and never crowded out by them.** A person said
+  so; a prefix rule guessed. So the declared list is carried whole and the
+  derived ones fill what is left of `RELATED_CAP` beneath it.
+- **Still readable-filtered.** A link is a pointer, not a grant: it goes through
+  `readable()` like everything else, so declaring one to a project the run's
+  principal is not a member of names nothing. Otherwise a link would be a way to
+  hand a run a project its own person cannot see.
+- **Left out when the pair is family.** Not because a link there is wrong, but
+  because `subprojects.prompt_section` already names every parent, sibling and
+  child a few lines above with the slug these tools take, and the whole of what
+  this section adds for them is that slug.
 
 The rarity ceiling scales with the board (`_df_ceiling`): a token in more than
 40% of readable projects groups nothing useful, but on a three-project install
@@ -241,7 +261,62 @@ def family_ids(project: sqlite3.Row) -> set[int]:
     return ids
 
 
+def declared(reader_id: int) -> list[sqlite3.Row]:
+    """The readable NON-FAMILY projects a person has linked to this one by hand.
+
+    Order is `readable()`'s - most recently worked first - because a hand-made
+    link says nothing about which of several matters most, and "what has moved
+    lately" is the useful tiebreak when the run has to choose one to read.
+
+    See the module docstring for why this is readable-filtered and why family
+    drops out.
+    """
+    ids = db.linked_project_ids(int(reader_id))
+    if not ids:
+        # Deliberately unobservable: deleting this line changes no answer, only
+        # the work done to reach it. Most projects have no declared link, and
+        # without it every one of them pays a full `readable()` scan - a
+        # `list_projects` plus a membership walk - on every prompt build. The
+        # mutation sweep reports it as an escape, correctly, and it stays.
+        return []
+    reader = db.get_project(int(reader_id))
+    if reader is None:
+        # Only reachable if a link row outlived its project, which the ON
+        # DELETE CASCADE makes impossible - but "impossible" here means "one
+        # schema edit away", and the alternative is `family_ids(None)` raising
+        # inside a prompt build. Pinned by a test that forces the disagreement.
+        return []
+    kin = family_ids(reader)
+    return [
+        row
+        for row in readable(reader_id)
+        if int(row["id"]) in ids and int(row["id"]) not in kin
+    ]
+
+
 def related(reader_id: int, cap: int = RELATED_CAP) -> list[sqlite3.Row]:
+    """Every readable non-family project worth naming to a run on this one:
+    the hand-declared links first, then what the slugs imply.
+
+    The declared ones are carried WHOLE - `cap` bounds what the heuristic may
+    add beneath them, never what a person asked for. A guess must not push out a
+    statement.
+    """
+    hand = declared(reader_id)
+    # The bound lives in `derived` and nowhere else: more declared links than
+    # `cap` leaves negative room, and a second `max(0, ...)` here would make
+    # both guards deletable one at a time with nothing to show for it. A
+    # negative cap means "no room", which is what `derived` answers.
+    return hand + derived(
+        reader_id, exclude={int(r["id"]) for r in hand}, cap=int(cap) - len(hand)
+    )
+
+
+def derived(
+    reader_id: int,
+    exclude: Optional[set[int]] = None,
+    cap: int = RELATED_CAP,
+) -> list[sqlite3.Row]:
     """The readable NON-FAMILY projects whose slugs put them in the same body of
     work.
 
@@ -252,12 +327,17 @@ def related(reader_id: int, cap: int = RELATED_CAP) -> list[sqlite3.Row]:
     parent, sibling and child directly above this section in the prompt, and on
     this board the strongest slug groupings *are* families - `board-games-tak`
     would otherwise carry a second copy of all seven of its siblings.
+
+    `exclude` is the ids already named as declared links, so the same project
+    cannot appear twice in one section under two different explanations.
     """
+    if cap <= 0:
+        return []
     reader = db.get_project(int(reader_id))
     if reader is None:
         return []
-    kin = family_ids(reader)
-    others = [r for r in readable(reader_id) if int(r["id"]) not in kin]
+    skip = family_ids(reader) | set(exclude or ())
+    others = [r for r in readable(reader_id) if int(r["id"]) not in skip]
     if not others:
         return []
 
@@ -307,7 +387,12 @@ def prompt_section(project: sqlite3.Row, offered: bool = True) -> str:
     if not offered or not enabled():
         return ""
     try:
-        neighbors = related(int(project["id"]))
+        hand = declared(int(project["id"]))
+        guessed = derived(
+            int(project["id"]),
+            exclude={int(r["id"]) for r in hand},
+            cap=RELATED_CAP - len(hand),
+        )
         kin = [
             row
             for row in readable(int(project["id"]))
@@ -316,7 +401,7 @@ def prompt_section(project: sqlite3.Row, offered: bool = True) -> str:
     except Exception:  # pragma: no cover - defensive; never lose a run over this
         log.exception("related() failed for %s", project["slug"])
         return ""
-    if not neighbors and not kin:
+    if not hand and not guessed and not kin:
         return ""
 
     lines = ["## Reading other projects"]
@@ -329,21 +414,29 @@ def prompt_section(project: sqlite3.Row, offered: bool = True) -> str:
             "The family named above is readable from here - their slugs are "
             f"{slugs}."
         )
-    if neighbors:
+    if hand:
+        # Said apart from the guessed ones, and said first, because the two
+        # carry different weight: a person decided this one, so a run that has
+        # to pick which neighbor to spend context on should pick from here.
         lines.append(
-            "These are other projects on this portal that look like they belong "
-            "to the same body of work as this one. They are separate projects "
+            "A person has linked these projects to this one by hand, so treat "
+            "them as directly relevant - whatever this project's work touches "
+            "that one of them owns, read it there rather than guessing or "
+            "asking to have it re-explained:"
+        )
+        lines.append("")
+        lines.extend(_neighbor_lines(hand))
+    if guessed:
+        lines.append(
+            ("These other projects" if hand else "These are other projects")
+            + " on this portal look like they belong to the same body of work "
+            "as this one, going by their names. They are separate projects "
             "with their own workspaces, journals and runs - do NOT do their "
             "work here - but you can read them, and you should when this "
             "project's job depends on something one of them already worked out:"
         )
         lines.append("")
-        for row in neighbors:
-            desc = _one_line(row["description"] or row["initial_idea"])
-            lines.append(
-                f"- **{row['title']}** (`{row['slug']}`, {db.display_state(row)})"
-                + (f" - {desc}" if desc else "")
-            )
+        lines.extend(_neighbor_lines(guessed))
     lines.extend(
         [
             "",
@@ -354,7 +447,27 @@ def prompt_section(project: sqlite3.Row, offered: bool = True) -> str:
             "`projects` lists every project you can read, not just these.",
         ]
     )
+    # Imported here rather than at module scope: `inquiry` imports `ask`, which
+    # imports `agent_runner`, which imports this module - and the prompt is the
+    # only place the two halves meet.
+    from app import inquiry
+
+    if inquiry.enabled():
+        lines.extend(["", inquiry.prompt_line()])
     return "\n".join(lines)
+
+
+def _neighbor_lines(rows: Iterable[sqlite3.Row]) -> list[str]:
+    """One bullet per neighbor, the same shape for declared and derived alike -
+    what distinguishes them is the sentence above the list, not the bullet."""
+    out = []
+    for row in rows:
+        desc = _one_line(row["description"] or row["initial_idea"])
+        out.append(
+            f"- **{row['title']}** (`{row['slug']}`, {db.display_state(row)})"
+            + (f" - {desc}" if desc else "")
+        )
+    return out
 
 
 def _one_line(text: Optional[str], limit: int = 160) -> str:
@@ -372,6 +485,9 @@ def listing(reader_id: int) -> str:
     rows = readable(reader_id)
     if not rows:
         return "There are no other projects on this portal you can read."
+    linked = {int(r["id"]) for r in declared(reader_id)}
+    # Not `- linked`: the branch below reads `linked` first, so a declared link
+    # can never pick up the weaker mark. Subtracting here as well was dead.
     near = {int(r["id"]) for r in related(reader_id)}
     lines = [
         f"{len(rows)} project(s) you can read. Use `project_context` with a slug "
@@ -380,7 +496,10 @@ def listing(reader_id: int) -> str:
     ]
     for row in rows:
         desc = _one_line(row["description"] or row["initial_idea"], 120)
-        mark = " [related to yours]" if int(row["id"]) in near else ""
+        if int(row["id"]) in linked:
+            mark = " [linked to yours by hand]"
+        else:
+            mark = " [related to yours]" if int(row["id"]) in near else ""
         lines.append(
             f"- `{row['slug']}` - **{row['title']}** ({db.display_state(row)})"
             f"{mark}" + (f" - {desc}" if desc else "")

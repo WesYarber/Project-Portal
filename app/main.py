@@ -30,6 +30,7 @@ from app import (
     claudelogin,
     climemory,
     config,
+    crossproject,
     daycycle,
     db,
     filetree,
@@ -998,6 +999,10 @@ _BACKGROUND_TASKS: list[asyncio.Task] = []
 @app.on_event("startup")
 async def on_startup() -> None:
     db.init_db()
+    # Only here, and only because this really is the service starting: adopting
+    # or burying a run that a previous process left behind is a conclusion only
+    # a booting portal is entitled to draw. See db.reconcile_orphaned_runs_on_boot.
+    db.reconcile_orphaned_runs_on_boot()
     # Say the configuration problems out loud. Both of these otherwise present
     # only as something quietly not working - every printed link dead on the
     # phone that reads it, or every run failing inside the CLI with an auth
@@ -1124,10 +1129,10 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
         q for q in db.open_questions()
         if q["project_id"] not in shelved and q["project_id"] in mine
     ]
-    # 25 rather than 10 now the feed scrolls inside its own window instead of
-    # stretching the page. Scoped in SQL rather than here - see list_journal.
-    recent_journal = db.list_journal(limit=25, only_projects=mine)
-
+    # Recent activity is NOT read here any more. The dashboard renders the fold
+    # shut and empty and app.js fetches /activity/feed the first time it opens,
+    # so the 35 KB of agent markdown that feed carries is off the critical path
+    # of the page Wes opens most. See the fold in index.html.
     settings = db.get_all_settings()
     # Named apart from the `usage` module, which this function also calls.
     usage_now = usage_snapshot()
@@ -1142,7 +1147,6 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             "backlog_projects": shelves["backlog"],
             "done_projects": done,
             "open_questions": open_qs,
-            "recent_journal": recent_journal,
             "usage": usage_now,
             "worker_enabled": usage_now["worker_enabled"],
             "question_counts": question_counts,
@@ -1325,8 +1329,49 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "can_become_child": subprojects.can_become_child(project),
             "adopt_parents": subprojects.adoptive_parents(project),
             "child_question_counts": db.open_question_counts(),
+            **_related_context(project),
         },
     )
+
+
+def _related_context(project) -> dict:
+    """What the "Related projects" fold needs: the declared links, and the
+    projects that could still become one.
+
+    Candidates are `crossproject.readable()` minus what is already linked minus
+    the family - the same list a run on this project can actually reach, so the
+    dropdown cannot offer a link that would name nothing. Empty when
+    cross-project reading is switched off, which is also when the whole fold
+    stops being drawn.
+    """
+    pid = int(project["id"])
+    if not crossproject.enabled():
+        return {"linked_projects": [], "link_candidates": [], "cross_project_on": False}
+    linked = db.linked_project_ids(pid)
+    kin = crossproject.family_ids(project)
+    readable = crossproject.readable(pid)
+    return {
+        # Not crossproject.declared(): this is the page where a link is
+        # MANAGED, so one that has become family must still be listed with its
+        # remove button rather than vanishing from the only place it can be
+        # taken off again.
+        #
+        # Still readable-filtered, though, and that is the one case where the
+        # link does vanish from this end: membership can change after a link is
+        # made, and drawing a row for a project this page's viewer is no longer
+        # on would name somebody else's work on a page they can open. It stays
+        # removable from the other end, where they are a member.
+        "linked_projects": [r for r in readable if int(r["id"]) in linked],
+        "link_candidates": sorted(
+            (
+                r
+                for r in readable
+                if int(r["id"]) not in linked and int(r["id"]) not in kin
+            ),
+            key=lambda r: str(r["title"] or "").lower(),
+        ),
+        "cross_project_on": True,
+    }
 
 
 @app.post("/project/{slug}/run-cap")
@@ -1637,6 +1682,35 @@ async def release_subproject(slug: str) -> RedirectResponse:
     except subprojects.SplitError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return RedirectResponse(url=f"/project/{slug}", status_code=303)
+
+
+@app.post("/project/{slug}/link")
+async def link_project(slug: str, other_id: int = Form(...)) -> RedirectResponse:
+    """Declare another project related to this one.
+
+    For the pairs `crossproject`'s slug heuristic cannot see - `commander-case`
+    depends on `3d-vectorizer` and the two names share nothing. The link is
+    unordered, so this also tells runs on the other project about this one.
+    """
+    project = _get_project_or_404(slug)
+    other = db.get_project(other_id)
+    if other is None:
+        raise HTTPException(status_code=404, detail="No such project to link")
+    # Only a project this one's runs may actually read: a link that named a
+    # project the principal is not a member of would point at nothing, and the
+    # dropdown that offers them is built from the same list.
+    if other_id not in {int(r["id"]) for r in crossproject.readable(project["id"])}:
+        raise HTTPException(status_code=400, detail="That project cannot be linked here")
+    db.link_projects(project["id"], other_id)
+    return RedirectResponse(url=f"/project/{slug}#related", status_code=303)
+
+
+@app.post("/project/{slug}/unlink")
+async def unlink_project(slug: str, other_id: int = Form(...)) -> RedirectResponse:
+    """Undeclare a link, from either end of it."""
+    project = _get_project_or_404(slug)
+    db.unlink_projects(project["id"], other_id)
+    return RedirectResponse(url=f"/project/{slug}#related", status_code=303)
 
 
 async def _start_parallel(project) -> None:
@@ -2407,6 +2481,7 @@ async def answer_question(
     question_id: int,
     answer: str = Form(""),
     choice: str = Form(""),
+    then: str = Form(""),
     next: str = Form(""),
 ) -> RedirectResponse:
     """Answer a question, by tapping an offered option, by typing, or both.
@@ -2425,6 +2500,12 @@ async def answer_question(
     rather than trusted: the answer is journalled and read by the next agent,
     and an answer it never offered is a worse thing to record than a dropped
     tap. An unrecognized choice falls back to the typed text alone.
+
+    `then=queue` is the "queue answer" button, and it is the same opt-out the
+    note box's "queue note" is: the answer is recorded and journalled exactly as
+    ever, and nothing else is touched - no run now, whatever else is or is not
+    still open. Wes, 2026-08-30: "There should now be an option, when answering
+    questions, to queue the answer rather than running it immediately."
     """
     question = db.get_question(question_id)
     if question is None:
@@ -2447,6 +2528,12 @@ async def answer_question(
     # A web answer settles the Telegram copies too - without this, whoever
     # got the question on Telegram keeps a message that looks open forever.
     await notify.settle_question_copies(question_id, f"answered: {text}")
+    # An answer is an instruction, so it starts a run the way a note does -
+    # unless this press was the explicit "queue answer". See
+    # worker.answer_arrived for the three cases that deliberately do not, one of
+    # which is "another question on this project is still open".
+    if then != "queue":
+        await worker.answer_arrived(question)
     return RedirectResponse(url=_after_question(question, next), status_code=303)
 
 
@@ -3452,6 +3539,53 @@ async def workspace_tree(request: Request, slug: str, path: str = "") -> HTMLRes
         request,
         "_file_tree.html",
         {"entries": filetree.children(workspace, path), "project": project},
+    )
+
+
+# How many entries the dashboard's activity fold asks for the first time it is
+# opened, and how much bigger each "show more" gets. Wes: "don't load everything
+# possible but just load a certain range of entries."
+ACTIVITY_PAGE = 15
+ACTIVITY_MAX = 200
+
+
+@app.get("/activity/feed", response_class=HTMLResponse)
+async def activity_feed(request: Request, limit: int = ACTIVITY_PAGE) -> HTMLResponse:
+    """The dashboard's recent-activity entries, as an HTML fragment.
+
+    Under `/activity/feed` and not `/activity`, which is already the full
+    activity PAGE (runs, heatmap, filters). Registering a second handler on that
+    path does not fail - FastAPI keeps the first match - so the collision showed
+    up only as this fragment quietly answering with an entire HTML document.
+
+    The dashboard itself renders this fold shut and empty; app.js fetches it the
+    first time it is opened, and again with a bigger `limit` for "show more".
+    Nothing here is on the critical path of the dashboard - which is the point,
+    because the feed is the heaviest thing that page used to carry and the one
+    Wes says he almost never looks at.
+
+    Scoped to the reader's own projects by the same rule the dashboard filters
+    by, and in SQL rather than afterwards - see `db.list_journal`. Doing it here
+    rather than trusting the caller matters: this is a real address, so it
+    answers whoever asks it directly just as it answers the fold.
+    """
+    # Clamped rather than trusted. `limit` arrives in a query string, and an
+    # unbounded one turns a fetch meant to keep the page light into a request
+    # that renders every journal entry the install has ever written.
+    limit = max(1, min(int(limit), ACTIVITY_MAX))
+    mine = scope.visible_ids(me())
+    rows = db.list_journal(limit=limit, only_projects=mine)
+    # Only offer more when this answer actually filled the range asked for. A
+    # short read means the feed is exhausted, and a "show more" that comes back
+    # identical is a control that reads as broken.
+    more = limit + ACTIVITY_PAGE
+    return templates.TemplateResponse(
+        request,
+        "_activity_feed.html",
+        {
+            "recent_journal": rows,
+            "more_limit": more if len(rows) >= limit and limit < ACTIVITY_MAX else 0,
+        },
     )
 
 

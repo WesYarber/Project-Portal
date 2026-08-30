@@ -39,8 +39,18 @@ const confirmSrc = slice("// Confirm destructive actions.", "// --- One press, o
 const busySrc = slice("// --- One press, one action", "// Ctrl/Cmd+Enter", "busy guard");
 const scrollSrc = slice(
   'var SCROLL_KEY = "portal:scroll-after-submit";',
-  "// --- Acting on a row without leaving the page",
+  "// --- Showing the result before the server confirms it",
   "scroll stash"
+);
+// The optimistic effects sit between the stash and the poster in the file, and
+// the poster CALLS them - so they have to be in this bundle even though what
+// they do is covered by its own harness (tests/js/optimistic.mjs). What is
+// under test here is only that an ordinary form, carrying no data-optimistic at
+// all, still goes through untouched.
+const optimisticSrc = slice(
+  "// --- Showing the result before the server confirms it",
+  "// --- Acting on a row without leaving the page",
+  "optimistic effects"
 );
 const inplaceSrc = slice(
   "// Opt-in per form (`data-inplace`)",
@@ -66,8 +76,19 @@ const blockedSrc = slice(
   "refreshBlocked"
 );
 const heldSrc = slice("var refreshQueued = false;", "function liveRefreshNow", "refreshHeld");
+// The busy marker's own state, which refreshBlocked() now reads: a patch nobody
+// asked for waits while a press is still in flight, so the optimistic state on
+// the page is not rubbed out and then put back. Sliced rather than redeclared
+// so the test cannot drift from the real attribute name or the real window.
+const busyStateSrc = slice(
+  'var BUSY_ATTR = "data-busy";',
+  "function formIsBusy(",
+  "busy marker state"
+);
 
-const SRC = [confirmSrc, busySrc, scrollSrc, inplaceSrc, postFormSrc, liveReloadSrc].join("\n");
+const SRC = [
+  confirmSrc, busySrc, scrollSrc, optimisticSrc, inplaceSrc, postFormSrc, liveReloadSrc,
+].join("\n");
 
 // preservedAttr is a pure function, so it gets driven on its own rather than
 // through the stub document the listeners need.
@@ -672,25 +693,40 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
 {
   const held = new Function(
     "doc, win",
-    chordSrc + blockedSrc + heldSrc +
+    busyStateSrc + chordSrc + blockedSrc + heldSrc +
       ";var document = doc, window = win;" +
       "return function (scene) {" +
       "  document = scene.doc; window = scene.win; refreshForced = !!scene.forced;" +
+      "  pressStartedAt = scene.pressStartedAt || 0;" +
       "  return refreshHeld();" +
       "};"
   )();
 
-  // A page with nothing going on, and the four states that hold a patch back.
+  // A page with nothing going on, and the states that hold a patch back.
+  //
+  // `querySelector` has to tell the two questions apart now: the open-widget
+  // check asks for ".sel.open, .ctx-menu, [data-record].recording" and
+  // pressBlocked() asks for "form[data-busy]". Answering both from one flag
+  // would make every open-dropdown scene look like a press in flight as well,
+  // and the assertion that a press alone holds a patch could not then fail.
   function page(opts) {
     const o = opts || {};
     return {
       doc: {
         activeElement: o.activeElement || null,
-        querySelector: (sel) => (o.openWidget ? { sel: sel } : null),
+        querySelector: (sel) => {
+          if (sel === "form[data-busy]") return o.pressing ? { sel: sel } : null;
+          return o.openWidget ? { sel: sel } : null;
+        },
         body: { classList: { contains: () => !!o.dragging } },
       },
       win: { getSelection: () => ({ isCollapsed: !o.selecting }) },
       forced: !!o.forced,
+      // Real clock arithmetic rather than a stub: PRESS_HOLD_MS is the decision
+      // under test, so the age of the press has to be a real number of
+      // milliseconds measured against the same Date.now() the code reads.
+      pressStartedAt:
+        o.pressing || o.recentPress ? Date.now() - (o.pressAge || 0) : 0,
     };
   }
 
@@ -722,6 +758,24 @@ const flush = async () => { for (let i = 0; i < 8; i++) await Promise.resolve();
     draggingForced: held(page({ dragging: true, forced: true })),
     selecting: held(page({ selecting: true })),
     selectingForced: held(page({ selecting: true, forced: true })),
+
+    // A press still in flight. The page is showing an optimistic state the
+    // server has not confirmed, so a patch NOBODY asked for waits rather than
+    // rubbing it out for the quarter second before the real one puts it back.
+    // The patch that press asked for is forced and goes straight through -
+    // without that it could never land, and the optimistic state would be
+    // permanent.
+    pressing: held(page({ pressing: true })),
+    pressingForced: held(page({ pressing: true, forced: true })),
+    // Past the ceiling. A fetch that never settles leaves the mark on forever,
+    // and a page that then never refreshes again is a worse bug than the
+    // flicker this avoids - so a stale press stops being protected.
+    pressingStale: held(page({ pressing: true, pressAge: 11000 })),
+    // The mark is gone but the timestamp of the last press is still fresh. The
+    // two are read together, so a press that has already landed holds nothing -
+    // otherwise every page would stop refreshing for ten seconds after any
+    // button on it was touched.
+    pressedAndDone: held(page({ recentPress: true })),
   };
 }
 

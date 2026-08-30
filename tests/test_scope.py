@@ -106,11 +106,18 @@ def test_the_dashboard_shows_only_your_own_cards(client, board):
     assert "His Thing" not in html
 
 
+# The dashboard's activity feed moved to its own address on 2026-08-29 - it is
+# fetched on demand rather than rendered inline, so these ask /activity/feed
+# rather than /. The scoping rule they pin is unchanged, and asking the fragment
+# directly is if anything the sharper question: it is a real URL, so it has to
+# apply the rule itself rather than inherit it from the page that embeds it.
+
+
 def test_the_journal_feed_does_not_carry_other_peoples_entries(client, board):
     db.add_journal(board["his"], "agent", "progress", "A secret about His Thing")
     db.add_journal(board["hers"], "agent", "progress", "Something about Her Thing")
     as_her(client, board)
-    html = client.get("/").text
+    html = client.get("/activity/feed").text
     assert "Something about Her Thing" in html
     assert "A secret about His Thing" not in html
 
@@ -118,7 +125,7 @@ def test_the_journal_feed_does_not_carry_other_peoples_entries(client, board):
 def test_a_quiet_project_still_fills_its_own_feed(client, board):
     """The reason list_journal narrows in SQL rather than after the LIMIT.
 
-    Filtering afterwards lets the other 25 entries eat every slot, so somebody
+    Filtering afterwards lets the other entries eat every slot, so somebody
     whose one project is quiet opens the portal to an empty feed and concludes
     the thing is broken. Thirty of his against one of hers, and hers has to
     survive."""
@@ -126,7 +133,7 @@ def test_a_quiet_project_still_fills_its_own_feed(client, board):
         db.add_journal(board["his"], "agent", "progress", f"his entry {i}")
     db.add_journal(board["hers"], "agent", "progress", "her only entry")
     as_her(client, board)
-    assert "her only entry" in client.get("/").text
+    assert "her only entry" in client.get("/activity/feed").text
 
 
 def test_install_wide_journal_entries_reach_everybody(client, board):
@@ -134,7 +141,7 @@ def test_install_wide_journal_entries_reach_everybody(client, board):
     a new model. It belongs to nobody, so scoping must not swallow it."""
     db.add_journal(None, "system", "status", "The service is restarting")
     as_her(client, board)
-    assert "The service is restarting" in client.get("/").text
+    assert "The service is restarting" in client.get("/activity/feed").text
 
 
 def test_the_nav_badge_counts_only_your_own_questions(client, board):
@@ -322,4 +329,5 @@ def test_a_one_person_install_sees_exactly_what_it_saw_before(client):
     db.add_journal(a, "agent", "progress", "alpha moved")
     assert scope.visible_ids(people.owner()) == {a, b}
     html = client.get("/").text
-    assert "Alpha" in html and "Beta" in html and "alpha moved" in html
+    assert "Alpha" in html and "Beta" in html
+    assert "alpha moved" in client.get("/activity/feed").text

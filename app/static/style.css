@@ -946,6 +946,23 @@ button:active, .btn:active { filter: brightness(1.4); }
 .family-moves { margin-top: 0.6rem; }
 .family-moves .convert-form { margin: 0; }
 
+/* Hand-declared related projects. One row each: the title, its state, the slug
+   an agent addresses it by, and the unlink button pushed to the far end so the
+   destructive control is never under the thumb that meant to open the project.
+   Wraps rather than shrinks on a phone - the slug is the one part that must
+   stay readable, since it is what a person types into a note. */
+.linked-projects { list-style: none; margin: 0.6rem 0 0; padding: 0; }
+.linked-projects li {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--window-border);
+}
+.linked-projects li:last-child { border-bottom: 0; }
+.linked-projects .inline-form { margin-left: auto; }
+
 form.inline { display: inline-block; margin-right: 0.4rem; }
 .button-row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
 
@@ -970,6 +987,23 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
 }
 .journal-more a { font-size: 0.85rem; }
 
+/* A button that reads as the link beside it. The dashboard's "show more
+   activity" has to be a <button>, not an <a>: it swaps the feed in place
+   rather than going anywhere, and an anchor with no href is not focusable or
+   keyboard-operable. Styled here so it matches "show N older entries" in the
+   project journal, which does the same job one section over. */
+.linkish {
+  font: inherit;
+  font-size: 0.85rem;
+  color: var(--ansi-blue);
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+.linkish:hover:not(:disabled) { text-decoration: underline; }
+.linkish:disabled { color: var(--terminal-dim); cursor: default; }
+
 .journal-entry {
   border-left: 2px solid var(--window-border);
   padding-left: 0.9rem;
@@ -984,6 +1018,14 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
    anywhere. */
 .journal-entry.note-unsent { border-left-style: dashed; }
 .badge-unsent { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+/* A note drawn by app.js on the press, before the server has confirmed it
+   (echoNote). Deliberately just dimmed rather than given a spinner: it is a
+   real note in every way that matters, and it is replaced by the server's own
+   render on the very next patch - so anything more emphatic would be a piece of
+   chrome that flashes up and vanishes. The class is what the morph strips as it
+   swaps the real entry in, which is why the marker is a class and not a
+   data-* attribute. */
+.journal-entry.optimistic-echo { opacity: 0.6; }
 
 /* The ask side thread. It no longer runs through the journal at all - it is a
    conversation in the ask box at the top of the page (Wes, 2026-08-16) - but a

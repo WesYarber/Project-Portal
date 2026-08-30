@@ -216,6 +216,9 @@ async def _handle_callback(callback: dict) -> None:
     db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await ack(f"Recorded: {answer_text}")
     await _settle_or_mark(question_id, message, f"answered: {answer_text}")
+    # A tap from the lock screen is an answer like any other, so it starts a run
+    # like any other - see worker.answer_arrived.
+    await worker.answer_arrived(question)
 
 
 async def _settle_or_mark(question_id: int, message: dict, verdict: str) -> None:
@@ -422,6 +425,8 @@ async def _answer_question(ref: int, answer_text: str, chat_id: str, by_id: bool
     db.answer_question_and_resume(question_id, answer_text, person_id=_person_id(chat_id))
     await notify.send_telegram_text(chat_id, persona.say("answer_recorded", qid=shown))
     await notify.settle_question_copies(question_id, f"answered: {answer_text}")
+    # A typed reply is an answer like any other - see worker.answer_arrived.
+    await worker.answer_arrived(question)
 
 
 async def _handle_model(arg: str, chat_id: str) -> None:
