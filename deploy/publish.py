@@ -31,7 +31,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app import config, leakscan  # noqa: E402
+from app import config, leakscan, mirror  # noqa: E402
 
 ROOT = config.APP_ROOT
 DEFAULT_TARGET = ROOT.parent / "project-portal-public"
@@ -46,6 +46,25 @@ This repository starts here on purpose. It is developed in a private repo whose
 history contains credentials from the author's own machines, and history cannot
 be un-published once pushed, so the public tree begins at a single commit.
 """
+
+
+def stamped(message: str) -> str:
+    """Add the `Source-commit:` trailer naming what this tree was copied from.
+
+    The two repositories share no commit id - the public history starts fresh
+    on purpose - so without this line there is nothing at all to compare, and
+    "has the mirror fallen behind the source?" is a question only a person
+    holding both checkouts can answer. `app/mirror.py` reads it back on every
+    worker tick to decide whether to publish; a reader on GitHub gets the same
+    answer for free.
+
+    It is honest only because the automatic path refuses to publish a dirty
+    tree (see `mirror.source_clean`). A publish run by hand over uncommitted
+    edits still stamps the commit it is closest to, which is the best available
+    answer and the reason this says "Source-commit" and not "this is commit".
+    """
+    head = mirror.source_head()
+    return f"{message.rstrip()}\n\n{mirror.TRAILER} {head}\n" if head else message
 
 
 def tracked_files() -> list[str]:
@@ -162,7 +181,7 @@ def main() -> int:
             return 0
     else:
         message = args.message or (INITIAL_COMMIT_MESSAGE if first else "Update from upstream")
-        commit = git(target, "commit", "-q", "-m", message)
+        commit = git(target, "commit", "-q", "-m", stamped(message))
         if commit.returncode != 0:
             print(commit.stderr, file=sys.stderr)
             return 1

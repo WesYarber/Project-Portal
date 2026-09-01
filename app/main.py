@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import os
 import shutil
 import sqlite3
 from datetime import datetime, timezone
@@ -999,10 +1000,31 @@ _BACKGROUND_TASKS: list[asyncio.Task] = []
 @app.on_event("startup")
 async def on_startup() -> None:
     db.init_db()
+    # `deploy/setup.py` and `deploy/update.py` boot this app on a scratch port
+    # purely to prove it answers, and everything below is wrong for that. Three
+    # separate ways wrong, each of which has actually happened or was one live
+    # install away from happening:
+    #
+    # - The worker loop schedules runs. On the empty board of a fresh clone its
+    #   first tick goes straight to the daily reflect, so `setup.py` on a new
+    #   machine spawns a real, billed `claude -p` within seconds of finishing.
+    #   That cost about ten seconds of Wes's allowance on 2026-08-30, from a
+    #   throwaway server that was never meant to do anything but say `pong`.
+    # - `reconcile_orphaned_runs_on_boot` settles every run it finds in flight
+    #   as an orphan. Against a live data directory - which is exactly what
+    #   `update.py` would be pointed at - that is the *running* service's runs,
+    #   killed on the books by a health check.
+    # - `preview.serve_loop` binds a fixed port, so the smoke test collides
+    #   with the portal it is checking rather than staying on its scratch port.
+    #
+    # So the flag is not "no worker", it is "this process is not the service":
+    # take no action that belongs to a real service start.
+    smoke = os.environ.get("PORTAL_SMOKE_TEST", "") == "1"
     # Only here, and only because this really is the service starting: adopting
     # or burying a run that a previous process left behind is a conclusion only
     # a booting portal is entitled to draw. See db.reconcile_orphaned_runs_on_boot.
-    db.reconcile_orphaned_runs_on_boot()
+    if not smoke:
+        db.reconcile_orphaned_runs_on_boot()
     # Say the configuration problems out loud. Both of these otherwise present
     # only as something quietly not working - every printed link dead on the
     # phone that reads it, or every run failing inside the CLI with an auth
@@ -1018,13 +1040,14 @@ async def on_startup() -> None:
     except Exception:  # noqa: BLE001 - never let a backup stop the app booting
         log.exception("Could not snapshot the memory files at startup")
     _BACKGROUND_TASKS.clear()
-    _BACKGROUND_TASKS.append(asyncio.create_task(worker.worker_loop()))
-    _BACKGROUND_TASKS.append(asyncio.create_task(telegram_bot.telegram_poll_loop()))
-    _BACKGROUND_TASKS.append(asyncio.create_task(limits.poll_loop()))
-    _BACKGROUND_TASKS.append(asyncio.create_task(netinfo.poll_loop()))
-    # The preview server shares this loop, so it starts and dies with the
-    # portal and needs no unit of its own. See app/preview.py.
-    _BACKGROUND_TASKS.append(asyncio.create_task(preview.serve_loop()))
+    if not smoke:
+        _BACKGROUND_TASKS.append(asyncio.create_task(worker.worker_loop()))
+        _BACKGROUND_TASKS.append(asyncio.create_task(telegram_bot.telegram_poll_loop()))
+        _BACKGROUND_TASKS.append(asyncio.create_task(limits.poll_loop()))
+        _BACKGROUND_TASKS.append(asyncio.create_task(netinfo.poll_loop()))
+        # The preview server shares this loop, so it starts and dies with the
+        # portal and needs no unit of its own. See app/preview.py.
+        _BACKGROUND_TASKS.append(asyncio.create_task(preview.serve_loop()))
     # Voice memos uploaded before transcription existed (or while its Docker
     # image was missing) get their text now. Serial, on its own daemon thread,
     # off the event loop.

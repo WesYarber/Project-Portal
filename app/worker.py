@@ -15,8 +15,8 @@ from typing import Optional
 
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
-    limits, memory, modelwatch, notes, notify, oneoff, orphans, pacing, people, portalmcp,
-    preview, proof, quiet,
+    limits, memory, mirror, modelwatch, notes, notify, oneoff, orphans, pacing, people,
+    portalmcp, preview, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, worklock,
 )
@@ -486,6 +486,7 @@ async def _tick() -> None:
     await _sweep_strays()
     _daily_audit_prune()
     await _daily_model_check()
+    await _publish_mirror()
     if _pending_restart is not None:
         # A self-update is waiting for the portal to go quiet. Start no
         # scheduled runs - one started now would be killed by the very restart
@@ -517,6 +518,23 @@ async def _tick() -> None:
     _drain_parallel_branches()
     await _maybe_reflect()
     await _maybe_compact()
+
+
+async def _publish_mirror() -> None:
+    """Push the public repo up to the source, when it has fallen behind.
+
+    Deliberately *above* the `_pending_restart` return rather than below it. A
+    deferred restart waits for every other run on the board to finish, which is
+    routinely half an hour; the source change that is waiting to be loaded has
+    already been committed by then, and it is exactly the change an install on
+    another machine is waiting to pull. Holding the publish behind the restart
+    would make the mirror's worst lag the board's slowest run.
+
+    Off the event loop, because the publish is a few hundred file copies, a
+    leak scan and a network push - about three seconds - and this tick is what
+    the console and the dashboard are waiting on.
+    """
+    await asyncio.to_thread(mirror.tick)
 
 
 def _drain_parallel_branches() -> None:

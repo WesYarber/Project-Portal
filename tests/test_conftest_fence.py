@@ -175,6 +175,29 @@ def test_reading_the_real_tree_is_not_fenced(tmp_path):
     assert len(css.read_text(encoding="utf-8")) > 0
 
 
+# --- no test may push to the real public repository --------------------------
+
+def test_the_public_mirror_is_pointed_away_from_the_real_one(tmp_path):
+    """`app/mirror.py` publishes and pushes to GitHub from the worker tick, and
+    eleven test files drive that tick.
+
+    Its target is a sibling of the *source* checkout rather than of the data
+    directory, so none of the `config` redirections in `temp_data_dir` move it:
+    left alone it is `../project-portal-public`, a real repo holding a real
+    deploy key with write access. The only thing standing between the suite and
+    a push would be `mirror.pending()` happening to say no.
+
+    Pointing it at a path that does not exist makes `configured()` False on one
+    `.exists()` call, before git is shelled out to at all.
+    """
+    from app import mirror
+
+    assert mirror.TARGET.parent == tmp_path
+    assert not mirror.TARGET.exists()
+    assert mirror.configured() is False
+    assert mirror.pending() is None
+
+
 # --- no test may start, stop or restart a unit it does not own ---------------
 
 def test_restarting_the_portal_service_is_refused(tmp_path):

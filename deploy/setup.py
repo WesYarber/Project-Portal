@@ -285,6 +285,14 @@ def smoke_test(report: Report) -> bool:
     On a port the kernel handed out rather than the configured one, so this
     neither collides with a portal already running here nor briefly exposes a
     half-configured one on the address people use.
+
+    And under `PORTAL_SMOKE_TEST`, which is the difference between asking the
+    app a question and starting it. Without it this function boots the whole
+    service: the worker loop schedules runs, and on the empty board of the
+    fresh clone that is the case this script exists for, the first tick goes
+    straight to the daily reflect and spawns a real, billed `claude -p`. A
+    setup script that spends money to prove the install worked is not a check,
+    it is a side effect. See `app/main.on_startup` for the other two.
     """
     python = venv_python()
     if not python.exists():
@@ -296,6 +304,7 @@ def smoke_test(report: Report) -> bool:
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env={**os.environ, "PORTAL_SMOKE_TEST": "1"},
     )
     url = f"http://127.0.0.1:{port}{PING_PATH}"
     deadline = time.monotonic() + 45

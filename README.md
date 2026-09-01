@@ -145,6 +145,41 @@ coding agent this repo and that file and it can bring the portal up on a new
 machine, hand back the two things it cannot do itself, and know which guard to
 run before pushing anywhere public.
 
+## Keeping an install up to date
+
+```bash
+python3 deploy/update.py          # do it
+python3 deploy/update.py --check  # report only, change nothing
+```
+
+Fetches, fast-forwards, reinstalls dependencies **only if `requirements.txt`
+actually moved**, checks that the new code imports, restarts the systemd unit
+if there is one, and then asks the restarted portal for `/api/ping`. If there
+is no unit it says so rather than guessing how you start it.
+
+It is deliberately unwilling to do anything clever:
+
+- **It never merges.** The pull is `--ff-only`. A checkout with commits your
+  remote does not have is a hard stop that names both sides and changes
+  nothing — a follower that has only ever fast-forwarded is always sitting on
+  a published commit, and one that has merged local work is a fork whose shape
+  nobody knows.
+- **An uncommitted edit to a tracked file stops it** before git is asked to do
+  anything, and the files are named. Untracked files are ignored: `data/`,
+  `secrets/` and `portal.toml` are all untracked and a fast-forward cannot
+  touch them.
+- **It checks before it restarts.** Dependencies go in and the app is imported
+  on the new tree while the old process is still serving, so the usual failure
+  — a requirement that moved — is caught with the portal still up.
+
+Both `deploy/setup.py` and `deploy/update.py` set `PORTAL_SMOKE_TEST=1` when
+they boot or import the app to check it. That flag means *this process is not
+the service*: no worker loop (which would schedule a real, billed agent run —
+on an empty board the first tick goes straight to the daily reflect), no
+orphaned-run reconciliation (which against a live data directory settles the
+**running** service's runs), and no preview server binding a port out from
+under the portal you are checking.
+
 ## Configure
 
 **Nothing is required.** With no config at all the portal reads the machine
@@ -631,6 +666,9 @@ adding real sandboxing.
 - `app/ask.py` — read-only "just asking" questions about a project: prompt,
   the flag set that makes it read-only, and the background answer task.
 - `app/persona.py` — plain vs GLaDOS voice for the bot's own messages.
+- `app/mirror.py` — keeps the public repository following the source, so an
+  install on another machine can `deploy/update.py` and get the change. Runs
+  from the worker tick; inert on any install that is not the one publishing.
 - `app/main.py` — FastAPI app, routes, startup wiring.
 - `app/templates/` — Jinja2 templates (server-rendered, mobile-first,
   dark terminal theme).

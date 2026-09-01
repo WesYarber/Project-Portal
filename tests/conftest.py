@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import module_state  # noqa: E402 - tests/, inserted just above
 
-from app import config, db, quiet, transcribe  # noqa: E402
+from app import config, db, mirror, quiet, transcribe  # noqa: E402
 
 # 13:00 in America/Chicago, the middle of a working afternoon. Quiet hours (23
 # -> 07) are the one guard in the scheduler that reads the wall clock with no
@@ -67,6 +67,20 @@ def temp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROFILE_MD", tmp_path / "memory" / "profile.md")
     monkeypatch.setattr(config, "LEARNINGS_MD", tmp_path / "memory" / "learnings.md")
     monkeypatch.setattr(config, "SUGGESTIONS_MD", tmp_path / "memory" / "suggestions.md")
+
+    # No test may reach the real public mirror. `mirror.TARGET` is a sibling of
+    # the *source* checkout, not of the data dir, so every redirection above
+    # leaves it pointing at `../project-portal-public` - a real git repo with a
+    # real deploy key and write access to GitHub. `mirror.tick()` runs from the
+    # worker tick, which plenty of tests drive, and it publishes whenever the
+    # source tree is clean and ahead of the mirror. That is one green tree away
+    # from a unit test pushing to a public repository.
+    #
+    # Pointed at a path that does not exist, `configured()` is False on a single
+    # `.exists()` call, so this also costs the suite nothing: `pending()` returns
+    # before it shells out to git even once. Tests of the mirror itself pass
+    # their own throwaway repositories in explicitly.
+    monkeypatch.setattr(mirror, "TARGET", tmp_path / "no-public-mirror")
 
     # `config.cli_version()` shells out to `claude --version` and memoizes the
     # answer in a module global, so exactly one test per process paid for a
