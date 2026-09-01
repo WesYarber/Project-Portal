@@ -38,6 +38,16 @@ HTTP request to the real service after it restarts.
 
 Exit status is 0 when the install is up to date and serving, 1 when a step
 failed or something needs hands.
+
+**One thing to know before running this from a scratch clone.** `SERVICE` is a
+machine-global unit name, so `systemctl --user restart project-portal.service`
+restarts *this machine's* portal whatever checkout the script was invoked from.
+Testing it against a throwaway clone on the development box therefore restarts
+the live service - which is exactly what happened while this was being built on
+2026-09-01. No damage came of it (agent runs live in systemd scopes of their
+own, not in the service's cgroup, so both in-flight runs were adopted rather
+than orphaned), but it is not what the person running it expected. Pass
+`--no-restart` when the checkout you are updating is not the one being served.
 """
 
 from __future__ import annotations
