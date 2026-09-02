@@ -110,6 +110,35 @@ def test_pause_form_posts_in_place_and_comes_back_to_the_dashboard(client):
         hookguard.end(run_id)
 
 
+def _card(page: str, slug: str) -> str:
+    start = page.index(f'data-slug="{slug}"')
+    return page[start:page.index("</a>", start)]
+
+
+def test_project_card_says_paused_under_a_held_run(client):
+    """The strip and the card are two views of one run: a green "agent
+    working" pulse on the card under an amber "paused" in the strip is the
+    disagreement Wes reads as a bug."""
+    project = _project()
+    run_id, _ = _live_run(project)
+    other, _ = _live_run(_project("other"))
+    try:
+        card = _card(client.get("/").text, project["slug"])
+        assert "agent working" in card and 'class="dot running"' in card
+        midrun.pause(other)
+        card = _card(client.get("/").text, project["slug"])
+        assert "agent working" in card, "another project's hold is not this card's"
+        midrun.pause(run_id)
+        card = _card(client.get("/").text, project["slug"])
+        assert "agent paused" in card and 'class="dot held"' in card
+        assert "agent working" not in card
+        midrun.resume(run_id)
+        assert "agent working" in _card(client.get("/").text, project["slug"])
+    finally:
+        hookguard.end(run_id)
+        hookguard.end(other)
+
+
 def test_api_active_run_carries_each_runs_hold_state(client):
     """What the poller paints from: per run, not only the newest."""
     a, _ = _live_run(_project("alpha"))

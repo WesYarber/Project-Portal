@@ -10,6 +10,9 @@
 {% set p = entry.project %}
 {% set qcount = question_counts.get(p.id, 0) %}
 {% set running = p.id in active_run.project_ids %}
+{# On hold (app/midrun.py): read off the same run snapshot the strip above is
+   painted from, so the card and the strip cannot disagree about one run. #}
+{% set held = running and p.id in (active_run.runs | selectattr('paused') | map(attribute='project_id') | list) %}
 {% set state = display_state(p) %}
 {# A project you have paused is not the same kind of "wants you" as one that
    is blocked mid-build: it is resting because you put it down. It keeps the
@@ -25,7 +28,7 @@
   <span class="cell-title">{{ p.title }}</span>
   {% if p.description %}<span class="cell-desc">{{ p.description }}</span>{% endif %}
   <span class="cell-run">
-    <span class="dot running"></span>agent working&hellip;
+    <span class="dot {{ 'held' if held else 'running' }}"></span>{% if held %}agent paused{% else %}agent working&hellip;{% endif %}
   </span>
   <span class="cell-foot">
     <span class="badge status-{{ state }}">{{ state|status_badge }}</span>
