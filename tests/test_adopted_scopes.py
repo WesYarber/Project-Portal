@@ -241,11 +241,19 @@ def test_the_stop_nudge_fires_once_across_a_restart(project, workspace, tmp_path
 
 
 def test_a_report_written_after_the_spawn_counts_after_a_restart(project, workspace, tmp_path):
-    """The freshness check reads `started` from the record: a report.json
-    written after the run began means the report was delivered."""
+    """The freshness check reads `started` from the record, not the clock at
+    revival: a report.json written after the run began - long before the
+    restart - means the report was delivered. Staged as a run spawned 100 s
+    ago whose report landed 50 s ago; a scope that took "now" as its start
+    would call that report stale and bounce a run that has already reported."""
     run_id, token = _spawned(project, workspace)
+    record = _scope_json(run_id)
+    record["started"] = time.time() - 100
+    db.set_run_scope_record(run_id, "hook_scope", json.dumps(record))
     (workspace / ".portal").mkdir()
-    (workspace / ".portal" / "report.json").write_text("{}")
+    report = workspace / ".portal" / "report.json"
+    report.write_text("{}")
+    os.utime(report, (time.time() - 50, time.time() - 50))
     _restart()
     payload = {"hook_event_name": "Stop", "transcript_path": str(tmp_path / "none.jsonl")}
     assert hookguard.decide_stop(run_id, token, payload)[0] == "allow"
