@@ -1700,6 +1700,13 @@ function startLiveRunPoll() {
       if (!row) return;
       var activity = row.querySelector(".live-activity");
       if (activity) activity.textContent = run.last_activity;
+      // The agent's newest words, above the tool line; hidden until it has
+      // said anything at all (a run's first seconds are all tool calls).
+      var said = row.querySelector(".live-said");
+      if (said) {
+        said.textContent = run.last_said || "";
+        said.hidden = !run.last_said;
+      }
       var meta = row.querySelector(".live-meta");
       if (meta) meta.textContent = run.model + " · " + run.elapsed + " · " + run.events + " events";
       paintHold(row, run);

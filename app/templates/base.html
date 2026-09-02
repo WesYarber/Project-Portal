@@ -122,9 +122,13 @@
         {{ rail.running }} agent{{ 's' if rail.running != 1 }} working</div>
       <ul class="rail-runs">
         {% for run in rail.runs %}
-        <li id="rail-run-{{ run.run_id }}"><a href="{{ run.href }}">
+        <li id="rail-run-{{ run.run_id }}"><a href="{{ run.href }}" title="{{ run.last_said or run.last_activity }}">
           <span class="rail-run-name">{{ run.label }}</span>
           {% if run.elapsed %}<span class="rail-run-elapsed">{{ run.elapsed }}</span>{% endif %}
+          {# The agent's newest words, one clipped line, so the rail says what
+             an agent is doing and not only that it is. Rendered with the
+             page: the rail is not polled. #}
+          {% if run.last_said %}<span class="rail-run-said">{{ run.last_said }}</span>{% endif %}
         </a></li>
         {% endfor %}
       </ul>

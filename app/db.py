@@ -544,6 +544,12 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "runs": [
         ("events", "INTEGER NOT NULL DEFAULT 0"),
         ("last_activity", "TEXT"),
+        # The newest thing the agent SAID (app/runlog.py `said`), kept apart
+        # from `last_activity` because the two move at different times: a
+        # narration line is followed by several tool-only turns, and the
+        # strip should keep showing the words while the tool line under them
+        # changes. NULL until the agent's first prose.
+        ("last_said", "TEXT"),
         ("last_event_at", "TEXT"),
         ("report_summary", "TEXT"),
         ("oneoff_id", "INTEGER"),
@@ -3882,15 +3888,25 @@ def runs_since(date: str, project_id: Optional[int] = None) -> list[sqlite3.Row]
         return conn.execute(sql + " ORDER BY started_at ASC", params).fetchall()
 
 
-def update_run_activity(run_id: int, last_activity: str, events: int) -> None:
+def update_run_activity(
+    run_id: int, last_activity: str, events: int, last_said: Optional[str] = None,
+) -> None:
     """Record the newest rendered log line so the UI can show what a run is
-    doing without reading its whole transcript."""
+    doing without reading its whole transcript. `last_said` is only written
+    when given: the agent's words outlive the tool calls that follow them."""
     conn = get_conn()
     with _LOCK:
-        conn.execute(
-            "UPDATE runs SET last_activity = ?, events = ?, last_event_at = ? WHERE id = ?",
-            (last_activity, events, now(), run_id),
-        )
+        if last_said is None:
+            conn.execute(
+                "UPDATE runs SET last_activity = ?, events = ?, last_event_at = ? WHERE id = ?",
+                (last_activity, events, now(), run_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE runs SET last_activity = ?, events = ?, last_event_at = ?, "
+                "last_said = ? WHERE id = ?",
+                (last_activity, events, now(), last_said, run_id),
+            )
         conn.commit()
 
 

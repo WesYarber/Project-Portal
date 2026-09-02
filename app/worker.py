@@ -983,7 +983,11 @@ def _live_logger(run_id: int) -> agent_runner.EventCallback:
         live.append(lines)
         if lines:
             state["last"] = lines[-1]
-        db.update_run_activity(run_id, state["last"], state["events"])
+        # The agent's words, when this event carries any (app/runlog.py
+        # `said`): written only then, so they stay on the strip through the
+        # tool-only turns that follow them.
+        said = runlog.said(event)
+        db.update_run_activity(run_id, state["last"], state["events"], said or None)
 
     return on_event
 

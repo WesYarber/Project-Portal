@@ -57,11 +57,13 @@ function makeRow(runId, opts) {
       }
     : null;
   const activity = { textContent: "" };
+  const said = { textContent: "", hidden: true };
   const meta = { textContent: "" };
   const row = {
     classList: classes(opts.paused ? ["live-run-row", "held"] : ["live-run-row"]),
     querySelector(sel) {
       if (sel === ".live-activity") return activity;
+      if (sel === ".live-said") return said;
       if (sel === ".live-meta") return meta;
       if (sel === ".dot") return dot;
       if (sel === ".live-hold") return badge;
@@ -77,6 +79,8 @@ function makeRow(runId, opts) {
         action: form ? form.attrs.action : null,
         button: form ? button.textContent : null,
         activity: activity.textContent,
+        said: said.textContent,
+        saidHidden: said.hidden,
       };
     },
   };
@@ -184,6 +188,21 @@ const out = {};
   await settle();
   await poll({ active: true, run_ids: "10,9", runs: [run(9), run(10, { paused: true, engaged: true })] });
   out.twoRuns = { 9: rows[9].snapshot(), 10: rows[10].snapshot() };
+}
+
+// --- 4. The agent's words: hidden until it says anything, then shown, and
+// kept while later polls carry them (the API repeats the newest words on
+// every poll; a run that has said nothing sends "").
+{
+  const rows = { 11: makeRow(11, { paused: false, engaged: false, canPause: true }) };
+  world = makeWorld(rows);
+  const app = load();
+  app.startLiveRunPoll();
+  await settle();
+  await poll({ active: true, run_ids: "11", runs: [run(11, { last_said: "" })] });
+  out.silent = rows[11].snapshot();
+  await poll({ active: true, run_ids: "11", runs: [run(11, { last_said: "Checking the run page for holds.", last_activity: "> Read(app/templates/run.html)" })] });
+  out.spoke = rows[11].snapshot();
 }
 
 console.log(JSON.stringify(out));

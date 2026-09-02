@@ -7,6 +7,7 @@ only ever appends and never rewrites: an offset handed out earlier stays valid.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -123,6 +124,53 @@ def _result_text(block: dict) -> str:
             part.get("text", "") for part in content if isinstance(part, dict)
         )
     return ""
+
+
+MAX_SAID_CHARS = 200
+
+# Lines that are markdown furniture rather than words: a heading's hashes, a
+# bullet's dash or star, a quote's chevron. Stripped so a report that opens
+# "## What I did" reads as "What I did" on a strip that renders no markdown.
+_MD_LEAD = re.compile(r"^(?:#{1,6}\s+|[-*+]\s+|\d+[.)]\s+|>\s*)+")
+
+
+def said(event: dict) -> str:
+    """What the agent SAID in this event, as one line - or "" if it said
+    nothing (a tool-only turn, a tool result, a status event).
+
+    The dashboard strip, the rail and the Telegram status used to show only
+    the newest rendered log line, which for almost every assistant turn is
+    the tool call it ended on: "> Bash(cd /srv/portal/... <<'EOF' import
+    sqlite3". Wes reads that strip on his phone to know what an agent is up
+    to, and a truncated shell command does not say. The agent's own words do -
+    every run narrates ("Checking whether the run page already shows holds")
+    because its harness asks it to - so this picks the prose out of the event
+    for the surfaces that show one line. Thinking blocks are not words to a
+    reader (and are off on this install); tool calls are the other line.
+    """
+    if event.get("type") != "assistant":
+        return ""
+    texts = []
+    for block in _content_blocks(event):
+        if block.get("type") == "text":
+            text = (block.get("text") or "").strip()
+            if text:
+                texts.append(text)
+    if not texts:
+        return ""
+    words = []
+    for line in "\n".join(texts).splitlines():
+        line = _MD_LEAD.sub("", line.strip())
+        if line:
+            words.append(line)
+    flat = re.sub(r"\s+", " ", " ".join(words)).strip()
+    if len(flat) <= MAX_SAID_CHARS:
+        return flat
+    cut = flat[:MAX_SAID_CHARS]
+    # Back up to the last word boundary, unless the text is one huge token.
+    if " " in cut[MAX_SAID_CHARS // 2:]:
+        cut = cut[: cut.rfind(" ")]
+    return cut.rstrip(" ,;:-") + "\u2026"
 
 
 def render_event(event: dict) -> list[str]:

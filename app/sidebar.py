@@ -206,6 +206,9 @@ def visible_runs(snapshot: Mapping, ids: set[int], admin: bool = False) -> list[
                 "href": href,
                 "elapsed": run.get("elapsed") or "",
                 "last_activity": run.get("last_activity") or "",
+                # What it last said, for the line under its name in the rail;
+                # "" until it has said anything (app/runlog.py `said`).
+                "last_said": run.get("last_said") or "",
             }
         )
     return out

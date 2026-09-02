@@ -539,6 +539,9 @@ def _status_summary() -> str:
                 f"Running: #{run['id']} {run['task']} on "
                 f"{run['project_title'] or 'memory / reflect'}"
             )
+            said = run["last_said"] if "last_said" in run.keys() else None
+            if said:
+                lines.append(f"  {said}")
             lines.append(f"  {run['last_activity'] or 'starting up...'}")
         lines.append(
             "  Send 'stop' to end it." if len(runs) == 1

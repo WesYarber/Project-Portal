@@ -1461,6 +1461,18 @@ summary:hover { color: var(--ansi-blue); }
 .live-run { padding: 0.9rem 1.1rem; border-color: rgba(74, 222, 128, 0.35); }
 .live-run.idle { border-color: var(--window-border); }
 .live-head { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; font-size: 0.85rem; }
+/* The agent's own words: foreground, the way the transcript draws prose;
+   the tool call under them is the quiet machinery line, as in the console. */
+.live-run .live-said {
+  margin-top: 0.55rem;
+  font-size: 0.85rem;
+  color: var(--terminal-fg);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.live-run .live-said + .live-activity { margin-top: 0.25rem; opacity: 0.8; }
+.live-run .live-said[hidden] + .live-activity { margin-top: 0.55rem; opacity: 1; }
+.live-run-row.held .live-said { opacity: 0.6; }
 .live-run .live-activity {
   margin-top: 0.55rem;
   font-size: 0.8rem;
@@ -3847,6 +3859,16 @@ button.quick-option:hover { background: rgba(56, 189, 248, 0.18); }
    instead of ellipsizing. */
 .rail-run-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rail-run-elapsed { margin-left: auto; flex: none; color: var(--terminal-dim); font-size: 0.72rem; }
+.rail-runs a { flex-wrap: wrap; }
+.rail-run-said {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--terminal-dim);
+  font-size: 0.72rem;
+}
 
 /* Sections: the portal's own tabs, this page's chapters, then the shelves --- */
 .rail-section { margin-top: var(--rail-group-gap); }

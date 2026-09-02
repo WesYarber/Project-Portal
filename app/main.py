@@ -468,6 +468,9 @@ def _run_snapshot(row) -> dict:
         "elapsed": _humanize_seconds(elapsed),
         "events": row["events"] or 0,
         "last_activity": row["last_activity"] or "starting up...",
+        # The agent's own newest words (app/runlog.py `said`); "" until it has
+        # said anything, which the strip renders as the line being hidden.
+        "last_said": db._row_get(row, "last_said") or "",  # noqa: SLF001
         # The hold state (app/midrun.py): `paused` is the request, `engaged`
         # whether the run has actually reached the tool call it holds at, and
         # `can_pause` whether this portal process can reach the run at all.

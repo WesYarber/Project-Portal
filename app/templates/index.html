@@ -171,6 +171,12 @@
         <button type="submit" class="btn danger small">stop</button>
       </form>
     </div>
+    {# What the agent last SAID (app/runlog.py `said`) sits above the tool
+       call it is on: on a phone "Checking whether the run page shows holds"
+       says what "> Bash(cd /srv/portal/... <<'EOF'" cannot. Always in the
+       markup, hidden until the agent has said anything, so the poller has the
+       element to fill without building one. #}
+    <div class="live-said"{{ '' if r.last_said else ' hidden' }}>{{ r.last_said }}</div>
     <div class="live-activity">{{ r.last_activity }}</div>
   </div>
   {% else %}
