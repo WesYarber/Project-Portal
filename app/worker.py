@@ -18,7 +18,7 @@ from app import (
     limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
     portalmcp, preview, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
-    todos, worklock,
+    todos, transcript, worklock,
 )
 # Imported under a name of its own: `parallel` alone reads as the global
 # concurrency cap everywhere else in this module (`pacing.parallel_cap`), and
@@ -676,6 +676,118 @@ STRANDED_SUMMARY = (
     "under Settings > agent > Left running, where it can be stopped."
 )
 
+RECOVERED_NOTE = (
+    "This run outlived the portal process that started it (the service restarted "
+    "to load an update while the agent was working), so nothing was listening "
+    "when it finished. Its report was recovered from the agent's own transcript "
+    "and filed above as if the run had been watched to the end; the one thing "
+    "missing is the run's cost, which only the live stream carries."
+)
+
+STRANDED_NOTE = (
+    "The agent also left something running: a process it detached was still "
+    "holding its container open after the agent itself had exited. The leftover "
+    "is listed under Settings > agent > Left running, where it can be stopped."
+)
+
+
+def _adopted_cwd(run: db.RunningRun, row: db.sqlite3.Row) -> Optional[Path]:
+    """Where the agent ran, which names its transcript directory. The lease
+    directory is the agent's cwd whenever a lease was taken (a parallel run
+    leases its worktree); a project run without one ran in its workspace."""
+    if run.lock_dir:
+        return Path(run.lock_dir)
+    if row["project_id"] is not None:
+        project = db.get_project(int(row["project_id"]))
+        if project is not None:
+            return config.PROJECTS_DIR / str(project["slug"])
+    if row["oneoff_id"] is not None:
+        return oneoff.workspace(int(row["oneoff_id"]))
+    return None
+
+
+def _settle_adopted(run: db.RunningRun, stranded: bool) -> None:
+    """Settle a run this process did not start, once its agent has exited.
+
+    The adopting process never saw the run's stdout, so the `result` event that
+    would have carried its report went down a dead pipe - which is why, until
+    2026-09-02, every adopted run ended as an error with no summary however
+    well it had gone. The CLI's transcript on disk has the same report
+    (app/transcript.py), so this reads it and files the run the way
+    `run_project_task` files a watched one: status ok, the report's bullets as
+    the summary, `_apply_report` for the journal entry, todos, questions and
+    stage. A status line under the entry says how the report got there.
+
+    What a watched finish does that this cannot: record the workspace HEAD from
+    before the run (nobody wrote it down), so the undo button stays off this
+    run; note the run's cost, which only the stream carries; and the checks
+    that read the live result (memory kill, quota wall, missing proof). A
+    transcript with no report - the agent was killed mid-work, or stopped
+    without filing one - settles as an error, as before, so a run that really
+    did fail is not dressed up as a success by its last few words.
+    """
+    row = db.get_run(run.run_id)
+    if row is None:
+        return
+    failure = STRANDED_SUMMARY if stranded else ADOPTED_SUMMARY
+    rec = None
+    cwd = _adopted_cwd(run, row)
+    if cwd is not None:
+        try:
+            rec = transcript.recover(cwd, row["session_id"], row["started_at"])
+        except Exception:  # noqa: BLE001 - recovery is a bonus, settling is the job
+            log.exception("Reading the transcript of adopted run %s failed", run.run_id)
+    if rec is None:
+        log.info("Adopted run %s: no transcript to recover a report from", run.run_id)
+        db.finish_run(run.run_id, "error", summary=failure)
+        return
+
+    if row["project_id"] is None:
+        _settle_adopted_oneoff(run.run_id, row, rec, stranded, failure)
+        return
+
+    project = db.get_project(int(row["project_id"]))
+    if project is None or rec.report is None:
+        db.finish_run(run.run_id, "error", rec.session_id, None, rec.turns or None, failure)
+        return
+    result = agent_runner.RunResult(
+        ok=True,
+        session_id=rec.session_id,
+        num_turns=rec.turns or None,
+        result_text=agent_runner._human_summary(rec.report),
+        report=rec.report,
+        report_source="transcript",
+    )
+    db.finish_run(
+        run.run_id, "ok", rec.session_id, None, rec.turns or None, result.result_text[:500],
+    )
+    log.info("Adopted run %s: report recovered from %s", run.run_id, rec.path.name)
+    _apply_report(project, result, run.run_id, task=str(row["task"] or ""))
+    note = RECOVERED_NOTE + (" " + STRANDED_NOTE if stranded else "")
+    db.add_journal(int(project["id"]), "system", "status", note)
+
+
+def _settle_adopted_oneoff(
+    run_id: int, row: db.sqlite3.Row, rec: transcript.Recovered, stranded: bool, failure: str
+) -> None:
+    """A one-off task's run reports by replying, so its last words are the
+    result. Recorded on the task's thread the way `run_oneoff` records a
+    watched reply, and the session id kept so the next message resumes it."""
+    task_id = row["oneoff_id"]
+    if task_id is None or not rec.reply:
+        db.finish_run(run_id, "error", rec.session_id, None, rec.turns or None, failure)
+        return
+    task_id = int(task_id)
+    if rec.session_id:
+        db.set_oneoff_session(task_id, rec.session_id)
+    db.finish_run(run_id, "ok", rec.session_id, None, rec.turns or None, rec.reply[:500])
+    db.add_oneoff_message(task_id, "agent", rec.reply, run_id=run_id)
+    db.add_oneoff_message(
+        task_id, "system",
+        RECOVERED_NOTE + (" " + STRANDED_NOTE if stranded else ""), run_id=run_id,
+    )
+
+
 # How long a workspace lease must read free before that is taken as proof the
 # agent has exited.
 #
@@ -776,14 +888,14 @@ def _reap_adopted() -> None:
             log.info(
                 "Adopted run %s has ended (scope %s is gone)", run.run_id, run.scope_unit
             )
-            db.finish_run(run.run_id, "error", summary=ADOPTED_SUMMARY)
+            _settle_adopted(run, stranded=False)
         elif _lease_says_finished(run):
             log.warning(
                 "Adopted run %s has ended but left something running: %s is still "
                 "active with the workspace lease on %s already released",
                 run.run_id, run.scope_unit, run.lock_dir,
             )
-            db.finish_run(run.run_id, "error", summary=STRANDED_SUMMARY)
+            _settle_adopted(run, stranded=True)
             # Now that the row is settled the scope is no longer protected, so
             # the leftover can finally be moved out of it. Sweep on the next
             # tick rather than up to ten minutes from now: we have just proved
@@ -983,6 +1095,11 @@ def _live_logger(run_id: int) -> agent_runner.EventCallback:
         live.append(lines)
         if lines:
             state["last"] = lines[-1]
+        # The session id names the CLI's transcript of this run, which is the
+        # only record of its report if this process dies before the run does.
+        # Recorded now, from the first event, not at the end (app/transcript.py).
+        if event.get("type") == "system" and event.get("subtype") == "init":
+            db.set_run_session(run_id, event.get("session_id"))
         # The agent's words, when this event carries any (app/runlog.py
         # `said`): written only then, so they stay on the strip through the
         # tool-only turns that follow them.

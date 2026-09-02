@@ -64,6 +64,10 @@ def temp_data_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "RUNS_DIR", tmp_path / "runs")
     monkeypatch.setattr(config, "TASKS_DIR", tmp_path / "tasks")
     monkeypatch.setattr(config, "INCOMING_DIR", tmp_path / "incoming")
+    # The CLI's own per-workspace state (transcripts, auto-memory). No test may
+    # read the real one: app/transcript.py would otherwise find Wes's live
+    # transcripts under the encoded name of a tmp_path that happens to match.
+    monkeypatch.setattr(config, "cli_projects_dir", lambda: tmp_path / "cli-projects")
     monkeypatch.setattr(config, "PROFILE_MD", tmp_path / "memory" / "profile.md")
     monkeypatch.setattr(config, "LEARNINGS_MD", tmp_path / "memory" / "learnings.md")
     monkeypatch.setattr(config, "SUGGESTIONS_MD", tmp_path / "memory" / "suggestions.md")

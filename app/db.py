@@ -702,6 +702,22 @@ def running_run_handles() -> list[RunningRun]:
     ]
 
 
+def set_run_session(run_id: int, session_id: Optional[str]) -> None:
+    """Record the CLI session id the moment the stream announces it, rather
+    than at the end with `finish_run`. A run that outlives the portal process
+    never reaches its own finish, and the id is what names its transcript
+    (app/transcript.py). An id already on the row is kept."""
+    if not session_id:
+        return
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET session_id = ? WHERE id = ? AND session_id IS NULL",
+            (str(session_id), run_id),
+        )
+        conn.commit()
+
+
 def set_run_lease(run_id: int, lock_dir: Optional[str]) -> None:
     """Record the workspace this run holds a kernel lease on.
 
@@ -3455,10 +3471,16 @@ def finish_run(
     num_turns: Optional[int] = None,
     summary: Optional[str] = None,
 ) -> None:
+    """Settle a run. A session id already on the row (recorded from the CLI's
+    first event, see `set_run_session`) survives a settle that does not carry
+    one: that id is the handle on the run's transcript, and the settles that
+    lack one - an adopted run, a timeout, a cancel - are exactly the ones where
+    the transcript is the only record of what the agent did."""
     conn = get_conn()
     with _LOCK:
         conn.execute(
-            """UPDATE runs SET ended_at = ?, status = ?, session_id = ?, cost_usd = ?,
+            """UPDATE runs SET ended_at = ?, status = ?,
+                                session_id = COALESCE(?, session_id), cost_usd = ?,
                                 num_turns = ?, summary = ? WHERE id = ?""",
             (now(), status, session_id, cost_usd, num_turns, summary, run_id),
         )
