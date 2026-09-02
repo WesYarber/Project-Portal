@@ -74,6 +74,7 @@ from app import (
     telegram_bot,
     todos,
     transcribe,
+    transcript,
     usage,
     verifydepth,
     webpush,
@@ -2221,13 +2222,31 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _decorate_runs([row])[0]
     text, _ = runlog.read_log(run_id, 0)
+    # The portal's log is written from the run's stdout by the process that
+    # started it, so a run that outlived a restart has a log that stops at
+    # the restart (its report was still recovered - see worker._settle_adopted).
+    # For any finished run whose log never reached its closing line, the
+    # CLI's own transcript has the whole run; draw the page from that instead
+    # (app/transcript.py `render`). A running run keeps its live log: that is
+    # the file the poller tails.
+    console_source = "log"
+    if run["status"] != "running" and not runlog.is_complete(text):
+        try:
+            rendered = transcript.render_for_run(row)
+        except Exception:  # noqa: BLE001 - the page must render without it
+            log.exception("Rendering the transcript of run %s failed", run_id)
+            rendered = None
+        if rendered is not None:
+            text = rendered.text
+            console_source = "transcript"
     landed = revert.landed(row)
     context = {
         "run": run,
         # A pruned transcript is a normal outcome, not an error - say so
         # rather than showing an empty terminal.
         "console_text": text or "",
-        "log_pruned": not run["has_log"],
+        "console_source": console_source,
+        "log_pruned": not run["has_log"] and console_source != "transcript",
         "denials": db.hook_denials_for_run(run_id),
         "audit": db.hook_audit_for_run(run_id),
         "audit_retention_days": db.AUDIT_RETENTION_DAYS,

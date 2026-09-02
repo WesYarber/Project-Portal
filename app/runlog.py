@@ -325,6 +325,23 @@ def read_log(run_id: int, offset: int = 0) -> tuple[str, int]:
     return chunk.decode("utf-8", errors="replace"), offset + len(chunk)
 
 
+def is_complete(text: str) -> bool:
+    """Whether a log reached its closing line.
+
+    The last thing a watched run writes is the CLI's `result` event, rendered
+    as "run complete" or "run failed" above. A log that ends on anything else
+    stopped being written before the run stopped: the portal restarted under
+    the run and the rest of its stdout went down a dead pipe, or the run was
+    killed. Either way the file is not the whole story, and the run page
+    (main._render_run_page) goes looking for the CLI's own transcript instead.
+    """
+    for line in reversed(text.splitlines()):
+        if not line.strip():
+            continue
+        return line.startswith(f"{STATUS} run complete") or line.startswith(f"{ERROR} run failed")
+    return False
+
+
 def tail(run_id: int, max_lines: int = 40) -> str:
     text, _ = read_log(run_id, 0)
     lines = text.splitlines()

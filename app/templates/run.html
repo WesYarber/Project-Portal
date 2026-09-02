@@ -179,11 +179,17 @@
      data-run-id="{{ run.id }}" data-live="{{ '1' if run.status == 'running' else '0' }}">
   <div class="console-head">
     <span class="dot {{ 'running' if run.status == 'running' }}"></span>
-    <span class="muted">{{ 'live' if run.status == 'running' else 'finished' }} transcript</span>
+    <span class="muted">{{ 'live' if run.status == 'running' else ('recovered' if console_source == 'transcript' else 'finished') }} transcript</span>
     {# The same fold toggle the project console carries; one setting, both
        pages, because it is the same transcript in the same reader. #}
     <button type="button" class="cl-fold-toggle" id="console-fold-toggle" hidden></button>
   </div>
+  {% if console_source == 'transcript' %}
+  {# The portal's own log of this run stops where the service restarted under
+     it (or where the run was killed); the CLI's session file has every turn,
+     and it is drawn here through the same renderer (app/transcript.py). #}
+  <p class="hint" id="console-source">Read from the agent's own session file: the portal's log of this run stops where the service restarted under it, and that file has every turn.</p>
+  {% endif %}
   {% if log_pruned %}
   <p class="empty-state">Transcript no longer on disk &mdash; logs are pruned to the newest 200 runs.</p>
   {% else %}

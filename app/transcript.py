@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import climemory, config
+from . import climemory, config, runlog
 
 log = logging.getLogger("portal.transcript")
 
@@ -210,6 +210,101 @@ def _fold(rec: Recovered, event: dict) -> None:
             # twice meant the second.
             if isinstance(block.get("input"), dict):
                 rec.report = block["input"]
+
+
+@dataclass
+class Rendered:
+    """A transcript drawn the way the portal's own log is drawn, so the run
+    page can show it in the same console with the same reader."""
+    path: Path
+    text: str = ""
+    turns: int = 0
+    has_report: bool = False
+
+
+RENDERED_LEAD = (
+    f"{runlog.STATUS} transcript read from the agent's own session file - the "
+    "portal's log of this run stops where the service restarted"
+)
+
+
+def render(path: Path) -> Rendered:
+    """The whole run as console lines, from the CLI's transcript.
+
+    The portal's log (`data/runs/<id>.log`) is written from the run's stdout by
+    the process that started it, so for a run that outlived a restart it stops
+    mid-run - the run page of a recovered run showed the first half and nothing
+    after. The CLI's transcript has every turn, in the same event shape the
+    live logger reads (`type`, `message.content`), so `runlog.render_event`
+    draws it line for line the way the live log would have been drawn: the
+    agent's words unmarked, tool calls and results dimmed, thinking marked.
+    Subagent lines are skipped, as `read` skips them, and the file's own
+    bookkeeping records (queue-operation, attachment, ai-title) render to
+    nothing. There is no `result` event in a transcript, so the closing line is
+    written here from whether a report was filed."""
+    out = Rendered(path=path)
+    rec = Recovered(path=path)
+    lines = [RENDERED_LEAD]
+    try:
+        fh = path.open("r", encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log.warning("Could not open transcript %s: %s", path, exc)
+        return out
+    with fh:
+        for line in fh:
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(event, dict) or event.get("isSidechain"):
+                continue
+            _fold(rec, event)
+            lines.extend(runlog.render_event(event))
+    out.turns = rec.turns
+    out.has_report = rec.report is not None
+    if out.has_report:
+        lines.append(f"{runlog.STATUS} run complete  ({rec.turns} turns, report filed)")
+    else:
+        lines.append(f"{runlog.STATUS} transcript ends without a report")
+    out.text = "\n".join(lines)
+    return out
+
+
+def run_cwd(row) -> Optional[Path]:
+    """Where a finished run's agent ran, which names its transcript directory.
+
+    A parallel run leased a worktree of its own, and the transcript keeps that
+    directory's name even after the worktree is merged and removed; an ordinary
+    project run ran in the workspace; a one-off task in its own directory."""
+    from . import db, oneoff, parallel  # noqa: PLC0415 - both import this module's users
+
+    slug = None
+    if row["project_id"] is not None:
+        slug = db._row_get(row, "project_slug")  # noqa: SLF001
+        if not slug:
+            project = db.get_project(int(row["project_id"]))
+            slug = project["slug"] if project is not None else None
+    if slug:
+        if db.is_parallel_run(row):
+            return parallel.worktree_for(str(slug), int(row["id"]))
+        return config.PROJECTS_DIR / str(slug)
+    oneoff_id = db._row_get(row, "oneoff_id")  # noqa: SLF001
+    if oneoff_id is not None:
+        return oneoff.workspace(int(oneoff_id))
+    return None
+
+
+def render_for_run(row) -> Optional[Rendered]:
+    """The console text for a finished run whose own log is not the whole
+    story; None when there is no transcript to draw it from."""
+    cwd = run_cwd(row)
+    if cwd is None:
+        return None
+    path = locate(cwd, row["session_id"], row["started_at"])
+    if path is None:
+        return None
+    rendered = render(path)
+    return rendered if rendered.text else None
 
 
 def recover(
