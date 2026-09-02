@@ -821,3 +821,13 @@ def test_a_retried_ask_still_fits_under_the_relays_own_timeout():
 def test_the_relay_gives_the_portal_no_less_time_than_the_hook_relay_does():
     from app import hookrelay
     assert mcpstdio.POST_RETRY_SEC >= hookrelay.POST_RETRY_SEC
+
+
+def test_an_unreadable_wait_counts_down_from_the_default_not_from_zero(clock, monkeypatch):
+    """At 30 s elapsed the two readings differ (90 left against 0); the
+    negative-wait test above, at 500 s, cannot tell them apart."""
+    posted = _posting(monkeypatch, [30, {"content": []}], clock)
+    mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call(
+        "ask", {"question": "Blue?", "wait_seconds": "nonsense"}
+    )
+    assert posted[1]["wait_seconds"] == pytest.approx(mcpstdio.DEFAULT_WAIT - 30, abs=1)
