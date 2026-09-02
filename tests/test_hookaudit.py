@@ -246,12 +246,29 @@ def test_guard_settings_audits_oneoff_even_with_guardrails_off(tmp_path, monkeyp
 def test_guard_settings_audit_off_removes_the_hook(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
     db.set_setting("hook_audit", "0")
+    # The mid-run channel (app/midrun.py) rides the same hook, so it has to
+    # be off too for the hook to go - see test_midrun for the other half.
+    db.set_setting("midrun", "0")
     project = db.create_project("Game", stage="active", slug="game")
     settings = worker._guard_settings(52, project)  # noqa: SLF001
     try:
         assert "PostToolUse" not in json.loads(settings)["hooks"]
     finally:
         hookguard.end(52)
+
+
+def test_guard_settings_audit_off_keeps_the_hook_for_the_midrun_channel(tmp_path, monkeypatch):
+    monkeypatch.setattr(config, "PROJECTS_DIR", tmp_path / "projects")
+    db.set_setting("hook_audit", "0")
+    project = db.create_project("Game", stage="active", slug="game")
+    settings = worker._guard_settings(53, project)  # noqa: SLF001
+    try:
+        hooks = json.loads(settings)["hooks"]
+        assert "PostToolUse" in hooks
+        assert hookguard._SCOPES[53].audit is False  # noqa: SLF001
+        assert hookguard._SCOPES[53].midrun is True  # noqa: SLF001
+    finally:
+        hookguard.end(53)
 
 
 # --- endpoint and UI ---------------------------------------------------------

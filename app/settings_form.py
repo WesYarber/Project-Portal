@@ -224,6 +224,7 @@ def _build_registry() -> dict[str, Field]:
         Field("hook_guardrails", _text, checkbox=True),
         Field("stop_report_nudge", _text, checkbox=True),
         Field("hook_audit", _text, checkbox=True),
+        Field("midrun", _text, checkbox=True),
         Field("mcp_tools", _text, checkbox=True),
         Field("cross_project", _text, checkbox=True),
         Field("model_watch", _text, checkbox=True),

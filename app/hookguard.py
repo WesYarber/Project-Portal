@@ -97,6 +97,9 @@ class _Scope:
     # a restart orphans the scope and the audit simply stops, fail-open).
     audit: bool = False
     audited: int = 0
+    # Mid-run channel (app/midrun.py): whether this run's PostToolUse relay
+    # may be held for a pause and handed a note typed while it works.
+    midrun: bool = False
 
 
 # In-memory on purpose, like agent_runner's process registry: after a service
@@ -131,6 +134,7 @@ def begin(
     report_expected: bool = False,
     pre_tool: bool = True,
     audit: bool = False,
+    midrun: bool = False,
 ) -> Optional[str]:
     """Register a run's scope and return the `--settings` JSON that installs
     the relay hooks for it. Caller must pair with `end(run_id)`.
@@ -138,9 +142,11 @@ def begin(
     `pre_tool` installs the write guardrail; `report_expected` installs the
     Stop-hook report nudge (a run that finishes without delivering its report
     is bounced once and told to submit it); `audit` installs the PostToolUse
-    trail recording every tool call. The meta-project runs with the nudge and
-    the audit but no write guardrail - editing the portal is its job, but it
-    must still report, and its tool calls are as worth seeing as anyone's."""
+    trail recording every tool call; `midrun` lets that same PostToolUse relay
+    be held for a pause and carry a note typed mid-run (app/midrun.py). The
+    meta-project runs with the nudge and the audit but no write guardrail -
+    editing the portal is its job, but it must still report, and its tool
+    calls are as worth seeing as anyone's."""
     resolved: list[Path] = []
     for ws in allowed_workspaces:
         try:
@@ -154,6 +160,7 @@ def begin(
         report_expected=report_expected,
         workspace=resolved[0] if resolved else None,
         audit=audit,
+        midrun=midrun,
     )
     hooks: dict = {}
     if pre_tool:
@@ -173,13 +180,19 @@ def begin(
                 ],
             }
         ]
-    if audit:
+    if audit or midrun:
         # No matcher: the audit wants every tool call, not just the risky
-        # subset the PreToolUse guardrail screens.
+        # subset the PreToolUse guardrail screens. The timeout is the one
+        # hook setting that matters for a pause: the CLI kills a hook that
+        # outlives it and carries on, so a held relay must be allowed to sit
+        # for as long as a hold could last (see midrun.HOOK_TIMEOUT_SEC).
+        from app import midrun as _midrun
+
+        timeout = _midrun.HOOK_TIMEOUT_SEC if midrun else 15
         hooks["PostToolUse"] = [
             {
                 "hooks": [
-                    {"type": "command", "command": _relay_command("post-tool", run_id, token), "timeout": 15}
+                    {"type": "command", "command": _relay_command("post-tool", run_id, token), "timeout": timeout}
                 ],
             }
         ]
@@ -191,6 +204,24 @@ def begin(
 
 def end(run_id: int) -> None:
     _SCOPES.pop(run_id, None)
+    from app import midrun as _midrun
+
+    _midrun.end(run_id)
+
+
+def hears_midrun(run_id: int) -> bool:
+    """Whether a live relay for this run can be held and handed a note - a
+    scope registered with `midrun` on. False after a restart, which is the
+    honest answer: the run's hooks post to a portal that no longer knows it."""
+    scope = _SCOPES.get(run_id)
+    return scope is not None and scope.midrun
+
+
+def authorized(run_id: int, token: str) -> bool:
+    """Is this (run, token) pair a run this portal process spawned? The
+    check every hook endpoint makes before believing a payload."""
+    scope = _SCOPES.get(run_id)
+    return scope is not None and scope.token == token
 
 
 def family_workspaces(project) -> list[Path]:

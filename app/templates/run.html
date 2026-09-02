@@ -33,10 +33,29 @@
     {% endif %}
   </div>
   {% if run.status == 'running' %}
-  <form method="post" action="/run/{{ run.id }}/cancel" style="margin-top:0.8rem;">
-    <input type="hidden" name="next" value="/run/{{ run.id }}">
-    <button type="submit" class="btn danger">stop this run</button>
-  </form>
+  <div class="actions" style="margin-top:0.8rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+    <form method="post" action="/run/{{ run.id }}/cancel" class="inline-form">
+      <input type="hidden" name="next" value="/run/{{ run.id }}">
+      <button type="submit" class="btn danger">stop this run</button>
+    </form>
+    {# Pause and resume (app/midrun.py): the run holds at its next tool call,
+       between turns, spending nothing until resumed. Offered only while this
+       portal process can reach the run's hooks. #}
+    {% if midrun.can_pause %}
+    <form method="post" action="/run/{{ run.id }}/{{ 'resume' if midrun.paused else 'pause' }}" class="inline-form">
+      <input type="hidden" name="next" value="/run/{{ run.id }}">
+      <button type="submit" class="btn secondary">{{ 'resume this run' if midrun.paused else 'pause this run' }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if midrun.paused %}
+  <p class="hint run-hold">
+    {% if midrun.engaged %}Paused at its last tool call - nothing is being generated or spent, and its time limit is not counting.{% else %}Pausing - it holds at its next tool call, once the step it is on finishes.{% endif %}
+    A note added on the project page now reaches it the moment it resumes.
+  </p>
+  {% elif midrun.can_pause %}
+  <p class="hint run-hold">A note added on the project page reaches this agent at its next tool call.</p>
+  {% endif %}
   {% endif %}
   <p class="hint">{{ run.started_at }}{% if run.ended_at %} &rarr; {{ run.ended_at }}{% endif %}</p>
   {% if run.summary %}
@@ -109,6 +128,23 @@
       <span class="badge">{{ d.tool }}</span>
       {{ d.reason }}
       {% if d.detail %}<code class="muted">{{ d.detail }}</code>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if midrun_events %}
+<div class="card" id="midrun">
+  <p><strong>while it ran</strong>
+    <span class="small muted">pauses, resumes, and the notes it was handed mid-run, at the tool call where each happened (app/midrun.py)</span></p>
+  <ul class="small" style="margin:0.4rem 0 0 1.1rem; padding:0;">
+    {% for m in midrun_events %}
+    <li style="margin-bottom:0.35rem;">
+      <span class="muted">{{ m.ts[11:19] }}</span>
+      <span class="badge">{{ m.decision }}</span>
+      {{ m.reason }}
+      {% if m.detail %}<code class="muted">{{ m.detail }}</code>{% endif %}
     </li>
     {% endfor %}
   </ul>

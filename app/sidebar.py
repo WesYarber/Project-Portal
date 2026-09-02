@@ -216,6 +216,7 @@ def project_status(
     open_questions: int = 0,
     running: bool = False,
     gated: bool = False,
+    paused_run: bool = False,
 ) -> tuple[str, str]:
     """The one line under a project's name in the rail, and its tone.
 
@@ -238,7 +239,9 @@ def project_status(
     The tone is a class name, not a color: the palette belongs to the theme.
     """
     if running:
-        return "working now", "working"
+        # A held run (app/midrun.py) is an agent doing nothing on purpose;
+        # "working now" would be the one lie the rail exists not to tell.
+        return ("run paused", "working") if paused_run else ("working now", "working")
     if str(db._row_get(project, "blocked_on", "") or "").strip():  # noqa: SLF001
         return "blocked", "blocked"
     if open_questions:
@@ -254,6 +257,7 @@ def build(
     *,
     question_counts: Optional[Mapping[int, int]] = None,
     running_ids: Optional[set[int]] = None,
+    paused_ids: Optional[set[int]] = None,
     gated_ids: Optional[set[int]] = None,
     activity: Optional[Mapping[int, str]] = None,
     runs: Sequence[dict] = (),
@@ -303,7 +307,8 @@ def build(
         shelf = db.shelf_of(project, question_counts.get(pid, 0), running)
         gated = pid in gated_ids
         status, tone = project_status(
-            project, question_counts.get(pid, 0), running, gated
+            project, question_counts.get(pid, 0), running, gated,
+            paused_run=pid in (paused_ids or set()),
         )
         # Last, so nothing waiting on a person is displaced by it: a paused
         # project with an open question still says so, because that question is

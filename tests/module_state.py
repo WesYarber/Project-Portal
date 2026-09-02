@@ -52,6 +52,7 @@ RESET: tuple[tuple[str, str], ...] = (
     ("app.claudelogin", "_last_result"),
     ("app.claudelogin", "_pending"),
     ("app.hookguard", "_SCOPES"),
+    ("app.midrun", "_HOLDS"),
     ("app.inquiry", "_ASKED"),
     ("app.inquiry", "_TASKS"),
     ("app.launch", "_last_start"),

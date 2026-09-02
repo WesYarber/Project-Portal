@@ -432,9 +432,25 @@
           data-inplace data-optimistic="pending">
       <button type="submit" {{ 'disabled' if active_run.active }}
               data-optimistic-label="agent running...">
-        {% if active_run.active %}agent running...{% elif build_gated %}run planning pass{% else %}run agent now{% endif %}
+        {# The paused wording wraps the original branch rather than joining it, so
+           the literal "{% if active_run.active %}agent running..." that
+           test_optimistic pins as the optimistic label's promise stays intact. #}
+        {% if active_run.paused %}agent paused{% else %}{% if active_run.active %}agent running...{% elif build_gated %}run planning pass{% else %}run agent now{% endif %}{% endif %}
       </button>
     </form>
+    {# Pause and resume (app/midrun.py). Only offered while this portal
+       process can reach the run's hooks - a run adopted across a restart
+       cannot be held, and a button that silently did nothing would be worse
+       than none. The hold engages at the run's next tool call, and the hint
+       under the strip says which of "pausing" and "paused" is true. #}
+    {% if active_run.active and active_run.can_pause %}
+    <form method="post" action="/run/{{ active_run.run_id }}/{{ 'resume' if active_run.paused else 'pause' }}" class="inline-form" data-inplace>
+      <input type="hidden" name="next" value="/project/{{ project.slug }}">
+      <button type="submit" class="btn secondary" title="{{ 'Let the held run carry on from where it stopped; it reads any note added meanwhile first' if active_run.paused else 'Hold this run at its next tool call - between turns, so nothing is spent until you resume it' }}">
+        {{ 'resume this run' if active_run.paused else 'pause this run' }}
+      </button>
+    </form>
+    {% endif %}
     {# `active_run` on this page is already narrowed to this project's own run
        (see project_page), so stopping someone else's run from here is not
        possible even while other agents work in parallel. #}
@@ -475,6 +491,14 @@
     </form>
     {% endif %}
   </div>
+  {% if active_run.active and active_run.paused %}
+  <p class="hint run-hold">
+    {% if active_run.engaged %}Paused at its last tool call - nothing is being generated or spent, and its time limit is not counting.{% else %}Pausing - it holds at its next tool call, once the step it is on finishes.{% endif %}
+    A note added now reaches it the moment it resumes.
+  </p>
+  {% elif active_run.active and agent_hears %}
+  <p class="hint run-hold">A note added now reaches the running agent at its next tool call, in this same run.</p>
+  {% endif %}
   {% if research_queued %}
   <p class="hint research-queued">
     Queued for a deep research burst on <strong>{{ research_model }}</strong>
@@ -1038,7 +1062,8 @@
       {% endif %}
       <button type="submit" class="btn go"
               title="{{ 'Add this note and start an agent run on it now' if note_runs_now
-                        else 'Add this note for the agent to read on its next run' }}">add note</button>
+                        else ('Add this note - the agent already working reads it at its next tool call' if agent_hears
+                        else 'Add this note for the agent to read on its next run') }}">add note</button>
     </div>
     {# The live recorder. Hidden until the mic button starts a recording;
        app.js owns everything inside it - the waveform responding to the mic,

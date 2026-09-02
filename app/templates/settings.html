@@ -180,7 +180,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,mcp_tools,cross_project,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,midrun,mcp_tools,cross_project,model_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -253,6 +253,10 @@
       <div class="field checkbox-row">
         <input type="checkbox" id="hook_audit" name="hook_audit" {{ 'checked' if (settings.hook_audit or '1') == '1' else '' }}>
         <label for="hook_audit">Tool-call audit trail on runs{% call info() %}Every tool call a run makes is recorded as one structured row and listed on the run's page - so "what did this run actually do" survives after its transcript is pruned. Capped per run, and plain rows age out after a month; guardrail denials are kept forever.{% endcall %}</label>
+      </div>
+      <div class="field checkbox-row">
+        <input type="checkbox" id="midrun" name="midrun" {{ 'checked' if (settings.midrun or '1') == '1' else '' }}>
+        <label for="midrun">Pause a run, and hand it notes while it works{% call info() %}A running agent can be paused from its project page or run page: it holds at its next tool call, between two turns, so nothing is generated and nothing is spent until you resume it - and the run's time limit stops counting while it holds. A note added while an agent is working reaches that agent at its next tool call, in the same session, instead of waiting for a second run afterwards ("queue note" still waits for the next run). Both ride the tool-call hook, so a run started before the last portal restart can do neither, and the page says so.{% endcall %}</label>
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="mcp_tools" name="mcp_tools" {{ 'checked' if (settings.mcp_tools or '1') == '1' else '' }}>

@@ -360,6 +360,33 @@ Canceled is its own run status, not an error: canceled runs are excluded from
 the failure count and from the success rate, which is computed over runs that
 actually reached a verdict.
 
+### Pausing a run, and talking to one
+
+`POST /run/<id>/pause` holds a live run at its **next tool call**, and
+`POST /run/<id>/resume` lets it go. Nothing is generated or billed while it
+holds: the CLI is between two turns, waiting on its PostToolUse hook, and the
+portal simply does not answer that hook until you resume (the relay polls
+`/hooks/hold` every few seconds). A pause pressed while the model is part-way
+through a reply engages once that reply's tool call lands — the page says
+"pausing" until then and "paused" after — because cutting a reply off would
+mean paying for it again on resume. The run's time limit counts running time
+only, so a long hold is not a step closer to a timeout.
+
+A note added to a project while its agent is working reaches that agent at its
+next tool call, injected beside the tool result as the hook's
+`additionalContext`, in the same session, with nothing restarted. It is stamped
+delivered to that run, so no second run is queued for it afterwards. "queue
+note" keeps its meaning and waits for the next run; a note that arrives after
+the run has filed its report waits too. Files attached to such a note are moved
+into the workspace first, and a voice memo is held back until its transcript
+exists. The run page lists every hold and every note it heard under "while it
+ran". See `app/midrun.py`.
+
+Both ride the PostToolUse hook, so a run started before the last portal
+restart — whose hook scope died with that process — can do neither, and the
+buttons are not offered for it. The switch is Settings > agent > "Pause a run,
+and hand it notes while it works".
+
 ### Where the budget goes
 
 `/activity` groups the window's runs by project, ranked by cost rather than run

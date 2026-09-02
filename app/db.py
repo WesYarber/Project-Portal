@@ -440,7 +440,14 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     # Deliberately NOT declared REFERENCES, for the same reason as
     # projects.parent_id: SQLite cannot add a column with a foreign key to a
     # populated table, and this is added by ALTER on every existing portal.db.
-    "journal": [("delivered_at", "TEXT"), ("person_id", "INTEGER")],
+    "journal": [
+        ("delivered_at", "TEXT"),
+        ("person_id", "INTEGER"),
+        # A note pressed as "queue note": for the agent's NEXT run, never
+        # handed to one already working (app/midrun.py hands the others over
+        # at the running agent's next tool call).
+        ("for_next_run", "INTEGER NOT NULL DEFAULT 0"),
+    ],
     "attachments": [
         ("transcript", "TEXT"),
         # When this file was moved into the project workspace, where an agent
@@ -2152,9 +2159,14 @@ def add_journal(
     kind: str,
     content_md: str,
     person_id: Optional[int] = None,
+    for_next_run: bool = False,
 ) -> int:
     """Returns the new entry's id, so a caller that has uploads in hand (see
     the note route) can attach them to the entry it just wrote.
+
+    `for_next_run` marks a note pressed as "queue note": it waits for the
+    agent's next run rather than being handed to one already working
+    (app/midrun.py). Meaningless on anything that is not a note.
 
     Anything that is not one of Wes's notes is stamped delivered immediately:
     only a note has an edit window, and a NULL on a status line would make the
@@ -2171,9 +2183,10 @@ def add_journal(
     with _LOCK:
         cur = conn.execute(
             "INSERT INTO journal (project_id, ts, author, kind, content_md, "
-            "delivered_at, person_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "delivered_at, person_id, for_next_run) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (project_id, ts, author, kind, content_md, delivered,
-             int(person_id) if person_id is not None else None),
+             int(person_id) if person_id is not None else None,
+             1 if for_next_run else 0),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -3471,6 +3484,17 @@ def prune_hook_audit(days: int = AUDIT_RETENTION_DAYS) -> int:
         )
         conn.commit()
         return cur.rowcount
+
+
+def midrun_events_for_run(run_id: int) -> list[sqlite3.Row]:
+    """What happened to this run while it was live: pauses, resumes and the
+    notes it was handed mid-flight (app/midrun.py). Oldest first."""
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM hook_events WHERE run_id = ? AND event = 'midrun' ORDER BY id",
+            (run_id,),
+        ).fetchall()
 
 
 def hook_denials_for_run(run_id: int) -> list[sqlite3.Row]:

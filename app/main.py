@@ -38,6 +38,7 @@ from app import (
     fileview,
     headroom,
     hookguard,
+    midrun,
     journalwindow,
     jumpkeys,
     launch,
@@ -466,6 +467,10 @@ def _run_snapshot(row) -> dict:
         "elapsed": _humanize_seconds(elapsed),
         "events": row["events"] or 0,
         "last_activity": row["last_activity"] or "starting up...",
+        # The hold state (app/midrun.py): `paused` is the request, `engaged`
+        # whether the run has actually reached the tool call it holds at, and
+        # `can_pause` whether this portal process can reach the run at all.
+        **midrun.state(int(row["id"])),
     }
 
 
@@ -494,6 +499,18 @@ def active_run_snapshot() -> dict:
         "run_ids": ",".join(str(s["run_id"]) for s in sorted(snaps, key=lambda s: s["run_id"])),
         "project_ids": [s["project_id"] for s in snaps if s["project_id"]],
         "idle_reason": "",
+    }
+
+
+def _paused_project_ids() -> set[int]:
+    """Projects whose live run is on hold (app/midrun.py), so the rail can say
+    "paused" instead of "working now" about an agent that is doing nothing."""
+    paused = midrun.paused_run_ids()
+    if not paused:
+        return set()
+    return {
+        int(r["project_id"]) for r in db.active_runs()
+        if r["project_id"] and int(r["id"]) in paused
     }
 
 
@@ -535,6 +552,7 @@ def side_rail(path: str = "") -> dict:
             projects,
             question_counts=db.open_question_counts(),
             running_ids=db.running_project_ids() & mine,
+            paused_ids=_paused_project_ids() & mine,
             gated_ids={p["id"] for p in projects if worker.build_gated(p)},
             # What "recent" actually means: the last run, note or journal entry
             # rather than the last write to the project row. One query for the
@@ -1318,6 +1336,13 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             # second agent is only a meaningful request while a first one is
             # working. See app/parallel.py.
             "agents_running": len(db.running_runs_for_project(project["id"])),
+            # Whether a note typed now reaches the agent already working, at
+            # its next tool call (app/midrun.py) - only while one is, and only
+            # if this portal process can reach it.
+            "agent_hears": any(
+                midrun.enabled() and midrun.can_hear(int(r["id"]))
+                for r in db.running_runs_for_project(project["id"])
+            ),
             "research_queued": db.is_research_queued(project),
             # The model a burst would actually use, setting override included.
             "research_model": agent_runner.resolve_model(None, "research"),
@@ -1813,8 +1838,12 @@ async def add_note(
     if errors:
         body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
 
+    # "queue note" is for the agent's NEXT run by definition, so it is marked
+    # to stay out of the mid-run channel (app/midrun.py) that hands every other
+    # note to an agent already working.
     journal_id = db.add_journal(
-        project["id"], "user", "note", body, person_id=_person_id(request)
+        project["id"], "user", "note", body, person_id=_person_id(request),
+        for_next_run=(then == "queue"),
     )
     for a in stored:
         db.set_attachment_journal(a["id"], journal_id)
@@ -2169,6 +2198,8 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         "denials": db.hook_denials_for_run(run_id),
         "audit": db.hook_audit_for_run(run_id),
         "audit_retention_days": db.AUDIT_RETENTION_DAYS,
+        "midrun": midrun.state(run_id),
+        "midrun_events": db.midrun_events_for_run(run_id),
         "active_run": active_run_snapshot(),
         "landed": landed,
         # Built from the same Landed, so the diff and the undo button can never
@@ -2297,6 +2328,32 @@ async def cancel_run_route(run_id: int, next: str = Form("/")) -> RedirectRespon
     outcome = worker.cancel_run(run_id)
     log.info("Cancel run %s -> %s", run_id, outcome)
     return RedirectResponse(url=_safe_next(next), status_code=303)
+
+
+@app.post("/run/{run_id}/pause")
+async def pause_run_route(request: Request, run_id: int, next: str = Form("/")) -> RedirectResponse:
+    """Hold a live run at its next tool call, spending nothing until resumed.
+    See app/midrun.py for what "next tool call" costs and why."""
+    outcome = midrun.pause(run_id, by=_person_name(request))
+    log.info("Pause run %s -> %s", run_id, outcome)
+    return RedirectResponse(url=_safe_next(next), status_code=303)
+
+
+@app.post("/run/{run_id}/resume")
+async def resume_run_route(request: Request, run_id: int, next: str = Form("/")) -> RedirectResponse:
+    outcome = midrun.resume(run_id, by=_person_name(request))
+    log.info("Resume run %s -> %s", run_id, outcome)
+    return RedirectResponse(url=_safe_next(next), status_code=303)
+
+
+def _person_name(request: Request) -> str:
+    """Who pressed a button, for a journal line - "" when nobody is known."""
+    try:
+        pid = _person_id(request)
+        person = people.get(pid) if pid else None
+        return people.name_of(person) if person else ""
+    except Exception:  # noqa: BLE001 - a byline must never break the press
+        return ""
 
 
 def _safe_next(target: str) -> str:
@@ -3903,7 +3960,21 @@ async def hooks_post_tool(request: Request, run: int = 0, token: str = "") -> JS
     if not isinstance(payload, dict):
         payload = {}
     hookguard.record_tool_use(run, token, payload)
-    return JSONResponse({"ok": True})
+    # The mid-run channel rides the same post: a paused run is told to hold
+    # here (the relay polls /hooks/hold), and a note typed while it worked is
+    # handed back as the hook's additionalContext. See app/midrun.py.
+    answer = midrun.after_tool_call(run, token, payload)
+    return JSONResponse({"ok": True, **answer})
+
+
+@app.post("/hooks/hold")
+async def hooks_hold(run: int = 0, token: str = "") -> JSONResponse:
+    """A held relay asking whether its run may go on. Answers `poll` again
+    while the run is paused; once resumed, whatever notes arrived meanwhile
+    ride back as the hook's additionalContext. An unknown run is released."""
+    if not hookguard.authorized(run, token):
+        return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, **midrun.hold_poll(run, token)})
 
 
 @app.post("/hooks/stop")
@@ -3984,6 +4055,7 @@ async def api_run_log(run_id: int, offset: int = 0) -> JSONResponse:
             "run_id": run_id,
             "status": run["status"],
             "running": run["status"] == "running",
+            "paused": midrun.is_paused(run_id),
             "text": text,
             "offset": new_offset,
             "events": run["events"] or 0,

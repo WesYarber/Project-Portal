@@ -7,6 +7,7 @@ import logging
 import os
 import signal
 import sqlite3
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from string import Template
@@ -14,7 +15,7 @@ from typing import Awaitable, Callable, Optional
 
 from app import (
     apiretry, attachments, config, crossproject, db, headroom, journalfile, limits,
-    memory, notes, orphans, people, portalmcp, promptbudget, qdedupe, runlimit,
+    memory, midrun, notes, orphans, people, portalmcp, promptbudget, qdedupe, runlimit,
     runlog, spawnauth, strays, subprojects, todos, unparsedreport, verifydepth,
     worklock,
 )
@@ -1549,6 +1550,12 @@ async def _feed_prompt(proc: asyncio.subprocess.Process, prompt: str) -> None:
             pass
 
 
+# How often the supervisor re-reads a run's deadline while it waits on the
+# streams. Only bounds how late a timeout can fire past a hold ending; it
+# never makes one fire early.
+_DEADLINE_TICK_SEC = 30
+
+
 async def _supervise(
     proc: asyncio.subprocess.Process,
     cwd: Path,
@@ -1593,20 +1600,37 @@ async def _supervise(
         assert proc.stderr is not None
         return await proc.stderr.read()
 
-    try:
-        _, stderr_b = await asyncio.wait_for(
-            asyncio.gather(pump_stdout(), read_stderr()), timeout=timeout_min * 60
-        )
-    except asyncio.TimeoutError:
-        watcher.cancel()
-        await _kill_group(proc)
-        return RunResult(
-            ok=False, timed_out=True, result_text="Run timed out",
-            oom_killed=mem.oom_killed, peak_memory_bytes=mem.peak_bytes,
-            # A run that spent its whole wall-clock budget waiting on retries
-            # looks identical to a runaway agent without this.
-            retries=retries,
-        )
+    # The wall clock counts running time only. A run on hold (app/midrun.py)
+    # has its deadline pushed out by however long it has been held, so an hour
+    # paused is not an hour closer to being killed. Re-read every tick rather
+    # than fixed up front, because a hold can begin and end any number of
+    # times while the run is up.
+    streams = asyncio.ensure_future(asyncio.gather(pump_stdout(), read_stderr()))
+    started = time.monotonic()
+    budget = timeout_min * 60
+    while True:
+        if streams.done():
+            _, stderr_b = streams.result()
+            break
+        remaining = budget + midrun.paused_seconds(run_id) - (time.monotonic() - started)
+        if remaining <= 0:
+            streams.cancel()
+            watcher.cancel()
+            await _kill_group(proc)
+            return RunResult(
+                ok=False, timed_out=True, result_text="Run timed out",
+                oom_killed=mem.oom_killed, peak_memory_bytes=mem.peak_bytes,
+                # A run that spent its whole wall-clock budget waiting on retries
+                # looks identical to a runaway agent without this.
+                retries=retries,
+            )
+        try:
+            _, stderr_b = await asyncio.wait_for(
+                asyncio.shield(streams), timeout=min(remaining, _DEADLINE_TICK_SEC)
+            )
+            break
+        except asyncio.TimeoutError:
+            continue
 
     # Read the scope one last time before anything is reaped. Without this the
     # answer depends on where the poll interval happened to fall: a run whose

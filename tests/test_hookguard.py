@@ -304,6 +304,7 @@ def test_guard_settings_off_when_disabled(portal_layout):
     finally:
         hookguard.end(23)
     db.set_setting("stop_report_nudge", "0")
+    db.set_setting("midrun", "0")
     settings = worker._guard_settings(24, project)  # noqa: SLF001
     try:
         assert list(json.loads(settings)["hooks"]) == ["PostToolUse"]

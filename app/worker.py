@@ -15,7 +15,7 @@ from typing import Optional
 
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
-    limits, memory, mirror, modelwatch, notes, notify, oneoff, orphans, pacing, people,
+    limits, memory, midrun, mirror, modelwatch, notes, notify, oneoff, orphans, pacing, people,
     portalmcp, preview, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, worklock,
@@ -998,7 +998,7 @@ def _guard_settings(run_id: int, project: Optional[db.sqlite3.Row]) -> Optional[
             is_meta = project["slug"] == config.META_PROJECT_SLUG
             pre_tool = hookguard.enabled() and not is_meta
             report_expected = hookguard.stop_nudge_enabled()
-            if not pre_tool and not report_expected and not audit:
+            if not pre_tool and not report_expected and not audit and not midrun.enabled():
                 return None
             if is_meta:
                 allowed = [config.PROJECTS_DIR / project["slug"]]
@@ -1006,16 +1006,18 @@ def _guard_settings(run_id: int, project: Optional[db.sqlite3.Row]) -> Optional[
                 allowed = hookguard.family_workspaces(project)
             return hookguard.begin(
                 run_id, allowed, report_expected=report_expected, pre_tool=pre_tool,
-                audit=audit,
+                audit=audit, midrun=midrun.enabled(),
             )
-        if not hookguard.enabled() and not audit:
+        if not hookguard.enabled() and not audit and not midrun.enabled():
             return None
         row = db.get_run(run_id)
         if row is None or not row["oneoff_id"]:
             return None
+        # A one-off has no project and so no notes to hear, but it can still
+        # be paused - the hold needs nothing but the hook.
         return hookguard.begin(
             run_id, [oneoff.workspace(int(row["oneoff_id"]))],
-            pre_tool=hookguard.enabled(), audit=audit,
+            pre_tool=hookguard.enabled(), audit=audit, midrun=midrun.enabled(),
         )
     except Exception:  # noqa: BLE001
         log.exception("Could not build guardrail settings for run %s", run_id)
