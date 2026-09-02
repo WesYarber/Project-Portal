@@ -6,6 +6,7 @@ worker thread pool as well as request handlers).
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import sqlite3
@@ -583,6 +584,14 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # project id, so an adopted run can still ask a question and read a
         # sibling project's context.
         ("mcp_scope", "TEXT"),
+        # The run's hold (app/midrun.py): whether a pause is requested, since
+        # when, whether the relay has actually engaged it, and the seconds
+        # already spent on hold. Written on every change and cleared when the
+        # run ends. Until 2026-09-02 the hold lived only in memory, so every
+        # restart of the service woke whatever run was paused under it; now
+        # the relay keeps asking through the restart and the process that
+        # comes back reads this to answer "keep holding". NULL when never held.
+        ("hold_state", "TEXT"),
         # When somebody reverted this run's commits from the portal. Set once
         # and never cleared: it is a record of what happened, not a toggle, and
         # the undo of an undo is a git operation rather than a second button.
@@ -764,19 +773,47 @@ def set_run_start_head(run_id: int, sha: Optional[str]) -> None:
         conn.commit()
 
 
-_SCOPE_COLUMNS = ("hook_scope", "mcp_scope")
+_SCOPE_COLUMNS = ("hook_scope", "mcp_scope", "hold_state")
 
 
 def set_run_scope_record(run_id: int, column: str, raw: Optional[str]) -> None:
-    """Write (or clear, with None) one of the persisted per-run scopes - see
-    `hook_scope` and `mcp_scope` in `_ADDED_COLUMNS`. The column name is
-    checked against the two that exist rather than interpolated blind."""
+    """Write (or clear, with None) one of the persisted per-run records - see
+    `hook_scope`, `mcp_scope` and `hold_state` in `_ADDED_COLUMNS`. The column
+    name is checked against the ones that exist rather than interpolated blind."""
     if column not in _SCOPE_COLUMNS:
         raise ValueError(f"not a scope column: {column}")
     conn = get_conn()
     with _LOCK:
         conn.execute(f"UPDATE runs SET {column} = ? WHERE id = ?", (raw, run_id))
         conn.commit()
+
+
+def running_run_ids_with_record(column: str) -> list[int]:
+    """The runs still in flight that carry one of the persisted per-run
+    records - what a process that just started walks to pick up the holds of
+    the runs it adopted, before any page has asked about one of them."""
+    if column not in _SCOPE_COLUMNS:
+        raise ValueError(f"not a scope column: {column}")
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            f"SELECT id FROM runs WHERE status = 'running' AND {column} IS NOT NULL ORDER BY id"
+        ).fetchall()
+    return [int(r[0]) for r in rows]
+
+
+def hold_record_says_paused(row: Optional[sqlite3.Row]) -> bool:
+    """Whether a run row's persisted hold (`hold_state`, written by
+    app/midrun.py) records a pause in progress. Read here, without importing
+    midrun, for the boot journal line about an adopted run."""
+    raw = _row_get(row, "hold_state") if row is not None else None
+    if not raw:
+        return False
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and data.get("paused_since") is not None
 
 
 def count_hook_events(run_id: int, event: str, decision: Optional[str] = None) -> int:
@@ -867,6 +904,10 @@ def reconcile_orphaned_runs_on_boot() -> None:
             row = get_run(run_id)
             reachable = bool(row is not None and _row_get(row, "hook_scope"))
             tail = (
+                " It was on hold when the service went down and is still held: its "
+                "relay kept asking through the restart, and this portal answers "
+                "\"keep holding\" from the hold written on its row. Resume it when ready."
+                if reachable and hold_record_says_paused(row) else
                 " Its hooks still reach this portal, so it can be paused and handed "
                 "a note as before."
                 if reachable else

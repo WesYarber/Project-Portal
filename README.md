@@ -444,9 +444,15 @@ in memory; so the scope is written onto the run's row at spawn (`hook_scope`,
 `mcp_scope`) and the process that adopts the survivor rebuilds it on the first
 post. The write guard, the audit trail, the pause button, "deliver mid-run" and
 the run's `ask` tool all carry on across the restart, and the boot journal line
-says so. A pause in progress does not survive the restart itself: the relay
-releases the run the moment the portal stops answering, so a held run wakes
-and can be paused again once the service is back.
+says so. A pause in progress survives too: the hold is written onto the run's
+row (`runs.hold_state`) on every change, the relay keeps asking through a portal
+that is not answering instead of releasing the run at the first refused
+connection (`POST_RETRY_SEC` for a fresh post, `HOLD_RETRY_SEC` for a hold, in
+`app/hookrelay.py`), and the process that comes back reads the row on the
+relay's next poll and answers "keep holding". The same retry means a tool call
+that lands in the restart window is screened by the write guard once the portal
+is back rather than waved through. Only a portal down past the relay's budget
+wakes a held run; the boot journal line says when a survivor is still held.
 
 ### Where the budget goes
 

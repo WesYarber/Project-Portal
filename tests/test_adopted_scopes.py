@@ -480,3 +480,208 @@ def test_only_a_block_on_record_counts_as_a_spent_nudge(project, workspace, tmp_
     _restart()
     payload = {"hook_event_name": "Stop", "transcript_path": str(tmp_path / "none.jsonl")}
     assert hookguard.decide_stop(run_id, token, payload)[0] == "block"
+
+
+# --- a pause outlives the restart ------------------------------------------------------
+#
+# The hold used to live only in memory, so every restart of the service woke
+# the run paused under it. Now `midrun._persist` writes the hold onto the run's
+# row on every change, the relay keeps asking through the restart
+# (tests/test_midrun.py), and `midrun._hold` rebuilds the hold for a run this
+# process did not start.
+
+
+def _hold_json(run_id: int) -> dict:
+    raw = db.get_run(run_id)["hold_state"]
+    assert raw
+    return json.loads(raw)
+
+
+def _midrun_events(run_id):
+    return [(r["tool"], r["decision"]) for r in db.midrun_events_for_run(run_id)]
+
+
+def test_an_engaged_pause_outlives_a_restart(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    assert midrun.pause(run_id, by="Wes") == "paused"
+    assert "poll" in midrun.after_tool_call(run_id, token, _post())
+    assert _hold_json(run_id)["engaged"] is True
+    _restart()
+    # The relay's next poll, met by a process that has never heard of the hold.
+    answer = midrun.hold_poll(run_id, token)
+    assert answer["poll"].endswith(f"/hooks/hold?run={run_id}&token={token}")
+    st = midrun.state(run_id)
+    assert st["paused"] is True and st["engaged"] is True and st["can_pause"] is True
+    assert midrun.is_paused(run_id) is True
+
+
+def test_the_revival_is_recorded_once_on_the_run_s_timeline(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    midrun.after_tool_call(run_id, token, _post())
+    _restart()
+    midrun.hold_poll(run_id, token)
+    midrun.hold_poll(run_id, token)
+    midrun.state(run_id)
+    assert _midrun_events(run_id).count(("pause", "kept")) == 1
+    # A revived hold that is already engaged does not announce a second engagement.
+    assert _midrun_events(run_id).count(("pause", "held")) == 1
+
+
+def test_a_pause_requested_before_the_restart_engages_after_it(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    _restart()
+    answer = midrun.after_tool_call(run_id, token, _post())
+    assert "poll" in answer
+    assert midrun.state(run_id)["engaged"] is True
+    assert _hold_json(run_id)["engaged"] is True
+    assert ("pause", "held") in _midrun_events(run_id)
+
+
+def test_time_on_hold_counts_across_the_restart(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    midrun.after_tool_call(run_id, token, _post())
+    data = _hold_json(run_id)
+    data["paused_since"] -= 100.0  # the pause began 100 s before the restart
+    data["paused_total"] = 40.0  # and an earlier pause had already cost 40 s
+    db.set_run_scope_record(run_id, "hold_state", json.dumps(data))
+    _restart()
+    assert 140.0 <= midrun.paused_seconds(run_id) < 145.0
+    assert midrun.resume(run_id, by="Wes") == "resumed"
+    resumed = [r for r in db.midrun_events_for_run(run_id) if r["decision"] == "resume"]
+    assert "after holding 1m 4" in resumed[-1]["reason"]  # 1m 40s, held (engaged), not "before the hold engaged"
+    assert 140.0 <= midrun.paused_seconds(run_id) < 145.0
+
+
+def test_resuming_a_survivor_lets_its_relay_go_and_clears_the_pause_from_the_row(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    midrun.after_tool_call(run_id, token, _post())
+    _restart()
+    assert midrun.resume(run_id) == "resumed"
+    assert midrun.hold_poll(run_id, token) == {}
+    assert db.hold_record_says_paused(db.get_run(run_id)) is False
+    assert _hold_json(run_id)["engaged"] is False
+
+
+def test_a_resumed_hold_keeps_its_total_across_a_restart_without_being_paused(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    db.set_run_scope_record(run_id, "hold_state", json.dumps(
+        {"paused_since": None, "paused_total": 42.0, "engaged": False, "engaged_at": "", "heard": 2}))
+    _restart()
+    assert midrun.is_paused(run_id) is False
+    assert midrun.paused_seconds(run_id) == 42.0
+    assert midrun.state(run_id)["heard"] == 2
+    assert midrun.hold_poll(run_id, token) == {}
+    assert ("pause", "kept") not in _midrun_events(run_id)
+
+
+def test_a_finished_run_s_hold_is_not_revived(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    conn = db.get_conn()
+    conn.execute("UPDATE runs SET status = 'ok' WHERE id = ?", (run_id,))
+    conn.commit()
+    _restart()
+    assert midrun.is_paused(run_id) is False
+    assert midrun.paused_run_ids() == set()
+
+
+def test_an_unreadable_hold_record_is_no_hold(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    db.set_run_scope_record(run_id, "hold_state", "{not json")
+    _restart()
+    assert midrun.is_paused(run_id) is False
+    assert midrun.hold_poll(run_id, token) == {}
+    # The run can still be paused afresh: the scope is intact, only the hold was unreadable.
+    assert midrun.pause(run_id) == "paused"
+    db.set_run_scope_record(run_id, "hold_state", json.dumps(["a", "list"]))
+    _restart()
+    assert midrun.is_paused(run_id) is False
+
+
+def test_the_rail_sees_a_survivor_s_hold_before_any_page_asks_about_it(project, workspace):
+    from app import main
+
+    run_id, token = _spawned(project, workspace)
+    db.set_run_scope(run_id, "portal-run-1-1-1.scope")
+    midrun.pause(run_id)
+    _restart()
+    assert run_id in midrun.paused_run_ids()
+    assert project["id"] in main._paused_project_ids()  # noqa: SLF001
+
+
+def test_the_hold_record_is_cleared_when_the_run_ends(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    assert db.get_run(run_id)["hold_state"]
+    hookguard.end(run_id)
+    assert db.get_run(run_id)["hold_state"] is None
+    assert db.running_run_ids_with_record("hold_state") == []
+
+
+def test_a_failed_hold_write_does_not_stop_the_pause(project, workspace, monkeypatch):
+    run_id, token = _spawned(project, workspace)
+
+    def boom(*a, **k):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(db, "set_run_scope_record", boom)
+    assert midrun.pause(run_id) == "paused"
+    assert "poll" in midrun.after_tool_call(run_id, token, _post())
+    assert midrun.resume(run_id) == "resumed"
+    hookguard.end(run_id)  # the clear fails the same way, and the run still ends
+
+
+def test_a_note_heard_by_a_survivor_is_counted_on_the_row(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    _restart()
+    db.add_journal(project["id"], "user", "note", "Make it blue.", hear_now=True)
+    assert "hook_output" in midrun.after_tool_call(run_id, token, _post())
+    assert _hold_json(run_id)["heard"] == 1
+    _restart()
+    assert midrun.state(run_id)["heard"] == 1
+
+
+def test_hold_record_says_paused_reads_only_a_real_record():
+    assert db.hold_record_says_paused(None) is False
+    project = db.create_project("P", stage="active", slug="p")
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    assert db.hold_record_says_paused(db.get_run(run_id)) is False
+    db.set_run_scope_record(run_id, "hold_state", "{junk")
+    assert db.hold_record_says_paused(db.get_run(run_id)) is False
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({"paused_since": None}))
+    assert db.hold_record_says_paused(db.get_run(run_id)) is False
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({"paused_since": 1.0}))
+    assert db.hold_record_says_paused(db.get_run(run_id)) is True
+
+
+def test_running_run_ids_with_record_lists_only_live_rows_of_that_column():
+    project = db.create_project("P", stage="active", slug="p")
+    held = db.create_run(project["id"], "build", "claude-fable-5-1")
+    hooked = db.create_run(project["id"], "build", "claude-fable-5-1")
+    done = db.create_run(project["id"], "build", "claude-fable-5-1")
+    db.set_run_scope_record(held, "hold_state", "{}")
+    db.set_run_scope_record(hooked, "hook_scope", "{}")
+    db.set_run_scope_record(done, "hold_state", "{}")
+    conn = db.get_conn()
+    conn.execute("UPDATE runs SET status = 'ok' WHERE id = ?", (done,))
+    conn.commit()
+    assert db.running_run_ids_with_record("hold_state") == [held]
+    assert db.running_run_ids_with_record("hook_scope") == [hooked]
+    with pytest.raises(ValueError):
+        db.running_run_ids_with_record("status")
+
+
+def test_the_boot_journal_says_a_survivor_is_still_held(project, workspace, monkeypatch):
+    run_id, _ = _spawned(project, workspace)
+    db.set_run_scope(run_id, "portal-run-1-1-1.scope")
+    midrun.pause(run_id)
+    monkeypatch.setattr(runlimit, "scope_is_active", lambda unit: True)
+    _restart()
+    db.reconcile_orphaned_runs_on_boot()
+    lines = [r["content_md"] for r in db.list_journal_asc(project["id"], limit=10)]
+    assert any("is still held" in line and "Resume it when ready" in line for line in lines)
+    assert not any("can be paused and handed a note" in line for line in lines)

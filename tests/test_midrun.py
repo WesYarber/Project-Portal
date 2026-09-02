@@ -463,13 +463,143 @@ def test_relay_polls_while_held_then_prints_the_final_answer(monkeypatch, capsys
     assert json.loads(out) == context
 
 
-def test_relay_releases_silently_when_a_poll_fails(monkeypatch, capsys):
-    calls, out = _run_relay(
+# --- the relay through a restart -----------------------------------------------------
+#
+# The service restarts itself to load its own updates (about four seconds off
+# the air), and every run of the meta-project restarts it under itself. The
+# relay used to fail open at the first refused connection, so a tool call in
+# that window passed the write guard unscreened and a held run woke. Now a
+# fresh post retries for POST_RETRY_SEC and a hold for HOLD_RETRY_SEC, and only
+# a transport failure is retried - an answer the portal gave is final.
+
+_HOLD = "http://127.0.0.1:1/hooks/hold?run=1&token=t"
+_POST_TOOL = "http://127.0.0.1:1/hooks/post-tool?run=1&token=t"
+
+
+class _Clock:
+    """A fake clock the relay's sleeps advance, so a retry budget measured in
+    seconds runs in no time and to the second."""
+
+    def __init__(self):
+        self.now = 1000.0
+        self.sleeps: list = []
+
+    def sleep(self, s):
+        self.sleeps.append(s)
+        self.now += s
+
+    def __call__(self):
+        return self.now
+
+
+def _run_relay_with_clock(monkeypatch, capsys, answers):
+    """Like `_run_relay`, but `answers` may be a generator (endless failures),
+    and the relay's clock is the fake the sleeps drive. Returns (calls, out, clock)."""
+    calls = []
+    queue = iter(answers)
+    clock = _Clock()
+
+    def fake_urlopen(req, timeout=5):
+        calls.append(req.full_url)
+        answer = next(queue)
+        if isinstance(answer, Exception):
+            raise answer
+        return _FakeResponse(json.dumps(answer).encode("utf-8"))
+
+    monkeypatch.setattr(sys, "argv", ["hookrelay.py", _POST_TOOL])
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"tool_name": "Bash"}'))
+    monkeypatch.setattr(hookrelay.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(hookrelay.time, "sleep", clock.sleep)
+    monkeypatch.setattr(hookrelay, "_clock", clock)
+    assert hookrelay.main() == 0
+    return calls, capsys.readouterr().out.strip(), clock
+
+
+def _refused():
+    while True:
+        yield ConnectionRefusedError(111, "Connection refused")
+
+
+def test_relay_keeps_asking_through_a_restart_while_held(monkeypatch, capsys):
+    """The portal goes away for two attempts mid-hold; the relay keeps asking
+    at the hold address and the run stays held until the answer changes."""
+    poll = {"ok": True, "poll": _HOLD, "interval": 3}
+    calls, out, clock = _run_relay_with_clock(
         monkeypatch, capsys,
-        [{"ok": True, "poll": "http://127.0.0.1:1/hooks/hold?run=1&token=t"}, OSError("portal restarted")],
+        [poll, ConnectionRefusedError(111, "refused"), ConnectionResetError(104, "reset"), poll, {"ok": True}],
     )
-    assert len(calls) == 2
+    assert calls == [_POST_TOOL, _HOLD, _HOLD, _HOLD, _HOLD]
+    assert clock.sleeps == [3, hookrelay.RETRY_INTERVAL_SEC, hookrelay.RETRY_INTERVAL_SEC, 3]
     assert out == ""
+
+
+def test_relay_lets_a_held_run_go_only_when_the_portal_stays_down_past_its_budget(monkeypatch, capsys):
+    poll = {"ok": True, "poll": _HOLD, "interval": 3}
+
+    def answers():
+        yield poll
+        yield from _refused()
+
+    calls, out, clock = _run_relay_with_clock(monkeypatch, capsys, answers())
+    hold_attempts = calls.count(_HOLD)
+    assert hold_attempts == hookrelay.HOLD_RETRY_SEC // hookrelay.RETRY_INTERVAL_SEC + 1
+    assert clock.now - 1000.0 == 3 + hookrelay.HOLD_RETRY_SEC
+    assert out == ""
+
+
+def test_relay_retries_a_fresh_post_through_a_restart_and_the_guard_still_holds(monkeypatch, capsys):
+    """A tool call landing while the service is off the air used to pass the
+    guard unscreened. Now the first post is retried, and the portal's verdict
+    once it is back is the one that counts."""
+    calls, out, clock = _run_relay_with_clock(
+        monkeypatch, capsys,
+        [ConnectionRefusedError(111, "refused"), ConnectionRefusedError(111, "refused"),
+         {"ok": True, "decision": "deny", "reason": "outside the workspace"}],
+    )
+    assert calls == [_POST_TOOL, _POST_TOOL, _POST_TOOL]
+    assert clock.sleeps == [hookrelay.RETRY_INTERVAL_SEC, hookrelay.RETRY_INTERVAL_SEC]
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+
+
+def test_relay_fails_open_when_a_fresh_post_never_gets_through(monkeypatch, capsys):
+    calls, out, clock = _run_relay_with_clock(monkeypatch, capsys, _refused())
+    assert len(calls) == hookrelay.POST_RETRY_SEC // hookrelay.RETRY_INTERVAL_SEC + 1
+    assert clock.now - 1000.0 == hookrelay.POST_RETRY_SEC
+    assert out == ""
+
+
+def test_a_fresh_post_gives_up_sooner_than_a_hold_and_inside_the_cli_s_own_timeout(tmp_path):
+    """The PreToolUse and Stop hooks are killed by the CLI after 15 s, which it
+    reads as allow: the relay's own budget has to be the shorter one, so the
+    relay decides the outcome. A hold has a pause at stake and waits longer."""
+    settings = hookguard.begin(31, [tmp_path], audit=False, pre_tool=True, midrun=False)
+    try:
+        cli_timeout = json.loads(settings)["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"]
+    finally:
+        hookguard.end(31)
+    assert hookrelay.POST_RETRY_SEC < cli_timeout
+    assert hookrelay.POST_RETRY_SEC < hookrelay.HOLD_RETRY_SEC
+
+
+def test_relay_does_not_retry_an_answer_the_portal_gave(monkeypatch, capsys):
+    """An HTTP error and a junk body are the portal answering, not the portal
+    being away: both fail open at once, as before."""
+    import urllib.error
+
+    err = urllib.error.HTTPError(_POST_TOOL, 500, "boom", {}, None)
+    calls, out, clock = _run_relay_with_clock(monkeypatch, capsys, [err])
+    assert calls == [_POST_TOOL] and out == "" and clock.sleeps == []
+
+    calls = []
+
+    def junk(req, timeout=5):
+        calls.append(req.full_url)
+        return _FakeResponse(b"<html>not json</html>")
+
+    monkeypatch.setattr(hookrelay.urllib.request, "urlopen", junk)
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"tool_name": "Bash"}'))
+    assert hookrelay.main() == 0
+    assert calls == [_POST_TOOL] and capsys.readouterr().out.strip() == ""
 
 
 def test_relay_uses_its_default_interval_when_none_is_given(monkeypatch, capsys):

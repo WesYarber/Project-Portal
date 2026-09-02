@@ -43,10 +43,13 @@ What this cannot do, and says so: a run spawned without the PostToolUse hook
 (the channel switched off, or hooks off entirely) can neither pause nor hear -
 `pause()` refuses rather than pretending. A run that outlives a service restart
 CAN, since 2026-09-02: its hook scope is on its row (`runs.hook_scope`) and the
-adopting process rebuilds it, so the buttons stay offered. What a restart does
-end is a pause in progress - the relay releases the run the moment the portal
-stops answering, fail-open - so a held run wakes when the service restarts and
-can be paused again once it is up. A run waiting inside `mcp__portal__ask`
+adopting process rebuilds it, so the buttons stay offered. A pause in progress
+outlives the restart too, since later that day: the hold is written onto the
+run's row (`runs.hold_state`) on every change, the relay keeps asking through a
+portal that is not answering rather than releasing the run at the first refused
+connection (`hookrelay.HOLD_RETRY_SEC`), and the process that comes back reads
+the row on the relay's next poll and answers "keep holding". Only a portal that
+stays down past the relay's budget wakes a held run. A run waiting inside `mcp__portal__ask`
 makes no tool calls until answered, so a pause pressed then engages only once
 the answer arrives. And a note that lands after the run has
 filed its report is left for the next run: injecting it behind a StructuredOutput
@@ -58,6 +61,7 @@ hour on hold is not an hour closer to being killed.
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -93,8 +97,12 @@ class _Hold:
     heard: int = 0  # notes delivered to this run mid-flight
 
 
-# In memory on purpose: "this run is on hold" is only ever true while a relay
-# process is polling, and a restart ends both the process and the truth.
+# The live registry, and not the only copy: every change is written onto the
+# run's row (`runs.hold_state`, `_persist`), and `_hold` reads it back for a
+# run this process did not start - one whose agent outlived a service restart
+# and whose relay is still asking whether it may go on. Before that, a restart
+# ended the hold along with the process, and the run woke. Only a run still
+# 'running' is ever revived.
 _HOLDS: dict[int, _Hold] = {}
 
 
@@ -104,6 +112,76 @@ def enabled() -> bool:
 
 def end(run_id: int) -> None:
     _HOLDS.pop(run_id, None)
+    try:
+        db.set_run_scope_record(run_id, "hold_state", None)
+    except Exception:  # noqa: BLE001 - a stale record is refused by the status check anyway
+        log.exception("Could not clear the hold record of run %s", run_id)
+
+
+def _persist(hold: _Hold) -> None:
+    """Write the hold onto the run's row so a portal process that adopts this
+    run after a restart answers its relay the same way this one would. The
+    pause's start is stored as wall-clock time, since a monotonic reading
+    means nothing to another process. Best-effort: the in-memory hold is
+    already the truth for this process."""
+    since = None
+    if hold.paused_at is not None:
+        since = time.time() - (time.monotonic() - hold.paused_at)
+    try:
+        db.set_run_scope_record(hold.run_id, "hold_state", json.dumps({
+            "paused_since": since,
+            "paused_total": hold.paused_total,
+            "engaged": hold.engaged,
+            "engaged_at": hold.engaged_at,
+            "heard": hold.heard,
+        }))
+    except Exception:  # noqa: BLE001
+        log.exception("Could not persist the hold of run %s", hold.run_id)
+
+
+def _hold(run_id: int, create: bool = False) -> Optional[_Hold]:
+    """This run's hold: the registry's entry, one rebuilt from the run's row
+    for a run this process did not start, or (with `create`) a fresh one."""
+    hold = _HOLDS.get(run_id)
+    if hold is None:
+        hold = _revive(run_id)
+    if hold is None and create:
+        hold = _HOLDS[run_id] = _Hold(run_id=run_id)
+    return hold
+
+
+def _revive(run_id: int) -> Optional[_Hold]:
+    try:
+        row = db.get_run(run_id)
+        if row is None or row["status"] != "running":
+            return None
+        raw = db._row_get(row, "hold_state")  # noqa: SLF001
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return None
+        since = data.get("paused_since")
+        paused_at = None
+        if isinstance(since, (int, float)):
+            paused_at = time.monotonic() - max(0.0, time.time() - float(since))
+        hold = _Hold(
+            run_id=run_id,
+            paused_at=paused_at,
+            paused_total=float(data.get("paused_total") or 0.0),
+            engaged=bool(data.get("engaged")),
+            engaged_at=str(data.get("engaged_at") or ""),
+            heard=int(data.get("heard") or 0),
+        )
+    except Exception:  # noqa: BLE001 - an unreadable record is no hold, fail-open
+        log.exception("Could not revive the hold of run %s", run_id)
+        return None
+    _HOLDS[run_id] = hold
+    if hold.paused_at is not None:
+        log.info("Revived the hold on run %s, paused across a restart", run_id)
+        _event(run_id, "pause", "kept",
+               "Still holding: the pause outlived a service restart, and the relay kept asking.")
+    return hold
 
 
 # -- pause / resume ---------------------------------------------------------
@@ -130,12 +208,13 @@ def pause(run_id: int, by: str = "") -> str:
         return "not_running"
     if not can_hear(run_id):
         return "cannot_hear"
-    hold = _HOLDS.setdefault(run_id, _Hold(run_id=run_id))
+    hold = _hold(run_id, create=True)
     if hold.paused_at is not None:
         return "already_paused"
     hold.paused_at = time.monotonic()
     hold.engaged = False
     hold.engaged_at = ""
+    _persist(hold)
     who = f" by {by}" if by else ""
     _event(run_id, "pause", "hold", f"Pause requested{who}; the run holds at its next tool call.")
     _journal(run, f"Run #{run_id} paused{who}. It holds at its next tool call, spending nothing, "
@@ -146,7 +225,7 @@ def pause(run_id: int, by: str = "") -> str:
 
 def resume(run_id: int, by: str = "") -> str:
     """Let a held run go on. Returns one of RESUME_RESULTS."""
-    hold = _HOLDS.get(run_id)
+    hold = _hold(run_id)
     if hold is None or hold.paused_at is None:
         return "not_paused"
     held_for = time.monotonic() - hold.paused_at
@@ -155,6 +234,7 @@ def resume(run_id: int, by: str = "") -> str:
     engaged = hold.engaged
     hold.engaged = False
     hold.engaged_at = ""
+    _persist(hold)
     who = f" by {by}" if by else ""
     how = "after holding" if engaged else "before the hold engaged,"
     _event(run_id, "resume", "resume", f"Resumed{who} {how} {_humanize(held_for)}.")
@@ -166,7 +246,7 @@ def resume(run_id: int, by: str = "") -> str:
 
 
 def is_paused(run_id: Optional[int]) -> bool:
-    hold = _HOLDS.get(run_id) if run_id is not None else None
+    hold = _hold(run_id) if run_id is not None else None
     return hold is not None and hold.paused_at is not None
 
 
@@ -175,7 +255,7 @@ def paused_seconds(run_id: Optional[int]) -> float:
     What the supervisor adds to the run's deadline."""
     if run_id is None:
         return 0.0
-    hold = _HOLDS.get(run_id)
+    hold = _hold(run_id)
     if hold is None:
         return 0.0
     total = hold.paused_total
@@ -189,7 +269,7 @@ def state(run_id: Optional[int]) -> dict:
     hold has actually engaged yet, and whether it could be paused at all."""
     if run_id is None:
         return {"paused": False, "engaged": False, "can_pause": False, "heard": 0}
-    hold = _HOLDS.get(run_id)
+    hold = _hold(run_id)
     paused = hold is not None and hold.paused_at is not None
     return {
         "paused": paused,
@@ -200,6 +280,15 @@ def state(run_id: Optional[int]) -> dict:
 
 
 def paused_run_ids() -> set[int]:
+    """Every run on hold, the ones this process paused and the ones it adopted
+    with a hold on their row - the rail asks this before any page has asked
+    about a survivor by id, so the survivors' holds are picked up here."""
+    try:
+        for run_id in db.running_run_ids_with_record("hold_state"):
+            if run_id not in _HOLDS:
+                _hold(run_id)
+    except Exception:  # noqa: BLE001 - the rail still answers from the registry
+        log.exception("Could not pick up the holds of adopted runs")
     return {rid for rid, h in _HOLDS.items() if h.paused_at is not None}
 
 
@@ -224,11 +313,12 @@ def after_tool_call(run_id: int, token: str, payload: dict) -> dict:
         if str(payload.get("tool_name") or "") == _REPORT_TOOL:
             # The run is finishing. Leave any note for the next run.
             return {}
-        hold = _HOLDS.get(run_id)
+        hold = _hold(run_id)
         if hold is not None and hold.paused_at is not None:
             if not hold.engaged:
                 hold.engaged = True
                 hold.engaged_at = db.now()
+                _persist(hold)
                 _event(run_id, "pause", "held", "Holding at this tool call. Nothing is being spent.")
             return {"poll": poll_url(run_id, token), "interval": POLL_INTERVAL_SEC}
         return inject_notes(run_id)
@@ -246,7 +336,7 @@ def hold_poll(run_id: int, token: str) -> dict:
     try:
         if not hookguard.authorized(run_id, token) or not can_hear(run_id):
             return {}
-        hold = _HOLDS.get(run_id)
+        hold = _hold(run_id)
         if hold is not None and hold.paused_at is not None:
             return {"poll": poll_url(run_id, token), "interval": POLL_INTERVAL_SEC}
         return inject_notes(run_id)
@@ -276,8 +366,9 @@ def inject_notes(run_id: int) -> dict:
     text = render(rows, run_id)
     ids = [int(r["id"]) for r in rows]
     db.mark_notes_delivered(ids)
-    hold = _HOLDS.setdefault(run_id, _Hold(run_id=run_id))
+    hold = _hold(run_id, create=True)
     hold.heard += len(rows)
+    _persist(hold)
     count = len(rows)
     noun = "note" if count == 1 else f"{count} notes"
     _event(run_id, "note", "heard", f"Read {noun} mid-run, typed while it was working.",
