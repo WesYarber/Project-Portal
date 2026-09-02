@@ -204,6 +204,9 @@ def test_input_and_output_at_list_price():
 def test_an_unknown_model_that_spent_tokens_is_not_priced():
     assert pricing.price("claude-someday-9", {"output": 10}) is None
     assert pricing.rates_for("opus") is None
+    # A family is a prefix up to a dash, not a prefix of characters: sonnet-50
+    # is not sonnet-5, and a run on it stays unpriced rather than mispriced.
+    assert pricing.rates_for("claude-sonnet-50") is None
     assert pricing.rates_for(None) is None
 
 
@@ -264,6 +267,11 @@ def test_usage_is_kept_per_model(tmp_path):
     rec = transcript.read(write_transcript(tmp_path, "s3", events))
     assert set(rec.usage_by_model) == {FABLE, "claude-haiku-4-5"}
     assert rec.usage_by_model["claude-haiku-4-5"]["output"] == 7
+    assert rec.totals()["output"] == 157
+    assert rec.cost() == pytest.approx(
+        pricing.price(FABLE, rec.usage_by_model[FABLE])
+        + pricing.price("claude-haiku-4-5", {"output": 7})
+    )
 
 
 def test_a_message_without_usage_or_without_billable_tokens_adds_no_model(tmp_path):
@@ -328,6 +336,9 @@ def test_no_start_head_is_written_for_a_workspace_that_is_not_a_repo(project):
     db.set_run_start_head(run_id, None)
     assert db.get_run(run_id)["ws_head_start"] is None
     db.set_run_start_head(run_id, "abc123")
+    assert db.get_run(run_id)["ws_head_start"] == "abc123"
+    # And a later empty reading does not blank a recorded one.
+    db.set_run_start_head(run_id, "")
     assert db.get_run(run_id)["ws_head_start"] == "abc123"
 
 
