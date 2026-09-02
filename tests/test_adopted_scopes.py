@@ -685,3 +685,22 @@ def test_the_boot_journal_says_a_survivor_is_still_held(project, workspace, monk
     lines = [r["content_md"] for r in db.list_journal_asc(project["id"], limit=10)]
     assert any("is still held" in line and "Resume it when ready" in line for line in lines)
     assert not any("can be paused and handed a note" in line for line in lines)
+
+
+def test_pausing_a_survivor_that_is_already_held_says_so(project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    _restart()
+    assert midrun.pause(run_id) == "already_paused"
+    assert midrun.resume(run_id) == "resumed"
+    assert midrun.pause(run_id) == "paused"
+
+
+def test_the_log_api_reads_a_survivor_s_hold(client, project, workspace):
+    run_id, token = _spawned(project, workspace)
+    midrun.pause(run_id)
+    midrun.after_tool_call(run_id, token, _post())
+    _restart()
+    r = client.get(f"/api/run/{run_id}/log")
+    assert r.status_code == 200
+    assert r.json()["paused"] is True
