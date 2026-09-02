@@ -33,6 +33,19 @@ cp deploy/project-portal.service ~/.config/systemd/user/
 systemctl --user daemon-reload && systemctl --user enable --now project-portal
 ```
 
+If this install is meant to follow a published one, also enable the update
+timer, which pulls and restarts on its own every half hour:
+
+```bash
+cp deploy/project-portal-update.service deploy/project-portal-update.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now project-portal-update.timer
+```
+
+And if there is another portal this one should know about, register it under
+**Settings → access → other portals** (or `POST /nodes/add` with `name`, `url`
+and optionally `ssh`); it is then probed every two minutes and shown on the
+dashboard. See `app/nodes.py`.
+
 ## What you cannot finish, and must hand back
 
 Two things, and `deploy/setup.py` prints both under `human`:

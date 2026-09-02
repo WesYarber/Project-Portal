@@ -113,6 +113,15 @@
   {% for problem in (usage.auth.problems if usage.auth else []) %}
   <span class="small"><span class="dot warn"></span>{{ problem }}</span>
   {% endfor %}
+  {# The other portals this one knows about (app/nodes.py): up or down, and
+     whether they run what this install last published. #}
+  {% for node in nodes %}
+  <span class="node-chip node-{{ node.state }}" title="{{ node.detail }}">
+    <span class="dot {{ 'ok' if node.state == 'ok' else ('warn' if node.state in ('behind', 'updating', 'unknown') else 'err') }}"></span>
+    <a href="{{ node.url }}">{{ node.name }}</a>
+    <span class="muted">{{ {'ok': 'up to date', 'behind': 'behind', 'updating': 'updating', 'unknown': 'up', 'off': 'down'}[node.state] }}</span>
+  </span>
+  {% endfor %}
   <a class="small" href="/settings#budget">adjust budget</a>
   </div>
   {# The last quarter of activity across every project, sat at the end of the

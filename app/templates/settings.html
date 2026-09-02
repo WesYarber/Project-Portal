@@ -1042,6 +1042,83 @@ The suite is green, so the change is in.</pre>
     <p class="hint">No tailnet reading yet - the poller takes its first one a few seconds after startup.</p>
     {% endif %}
   </div>
+
+  {# Other installs of the portal - the one at the office, the one at home
+     seen from there. Probed every two minutes (app/nodes.py); what is shown
+     here is the cache, never a live request to another building. #}
+  <div class="card" id="nodes-card">
+    <h2 id="nodes">other portals{% call info() %}Another install of this same
+      portal, on another machine. It is asked <code>/api/node</code> every two
+      minutes: whether it answers, and which source commit it runs, compared
+      against the last commit this install published. With an ssh target,
+      <strong>update now</strong> runs <code>deploy/update.py</code> there -
+      and after every publish the same push happens by itself, once that
+      portal has no run in flight.{% endcall %}</h2>
+    {% if saved == 'nodes' %}<p class="flash ok" role="status">saved.</p>{% endif %}
+    {% for node in nodes %}
+    <div class="node-row node-{{ node.state }}">
+      <div class="node-head">
+        <span class="dot {{ 'ok' if node.state == 'ok' else ('warn' if node.state in ('behind', 'updating', 'unknown') else 'err') }}"></span>
+        <a href="{{ node.url }}"><strong>{{ node.name }}</strong></a>
+        <span class="badge node-state">{{ node.state }}</span>
+        <code class="node-url">{{ node.url }}</code>
+      </div>
+      <p class="hint node-detail">
+        {{ node.detail }}{% if node.online %} - {{ node.running }} running, {{ node.open_questions }} open question{{ 's' if node.open_questions != 1 }}{% if node.latency_ms is not none %}, {{ node.latency_ms }} ms{% endif %}{% endif %}.
+        Checked {{ node.checked }}{% if node.ssh %}; pushes go to <code>{{ node.ssh }}</code>{% endif %}.
+      </p>
+      {% if node.update_at %}
+      <details class="node-update-log">
+        <summary>last update push {{ node.update_at }}: {{ 'ok' if node.update_ok else 'failed' }}</summary>
+        <pre>{{ node.update_output }}</pre>
+      </details>
+      {% endif %}
+      <div class="node-actions">
+        {% if node.can_update %}
+        <form method="post" action="/nodes/{{ node.id }}/update">
+          <button type="submit" class="small" {{ 'disabled' if node.state == 'updating' }}>update now</button>
+        </form>
+        {% endif %}
+        <form method="post" action="/nodes/{{ node.id }}/remove"
+              data-confirm="Forget the {{ node.name }} portal? Nothing on that machine is touched.">
+          <button type="submit" class="ghost small">forget</button>
+        </form>
+      </div>
+    </div>
+    {% else %}
+    <p class="hint">No other portal registered yet.</p>
+    {% endfor %}
+
+    <form method="post" action="/nodes/add" class="node-row node-add">
+      <h3>add a portal</h3>
+      <label class="field">
+        <span>name</span>
+        <input type="text" name="name" placeholder="office" required>
+      </label>
+      <label class="field">
+        <span>url <span class="hint">where that portal answers, from here</span></span>
+        <input type="text" name="url" list="tailnet-hosts" placeholder="http://that-machine:8500/" required>
+        {% if tailnet and tailnet.peers %}
+        <datalist id="tailnet-hosts">
+          {% for peer in tailnet.peers if peer.online %}
+          <option value="http://{{ peer.dns }}:{{ portal_port }}/">{{ peer.host }}</option>
+          {% endfor %}
+        </datalist>
+        {% endif %}
+      </label>
+      <label class="field">
+        <span>ssh target <span class="hint">optional - lets this portal push updates there</span></span>
+        <input type="text" name="ssh" placeholder="user@that-machine">
+      </label>
+      <label class="field">
+        <span>checkout path <span class="hint">on that machine; blank means <code>~/project-portal</code></span></span>
+        <input type="text" name="path" placeholder="~/project-portal">
+      </label>
+      <div class="node-actions">
+        <button type="submit">add</button>
+      </div>
+    </form>
+  </div>
 </section>
 
 {% if slug_suggestions %}

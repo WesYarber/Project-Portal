@@ -48,6 +48,7 @@ from app import (
     memory,
     modelwatch,
     netinfo,
+    nodes,
     notes,
     notify,
     oneoff,
@@ -1063,6 +1064,7 @@ async def on_startup() -> None:
         _BACKGROUND_TASKS.append(asyncio.create_task(telegram_bot.telegram_poll_loop()))
         _BACKGROUND_TASKS.append(asyncio.create_task(limits.poll_loop()))
         _BACKGROUND_TASKS.append(asyncio.create_task(netinfo.poll_loop()))
+        _BACKGROUND_TASKS.append(asyncio.create_task(nodes.poll_loop()))
         # The preview server shares this loop, so it starts and dies with the
         # portal and needs no unit of its own. See app/preview.py.
         _BACKGROUND_TASKS.append(asyncio.create_task(preview.serve_loop()))
@@ -1195,6 +1197,7 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             "heatmap": usage.heatmap(),
             "active_run": active_run,
             "worker_model": settings.get("worker_model") or config.DEFAULT_MODEL,
+            "nodes": nodes.summary(),
             "sorts": sorts,
             "active_sort": active_sort,
             # The timestamp each card SAYS, so it agrees with the order the
@@ -3214,6 +3217,7 @@ async def settings_page(request: Request) -> HTMLResponse:
             "slug_suggestions": db.projects_with_suggested_slugs(),
             "tailnet": netinfo.cached(),
             "portal_port": config.PORT,
+            "nodes": nodes.view(),
             "model_catalog": modelwatch.catalog(),
             "strays": _stray_view(),
         },
@@ -3940,6 +3944,54 @@ async def api_tailnet(refresh: int = 0) -> JSONResponse:
         netinfo.store(snap)
         return JSONResponse(snap)
     return JSONResponse(netinfo.cached())
+
+
+@app.get("/api/node")
+async def api_node() -> JSONResponse:
+    """Who this portal is, for another portal asking. The commit here is the
+    upstream *source* commit (the mirror's trailer on a follower, HEAD on the
+    publisher), so two installs with unrelated git histories can still tell
+    whether they run the same code. See app/nodes.py."""
+    return JSONResponse(await asyncio.to_thread(nodes.identity))
+
+
+@app.get("/api/nodes")
+async def api_nodes(refresh: int = 0) -> JSONResponse:
+    """The other portals this one knows about, with their cached status.
+    `?refresh=1` probes them now instead of waiting for the poller."""
+    if refresh:
+        await asyncio.to_thread(nodes.snapshot)
+    return JSONResponse({"published": nodes.published_commit(), "nodes": nodes.view()})
+
+
+@app.post("/nodes/add")
+async def add_node(
+    name: str = Form(""),
+    url: str = Form(""),
+    ssh: str = Form(""),
+    path: str = Form(""),
+) -> RedirectResponse:
+    node = nodes.add(name=name, url=url, ssh=ssh, path=path)
+    if node is not None:
+        # Probe it now rather than leaving "not checked yet" on the page the
+        # form lands on. One request with a five-second ceiling.
+        await asyncio.to_thread(nodes.snapshot, [node["id"]])
+    return RedirectResponse(url="/settings?saved=nodes#nodes", status_code=303)
+
+
+@app.post("/nodes/{node_id}/remove")
+async def remove_node(node_id: str) -> RedirectResponse:
+    nodes.remove(node_id)
+    return RedirectResponse(url="/settings?saved=nodes#nodes", status_code=303)
+
+
+@app.post("/nodes/{node_id}/update")
+async def update_node(node_id: str) -> RedirectResponse:
+    """Run deploy/update.py on that node, in the background. The page shows
+    "updating" until it finishes and the result lands in the status and on the
+    meta project's journal."""
+    nodes.start_update(node_id)
+    return RedirectResponse(url="/settings?saved=nodes#nodes", status_code=303)
 
 
 @app.get("/api/usage/history")

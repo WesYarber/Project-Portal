@@ -15,7 +15,7 @@ from typing import Optional
 
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
-    limits, memory, midrun, mirror, modelwatch, notes, notify, oneoff, orphans, pacing, people,
+    limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
     portalmcp, preview, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, worklock,
@@ -534,7 +534,14 @@ async def _publish_mirror() -> None:
     leak scan and a network push - about three seconds - and this tick is what
     the console and the dashboard are waiting on.
     """
-    await asyncio.to_thread(mirror.tick)
+    outcome = await asyncio.to_thread(mirror.tick)
+    if outcome is not None and outcome.ok:
+        # The follower installs (app/nodes.py) are now behind what GitHub has.
+        # Mark them; the node poller pushes the update once each is idle.
+        try:
+            nodes.request_update_all()
+        except Exception:  # noqa: BLE001 - bookkeeping must not stop the tick
+            log.exception("Could not mark nodes for update")
 
 
 def _drain_parallel_branches() -> None:

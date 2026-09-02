@@ -180,6 +180,33 @@ orphaned-run reconciliation (which against a live data directory settles the
 **running** service's runs), and no preview server binding a port out from
 under the portal you are checking.
 
+### A follower that updates itself
+
+`deploy/project-portal-update.timer` runs `deploy/update.py` every half hour.
+Install it beside the service unit:
+
+```bash
+cp deploy/project-portal-update.service deploy/project-portal-update.timer ~/.config/systemd/user/
+systemctl --user daemon-reload && systemctl --user enable --now project-portal-update.timer
+```
+
+## Running more than one
+
+An install can know about the others. **Settings → access → other portals**
+takes a name, the other portal's URL and, optionally, an ssh target. From then
+on this portal asks that one `/api/node` every two minutes and shows, on the
+dashboard's status line and in settings, whether it is up and which commit it
+runs — compared against the last commit *this* install published, so "behind"
+means what it says even though the public repository's history is unrelated to
+the source's.
+
+With an ssh target, **update now** runs `deploy/update.py` there, and the
+install that publishes the mirror does the same automatically a few minutes
+after every publish — once the node reports no agent run in flight, so a
+restart never lands in the middle of one. The follower's own timer is the
+backstop for when it cannot be reached. The push needs this machine's ssh key
+in that account's `authorized_keys`; nothing else is configured on the far side.
+
 ## Configure
 
 **Nothing is required.** With no config at all the portal reads the machine

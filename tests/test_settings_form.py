@@ -301,7 +301,7 @@ def test_lifecycle_through_the_test_client(temp_data_dir):
 
     with TestClient(main.app) as running:
         running.get("/api/ping")
-        assert len(main._BACKGROUND_TASKS) == 5
+        assert len(main._BACKGROUND_TASKS) == 6  # worker, telegram, limits, netinfo, nodes, preview
     assert main._BACKGROUND_TASKS == []
 
 

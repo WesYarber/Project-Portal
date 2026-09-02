@@ -1,0 +1,12 @@
+; Every half hour, from five minutes after boot. See project-portal-update.service.
+[Unit]
+Description=Project Portal - check for published updates every 30 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=30min
+RandomizedDelaySec=2min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -4136,3 +4136,18 @@ label.diff-line:hover { background: rgba(122, 162, 247, 0.12); }
    broken one - the pick and the submit do not depend on this rule. */
 .diff-body:not(:has(.diff-pick:checked)) .diff-comment-open { display: none; }
 .diff-body:has(.diff-pick:checked) .diff-comment-hint { color: var(--portal-blue); }
+
+/* Other portals (app/nodes.py): the settings card and the dashboard chips. */
+.node-row { padding: 0.6rem 0; border-bottom: 1px solid var(--window-border); }
+.node-row:last-child { border-bottom: 0; }
+.node-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.node-head .node-url { color: var(--terminal-dim); font-size: 0.8rem; overflow-wrap: anywhere; }
+.node-detail { margin: 0.3rem 0 0; }
+.node-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.45rem; }
+.node-update-log { margin-top: 0.35rem; font-size: 0.8rem; }
+.node-update-log pre { max-height: 14rem; overflow: auto; font-size: 0.72rem; margin: 0.3rem 0 0; }
+.node-add h3 { margin: 0.6rem 0 0.3rem; }
+.node-state.node-ok, .node-ok .node-state { color: var(--ansi-green); border-color: rgba(74, 222, 128, 0.45); }
+.node-behind .node-state, .node-updating .node-state, .node-unknown .node-state { color: var(--ansi-yellow); border-color: rgba(250, 204, 21, 0.45); }
+.node-off .node-state { color: var(--ansi-red); border-color: rgba(255, 110, 110, 0.45); }
+.node-chip a { color: inherit; }

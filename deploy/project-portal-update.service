@@ -1,0 +1,26 @@
+; A follower install keeps up with the published code on its own clock.
+;
+; Install, beside project-portal.service:
+;   cp deploy/project-portal-update.service deploy/project-portal-update.timer ~/.config/systemd/user/
+;   systemctl --user daemon-reload && systemctl --user enable --now project-portal-update.timer
+;
+; What it runs is deploy/update.py, which fast-forwards to origin, reinstalls
+; dependencies only if requirements.txt moved, checks the new code imports,
+; restarts project-portal.service and asks it /api/ping. It refuses - and
+; changes nothing - on a diverged checkout or an uncommitted edit, so it is safe
+; to run unattended forever. Read `journalctl --user -u project-portal-update`
+; to see what it did.
+;
+; This is the backstop. The install that publishes also pushes an update to
+; every node it knows the ssh target of, minutes after each publish
+; (app/nodes.py) - but only if it can reach this machine. The timer is what
+; catches up when it could not.
+[Unit]
+Description=Project Portal - pull the published code and restart if it moved
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/project-portal
+ExecStart=/usr/bin/python3 %h/project-portal/deploy/update.py
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin

@@ -61,6 +61,8 @@ RESET: tuple[tuple[str, str], ...] = (
     ("app.mirror", "_backoff"),
     ("app.mirror", "_next_attempt"),
     ("app.mirror", "_reported"),
+    ("app.nodes", "_UPDATES"),
+    ("app.nodes", "_identity"),
     ("app.portalmcp", "_SCOPES"),
     ("app.portalmcp", "_WAITING"),
     ("app.preview", "_MOUNTS"),

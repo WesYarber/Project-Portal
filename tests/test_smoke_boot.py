@@ -87,7 +87,7 @@ async def test_a_real_boot_still_starts_everything(monkeypatch, quiet_startup):
 
     await main.on_startup()
 
-    assert len(quiet_startup) == 5  # worker, telegram, limits, netinfo, preview
+    assert len(quiet_startup) == 6  # worker, telegram, limits, netinfo, nodes, preview
     assert reconciled == [True]
 
 
@@ -101,7 +101,7 @@ async def test_only_the_exact_value_turns_it_on(monkeypatch, quiet_startup):
 
     await main.on_startup()
 
-    assert len(quiet_startup) == 5
+    assert len(quiet_startup) == 6
 
 
 def test_the_setup_smoke_test_asks_for_it(monkeypatch, tmp_path):
