@@ -13,6 +13,7 @@ Every claim below is checked by deleting the fix and watching this file fail.
 """
 from __future__ import annotations
 
+import html
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -303,3 +304,58 @@ def test_a_failing_render_leaves_the_page_standing(project, client, monkeypatch)
     assert response.status_code == 200
     assert "Looking at the log first." in response.text
     assert 'id="console-source"' not in response.text
+
+
+# --- the log API, which the console's first fetch repaints from ---------------
+
+
+def test_the_log_api_serves_the_transcript_for_a_recovered_run(project, client):
+    run_id = _finished_run(project)
+    _write(config.PROJECTS_DIR / "alpha", "sess-1")
+
+    data = client.get(f"/api/run/{run_id}/log").json()
+    assert "AFTER THE RESTART: still working." in data["text"]
+    assert data["text"].startswith("* transcript read from")
+    assert data["offset"] == len(data["text"].encode("utf-8"))
+    assert data["running"] is False
+
+
+def test_a_later_poll_at_the_transcripts_end_gets_nothing_new(project, client):
+    run_id = _finished_run(project)
+    _write(config.PROJECTS_DIR / "alpha", "sess-1")
+    first = client.get(f"/api/run/{run_id}/log").json()
+
+    again = client.get(f"/api/run/{run_id}/log?offset={first['offset']}").json()
+    assert again["text"] == "", "the log from the top would double the transcript"
+    assert again["offset"] == first["offset"]
+
+
+def test_the_log_api_serves_the_live_log_while_the_run_is_going(project, client):
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    runlog.RunLog(run_id).append(["* session start", "> Bash(ls)"])
+    db.set_run_session(run_id, "sess-1")
+    _write(config.PROJECTS_DIR / "alpha", "sess-1")
+
+    data = client.get(f"/api/run/{run_id}/log").json()
+    assert "AFTER THE RESTART" not in data["text"]
+    assert data["text"].startswith("* session start")
+    assert data["running"] is True
+
+
+def test_the_log_api_serves_a_whole_log_as_it_is(project, client):
+    run_id = _finished_run(project, log_lines=["* session start", "* run complete  (2 turns)"])
+    _write(config.PROJECTS_DIR / "alpha", "sess-1")
+
+    data = client.get(f"/api/run/{run_id}/log").json()
+    assert "AFTER THE RESTART" not in data["text"]
+    assert data["text"].endswith("* run complete  (2 turns)\n")
+
+
+def test_the_page_and_the_api_agree_on_what_the_console_shows(project, client):
+    run_id = _finished_run(project)
+    _write(config.PROJECTS_DIR / "alpha", "sess-1")
+
+    api_text = client.get(f"/api/run/{run_id}/log").json()["text"]
+    page = html.unescape(client.get(f"/run/{run_id}").text)
+    for line in api_text.splitlines():
+        assert line in page

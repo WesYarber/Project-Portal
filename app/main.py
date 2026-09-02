@@ -2215,6 +2215,29 @@ async def run_page(request: Request, run_id: int, filed: int = 0) -> HTMLRespons
     return _render_run_page(request, run_id, comment_filed=bool(filed))
 
 
+def _recovered_console(row, log_text: str) -> Optional[str]:
+    """The run's transcript drawn from the CLI's own session file, for a
+    finished run whose portal log is not the whole story - or None.
+
+    The portal's log is written from the run's stdout by the process that
+    started it, so a run that outlived a restart has a log that stops at the
+    restart (its report was still recovered - see worker._settle_adopted).
+    For any finished run whose log never reached its closing line, the CLI's
+    transcript has every turn; the run page and the log API both draw from it
+    instead (app/transcript.py `render`), and they must agree, because the
+    console script's first fetch replaces what the page rendered with what the
+    API returns. A running run keeps its live log: that is the file the
+    poller tails."""
+    if row["status"] == "running" or runlog.is_complete(log_text):
+        return None
+    try:
+        rendered = transcript.render_for_run(row)
+    except Exception:  # noqa: BLE001 - the page must render without it
+        log.exception("Rendering the transcript of run %s failed", row["id"])
+        return None
+    return rendered.text if rendered is not None else None
+
+
 def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
     """The run page, optionally carrying the outcome of an action taken on it."""
     row = db.get_run_with_project(run_id)
@@ -2222,23 +2245,11 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Run not found")
     run = _decorate_runs([row])[0]
     text, _ = runlog.read_log(run_id, 0)
-    # The portal's log is written from the run's stdout by the process that
-    # started it, so a run that outlived a restart has a log that stops at
-    # the restart (its report was still recovered - see worker._settle_adopted).
-    # For any finished run whose log never reached its closing line, the
-    # CLI's own transcript has the whole run; draw the page from that instead
-    # (app/transcript.py `render`). A running run keeps its live log: that is
-    # the file the poller tails.
     console_source = "log"
-    if run["status"] != "running" and not runlog.is_complete(text):
-        try:
-            rendered = transcript.render_for_run(row)
-        except Exception:  # noqa: BLE001 - the page must render without it
-            log.exception("Rendering the transcript of run %s failed", run_id)
-            rendered = None
-        if rendered is not None:
-            text = rendered.text
-            console_source = "transcript"
+    recovered = _recovered_console(row, text)
+    if recovered is not None:
+        text = recovered
+        console_source = "transcript"
     landed = revert.landed(row)
     context = {
         "run": run,
@@ -4147,10 +4158,22 @@ async def api_active_run(request: Request) -> JSONResponse:
 async def api_run_log(run_id: int, offset: int = 0) -> JSONResponse:
     """Incremental tail of a run's transcript. The caller passes back the
     `offset` from the previous response to get only what is new."""
-    run = db.get_run(run_id)
+    run = db.get_run_with_project(run_id)
     if run is None:
         raise HTTPException(status_code=404, detail="Run not found")
-    text, new_offset = runlog.read_log(run_id, max(0, offset))
+    offset = max(0, offset)
+    text, new_offset = runlog.read_log(run_id, offset)
+    if offset == 0:
+        # Same fallback as the run page, so the console's first paint (which
+        # replaces the server-rendered text) shows the same transcript. Only
+        # at offset 0: a later poll with the transcript's own length as its
+        # offset must not be answered with the log from the top.
+        recovered = _recovered_console(run, text)
+        if recovered is not None:
+            text, new_offset = recovered, len(recovered.encode("utf-8"))
+    elif not run["status"] == "running" and _recovered_console(run, text) is not None:
+        text = ""
+        new_offset = offset
     return JSONResponse(
         {
             "run_id": run_id,
