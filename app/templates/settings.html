@@ -1060,7 +1060,7 @@ The suite is green, so the change is in.</pre>
       <div class="node-head">
         <span class="dot {{ 'ok' if node.state == 'ok' else ('warn' if node.state in ('behind', 'updating', 'unknown') else 'err') }}"></span>
         <a href="{{ node.url }}"><strong>{{ node.name }}</strong></a>
-        <span class="badge node-state">{{ node.state }}</span>
+        <span class="badge node-state">{{ {'ok': 'up to date', 'behind': 'behind', 'updating': 'updating', 'unknown': 'up', 'off': 'down'}[node.state] }}</span>
         <code class="node-url">{{ node.url }}</code>
       </div>
       <p class="hint node-detail">

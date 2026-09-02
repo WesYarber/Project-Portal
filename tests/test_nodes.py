@@ -352,6 +352,8 @@ def test_settings_lists_the_node_and_the_dashboard_shows_a_chip(client, far, pub
     assert 'id="nodes"' in page
     assert "http://office:8500/" in page
     assert "up to date at abc1234" in page
+    # The same word for the same state on both pages.
+    assert "node-state\">up to date<" in page
     assert "/nodes/office/update" in page
     home = client.get("/").text
     assert "node-chip node-ok" in home
