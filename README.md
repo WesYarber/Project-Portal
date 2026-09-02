@@ -431,9 +431,12 @@ todos, questions and stage on the project, plus a status line saying the
 report was recovered. The session id that names the transcript is recorded
 from the CLI's first stream event, not at the end. A transcript with no report
 in it — the agent was killed mid-work — still settles as an error, so a run
-that failed is not dressed up by its last words. What a recovered run lacks is
-its cost, which only the stream carries, and an undo button, since nobody
-wrote down the workspace HEAD before it started. See `app/transcript.py`.
+that failed is not dressed up by its last words. The transcript also carries
+every API call's token counts, so a recovered run's usage is recorded from it
+and its cost estimated at the model's list prices (`app/pricing.py`, within a
+percent of the CLI's own figure on the runs it was calibrated against), and
+the workspace HEAD is written down when a run is spawned, so a recovered run's
+commits can be named and undone like a watched run's. See `app/transcript.py`.
 
 ### Where the budget goes
 

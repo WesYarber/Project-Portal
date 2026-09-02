@@ -39,7 +39,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
-from . import climemory, config, runlog
+from . import climemory, config, pricing, runlog
 
 log = logging.getLogger("portal.transcript")
 
@@ -68,7 +68,26 @@ class Recovered:
     # Lines the parser could not read, for the log. A transcript being written
     # while it is read can end on a partial line; that is not a broken file.
     unreadable_lines: int = 0
+    # Token counts per model id, summed over every API call in the file - the
+    # main agent's and any subagent's, since a subagent's tokens were spent by
+    # this run too. One API call is one message id; the CLI writes a message
+    # across several lines (one per content block) with the same `usage` on
+    # each, so a message is counted once.
+    usage_by_model: dict = field(default_factory=dict)
     _message_ids: set = field(default_factory=set, repr=False)
+
+    def totals(self) -> dict[str, int]:
+        """The run's token counts over every model, in app/pricing.py's names."""
+        out = {key: 0 for key in pricing.USAGE_KEYS}
+        for counts in self.usage_by_model.values():
+            for key in pricing.USAGE_KEYS:
+                out[key] += int(counts.get(key) or 0)
+        return out
+
+    def cost(self) -> Optional[float]:
+        """What the run cost at list prices, or None when a model that spent
+        tokens is not in the price table."""
+        return pricing.estimate(self.usage_by_model)
 
 
 def _parse_ts(value: Optional[str]) -> Optional[datetime]:
@@ -178,17 +197,21 @@ def _fold(rec: Recovered, event: dict) -> None:
         rec.session_id = str(event["sessionId"])
     if event.get("timestamp"):
         rec.ended_at = str(event["timestamp"])
-    if event.get("type") != "assistant" or event.get("isSidechain"):
+    if event.get("type") != "assistant":
         return
     message = event.get("message")
     if not isinstance(message, dict):
         return
     msg_id = message.get("id")
+    first_line = True
     if msg_id:
-        if msg_id not in rec._message_ids:
-            rec._message_ids.add(msg_id)
-            rec.turns += 1
-    else:
+        first_line = msg_id not in rec._message_ids
+        rec._message_ids.add(msg_id)
+    if first_line:
+        _add_usage(rec, message)
+    if event.get("isSidechain"):
+        return
+    if first_line:
         rec.turns += 1
     content = message.get("content")
     if isinstance(content, str):
@@ -210,6 +233,18 @@ def _fold(rec: Recovered, event: dict) -> None:
             # twice meant the second.
             if isinstance(block.get("input"), dict):
                 rec.report = block["input"]
+
+
+def _add_usage(rec: Recovered, message: dict) -> None:
+    counts = pricing.totals_from_usage(
+        message.get("usage") if isinstance(message.get("usage"), dict) else None
+    )
+    if not pricing.billable(counts):
+        return
+    model = str(message.get("model") or "")
+    bucket = rec.usage_by_model.setdefault(model, {key: 0 for key in pricing.USAGE_KEYS})
+    for key in pricing.USAGE_KEYS:
+        bucket[key] += counts[key]
 
 
 @dataclass

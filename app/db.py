@@ -562,6 +562,13 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # around that timestamp" is a guess and this is a destructive button.
         ("ws_head_before", "TEXT"),
         ("ws_head_after", "TEXT"),
+        # The repo's HEAD when the run was spawned, written before the agent
+        # starts. `ws_head_before` above is only written at the end, paired with
+        # `ws_head_after`, and a run that outlives a portal restart never reaches
+        # its own end - so its settle (worker._settle_adopted) takes `before`
+        # from here and `after` from the repo, and the undo button works on a
+        # recovered run too. NULL on every run from before 2026-09-02.
+        ("ws_head_start", "TEXT"),
         # When somebody reverted this run's commits from the portal. Set once
         # and never cleared: it is a record of what happened, not a toggle, and
         # the undo of an undo is a git operation rather than a second button.
@@ -728,6 +735,18 @@ def set_run_lease(run_id: int, lock_dir: Optional[str]) -> None:
     conn = get_conn()
     with _LOCK:
         conn.execute("UPDATE runs SET lock_dir = ? WHERE id = ?", (lock_dir, run_id))
+        conn.commit()
+
+
+def set_run_start_head(run_id: int, sha: Optional[str]) -> None:
+    """Record where the repo stood when the run was spawned (see
+    `ws_head_start` in `_ADDED_COLUMNS`). Nothing to record for a workspace
+    that is not a git repo."""
+    if not sha:
+        return
+    conn = get_conn()
+    with _LOCK:
+        conn.execute("UPDATE runs SET ws_head_start = ? WHERE id = ?", (str(sha), run_id))
         conn.commit()
 
 

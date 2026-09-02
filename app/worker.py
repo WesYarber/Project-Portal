@@ -16,7 +16,7 @@ from typing import Optional
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
     limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
-    portalmcp, preview, proof, quiet,
+    portalmcp, preview, pricing, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, transcript, worklock,
 )
@@ -680,8 +680,14 @@ RECOVERED_NOTE = (
     "This run outlived the portal process that started it (the service restarted "
     "to load an update while the agent was working), so nothing was listening "
     "when it finished. Its report was recovered from the agent's own transcript "
-    "and filed above as if the run had been watched to the end; the one thing "
-    "missing is the run's cost, which only the live stream carries."
+    "and filed above as if the run had been watched to the end. Its cost is an "
+    "estimate: the transcript's token counts at the model's list prices, which "
+    "lands within a percent of the figure the live stream would have carried."
+)
+
+UNPRICED_NOTE = (
+    "The cost is blank because a model this run used is not in the portal's "
+    "price table (app/pricing.py)."
 )
 
 STRANDED_NOTE = (
@@ -718,13 +724,16 @@ def _settle_adopted(run: db.RunningRun, stranded: bool) -> None:
     the summary, `_apply_report` for the journal entry, todos, questions and
     stage. A status line under the entry says how the report got there.
 
-    What a watched finish does that this cannot: record the workspace HEAD from
-    before the run (nobody wrote it down), so the undo button stays off this
-    run; note the run's cost, which only the stream carries; and the checks
-    that read the live result (memory kill, quota wall, missing proof). A
-    transcript with no report - the agent was killed mid-work, or stopped
-    without filing one - settles as an error, as before, so a run that really
-    did fail is not dressed up as a success by its last few words.
+    The transcript also carries every API call's token counts, so the run's
+    usage is recorded from it and its cost estimated at list prices
+    (app/pricing.py); and the repo's HEAD at spawn is on the row
+    (`runs.ws_head_start`), so paired with the repo's HEAD now the undo button
+    works on a recovered run too. What a watched finish does that this still
+    cannot: the checks that read the live result (memory kill, quota wall,
+    missing proof). A transcript with no report - the agent was killed
+    mid-work, or stopped without filing one - settles as an error, as before,
+    so a run that really did fail is not dressed up as a success by its last
+    few words.
     """
     row = db.get_run(run.run_id)
     if row is None:
@@ -748,7 +757,9 @@ def _settle_adopted(run: db.RunningRun, stranded: bool) -> None:
 
     project = db.get_project(int(row["project_id"]))
     if project is None or rec.report is None:
-        db.finish_run(run.run_id, "error", rec.session_id, None, rec.turns or None, failure)
+        db.finish_run(run.run_id, "error", rec.session_id, rec.cost(), rec.turns or None, failure)
+        if project is not None:
+            _note_recovered_run(run.run_id, row, rec, project, cwd)
         return
     result = agent_runner.RunResult(
         ok=True,
@@ -758,13 +769,50 @@ def _settle_adopted(run: db.RunningRun, stranded: bool) -> None:
         report=rec.report,
         report_source="transcript",
     )
+    cost = rec.cost()
     db.finish_run(
-        run.run_id, "ok", rec.session_id, None, rec.turns or None, result.result_text[:500],
+        run.run_id, "ok", rec.session_id, cost, rec.turns or None, result.result_text[:500],
     )
     log.info("Adopted run %s: report recovered from %s", run.run_id, rec.path.name)
+    _note_recovered_run(run.run_id, row, rec, project, cwd)
     _apply_report(project, result, run.run_id, task=str(row["task"] or ""))
-    note = RECOVERED_NOTE + (" " + STRANDED_NOTE if stranded else "")
+    note = RECOVERED_NOTE
+    if cost is None:
+        note += " " + UNPRICED_NOTE
+    if stranded:
+        note += " " + STRANDED_NOTE
     db.add_journal(int(project["id"]), "system", "status", note)
+
+
+def _note_recovered_run(
+    run_id: int, row: db.sqlite3.Row, rec: transcript.Recovered,
+    project: db.sqlite3.Row, cwd: Optional[Path],
+) -> None:
+    """The bookkeeping a watched run does from its result event, done from the
+    transcript instead: the token counts onto the row, and the workspace heads
+    when the spawn wrote down where the repo stood. Both are for display (the
+    usage page, the undo button) and neither may fail the settle."""
+    try:
+        _record_recovered_usage(run_id, row, rec)
+    except Exception:  # noqa: BLE001 - bookkeeping for a page, see docstring
+        log.exception("Recording recovered usage failed for run %s", run_id)
+    head_start = db._row_get(row, "ws_head_start")  # noqa: SLF001
+    if head_start:
+        _record_workspace_heads(project, run_id, head_start, repo=cwd)
+
+
+def _record_recovered_usage(run_id: int, row: db.sqlite3.Row, rec: transcript.Recovered) -> None:
+    totals = rec.totals()
+    if not pricing.billable(totals):
+        return
+    db.record_run_usage(
+        run_id,
+        input_tokens=totals["input"],
+        output_tokens=totals["output"],
+        cache_write_tokens=totals["cache_write"],
+        cache_read_tokens=totals["cache_read"],
+        prompt_bytes=db._row_get(row, "prompt_bytes"),  # noqa: SLF001
+    )
 
 
 def _settle_adopted_oneoff(
@@ -774,13 +822,17 @@ def _settle_adopted_oneoff(
     result. Recorded on the task's thread the way `run_oneoff` records a
     watched reply, and the session id kept so the next message resumes it."""
     task_id = row["oneoff_id"]
+    try:
+        _record_recovered_usage(run_id, row, rec)
+    except Exception:  # noqa: BLE001 - bookkeeping for the usage page
+        log.exception("Recording recovered usage failed for run %s", run_id)
     if task_id is None or not rec.reply:
-        db.finish_run(run_id, "error", rec.session_id, None, rec.turns or None, failure)
+        db.finish_run(run_id, "error", rec.session_id, rec.cost(), rec.turns or None, failure)
         return
     task_id = int(task_id)
     if rec.session_id:
         db.set_oneoff_session(task_id, rec.session_id)
-    db.finish_run(run_id, "ok", rec.session_id, None, rec.turns or None, rec.reply[:500])
+    db.finish_run(run_id, "ok", rec.session_id, rec.cost(), rec.turns or None, rec.reply[:500])
     db.add_oneoff_message(task_id, "agent", rec.reply, run_id=run_id)
     db.add_oneoff_message(
         task_id, "system",
@@ -1227,6 +1279,10 @@ async def run_project_task(
     # ordinary workspace's HEAD will not move until the merge.
     run_repo = _run_repo(slug, workspace, parallel)
     ws_head_before = proof.head_sha(run_repo)
+    # Written now as well as paired at the end: a run that outlives a portal
+    # restart never reaches the pairing, and this is what lets its settle
+    # (`_settle_adopted`) still name and undo what it committed.
+    db.set_run_start_head(run_id, ws_head_before)
 
     try:
         result = await agent_runner.run_claude(
