@@ -110,8 +110,14 @@ class _Scope:
     asked: int = 0
 
 
-# In memory, like hookguard's: after a restart there is no run left to serve,
-# and a call arriving from an orphaned one is refused rather than honored.
+# The live registry, mirrored onto the run's row (`runs.mcp_scope`) the way
+# hookguard's is: a run whose agent outlived a service restart keeps calling
+# this server, and the process that adopted it rebuilds the scope from the row
+# (`_scope`) rather than refusing every call. A run no longer 'running' is
+# never revived, so a call from a finished run is refused as before. The ask
+# cap starts over on revival - questions carry no run id to count them by,
+# and three more asks from a survivor is bounded where a refused ask is a lost
+# question.
 _SCOPES: dict[int, _Scope] = {}
 
 # Question id -> the run currently blocked on it. In memory *because the fact
@@ -153,11 +159,21 @@ def begin(run_id: int, project_id: int, task: str = "build") -> Optional[str]:
         return None
     token = _secrets.token_urlsafe(16)
     _SCOPES[run_id] = _Scope(token=token, project_id=int(project_id), run_id=int(run_id))
+    try:
+        db.set_run_scope_record(
+            run_id, "mcp_scope", json.dumps({"token": token, "project_id": int(project_id)})
+        )
+    except Exception:  # noqa: BLE001 - the run must start; it is then merely unreachable after a restart
+        log.exception("Could not persist the MCP scope of run %s", run_id)
     return json.dumps(mcp_config(run_id, token))
 
 
 def end(run_id: int) -> None:
     _SCOPES.pop(run_id, None)
+    try:
+        db.set_run_scope_record(run_id, "mcp_scope", None)
+    except Exception:  # noqa: BLE001 - a stale record is refused by the status check anyway
+        log.exception("Could not clear the MCP scope of run %s", run_id)
     # The inquiry cap is counted per run in a module global of its own, so the
     # run that is over has to be forgotten or the next run to be handed the same
     # id (which is every run, on a fresh test database) inherits its tally.
@@ -189,9 +205,34 @@ def _base_url() -> str:
 
 
 def _scope(run_id: int, token: str) -> Optional[_Scope]:
-    scope = _SCOPES.get(int(run_id or 0))
+    run_id = int(run_id or 0)
+    scope = _SCOPES.get(run_id)
+    if scope is None:
+        scope = _revive(run_id)
     if scope is None or not token or scope.token != token:
         return None
+    return scope
+
+
+def _revive(run_id: int) -> Optional[_Scope]:
+    """Rebuild the scope of a run this process did not start from its row.
+    Only a run still 'running' qualifies; anything unreadable is no scope."""
+    try:
+        row = db.get_run(run_id)
+        if row is None or row["status"] != "running":
+            return None
+        raw = db._row_get(row, "mcp_scope")  # noqa: SLF001
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("token"), str):
+            return None
+        scope = _Scope(token=data["token"], project_id=int(data["project_id"]), run_id=run_id)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not revive the MCP scope of run %s", run_id)
+        return None
+    _SCOPES[run_id] = scope
+    log.info("Revived the MCP scope of run %s, adopted across a restart", run_id)
     return scope
 
 

@@ -39,11 +39,16 @@ That wait is the whole mechanism:
 The two compose: pause a run, hand it several notes, resume - and the run
 reads all of them at once when it wakes.
 
-What this cannot do, and says so: a run that predates a service restart has no
-hook scope (the registry is in memory, like hookguard's), so it can neither
-pause nor hear - `pause()` refuses rather than pretending. A run waiting inside
-`mcp__portal__ask` makes no tool calls until answered, so a pause pressed then
-engages only once the answer arrives. And a note that lands after the run has
+What this cannot do, and says so: a run spawned without the PostToolUse hook
+(the channel switched off, or hooks off entirely) can neither pause nor hear -
+`pause()` refuses rather than pretending. A run that outlives a service restart
+CAN, since 2026-09-02: its hook scope is on its row (`runs.hook_scope`) and the
+adopting process rebuilds it, so the buttons stay offered. What a restart does
+end is a pause in progress - the relay releases the run the moment the portal
+stops answering, fail-open - so a held run wakes when the service restarts and
+can be paused again once it is up. A run waiting inside `mcp__portal__ask`
+makes no tool calls until answered, so a pause pressed then engages only once
+the answer arrives. And a note that lands after the run has
 filed its report is left for the next run: injecting it behind a StructuredOutput
 call would hand an instruction to an agent that is already finishing.
 

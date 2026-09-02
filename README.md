@@ -438,6 +438,16 @@ percent of the CLI's own figure on the runs it was calibrated against), and
 the workspace HEAD is written down when a run is spawned, so a recovered run's
 commits can be named and undone like a watched run's. See `app/transcript.py`.
 
+The adopted run also stays reachable. Its hooks and its MCP server post to the
+portal with a per-run token, and the registry that recognizes those tokens is
+in memory; so the scope is written onto the run's row at spawn (`hook_scope`,
+`mcp_scope`) and the process that adopts the survivor rebuilds it on the first
+post. The write guard, the audit trail, the pause button, "deliver mid-run" and
+the run's `ask` tool all carry on across the restart, and the boot journal line
+says so. A pause in progress does not survive the restart itself: the relay
+releases the run the moment the portal stops answering, so a held run wakes
+and can be paused again once the service is back.
+
 ### Where the budget goes
 
 `/activity` groups the window's runs by project, ranked by cost rather than run

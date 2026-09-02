@@ -738,6 +738,10 @@ def _settle_adopted(run: db.RunningRun, stranded: bool) -> None:
     row = db.get_run(run.run_id)
     if row is None:
         return
+    # The scopes this process revived for the survivor (hookguard, portalmcp)
+    # end with it, as the spawning process would have ended them.
+    hookguard.end(run.run_id)
+    portalmcp.end(run.run_id)
     failure = STRANDED_SUMMARY if stranded else ADOPTED_SUMMARY
     rec = None
     cwd = _adopted_cwd(run, row)
@@ -2697,6 +2701,10 @@ def cancel_run(run_id: int) -> str:
     if agent_runner.cancel_run(run_id):
         return "cancelled"
     unit = run["scope_unit"]
+    # Whichever way the row settles, the scopes revived for an adopted run
+    # (hookguard, portalmcp) go with it.
+    hookguard.end(run_id)
+    portalmcp.end(run_id)
     if unit and runlimit.scope_is_active(unit) is True and runlimit.stop_scope(unit):
         db.finish_run(
             run_id, "cancelled",

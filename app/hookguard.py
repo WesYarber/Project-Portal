@@ -32,9 +32,12 @@ the alert-fatigue the learnings warn about:
   the reflect/compaction runs whose cwd *is* the memory dir. The worker
   simply doesn't install hooks for those.
 
-Fail-open end to end: an unknown run id, a stale token, a portal restart
-mid-run, a DB hiccup or any exception here resolves to "allow". The guard
-exists to stop a hostile tool call, never to strand a healthy run.
+Fail-open end to end: an unknown run id, a stale token, a DB hiccup or any
+exception here resolves to "allow". The guard exists to stop a hostile tool
+call, never to strand a healthy run. A portal restart mid-run used to be on
+that list; now the scope is written onto the run's row at spawn and read back
+by the process that adopts the survivor, so its guard, its audit trail and the
+mid-run channel all carry on (see `_scope`).
 
 The same relay also carries a PostToolUse *audit trail* (todo #219's last
 hook piece): every tool call a run makes lands as one structured row in
@@ -93,8 +96,8 @@ class _Scope:
     started: float = field(default_factory=time.time)
     stop_blocked: bool = False
     # PostToolUse audit trail: whether this run records one, and how many
-    # rows it has written so far (the per-run cap lives here, in memory -
-    # a restart orphans the scope and the audit simply stops, fail-open).
+    # rows it has written so far (the per-run cap). A scope revived after a
+    # restart resumes the count from the rows already in the table.
     audit: bool = False
     audited: int = 0
     # Mid-run channel (app/midrun.py): whether this run's PostToolUse relay
@@ -102,9 +105,14 @@ class _Scope:
     midrun: bool = False
 
 
-# In-memory on purpose, like agent_runner's process registry: after a service
-# restart there is no supervised process left, and a hook post from an orphaned
-# run fails open to "allow" rather than bricking its remaining tool calls.
+# The live registry. It is in memory, but since 2026-09-02 it is not the only
+# copy: `begin` also writes the scope onto the run's row (`runs.hook_scope`),
+# and `_scope` reads it back for a run this process did not start - a run whose
+# agent outlived a service restart in its own systemd scope and is still
+# posting its tool calls here. Before that, every such post met an unknown run
+# id and failed open: no write guard, no audit trail, and neither a pause nor a
+# note could reach it. A run that is not 'running' any more is never revived,
+# so a relay post from a finished run still fails open exactly as before.
 _SCOPES: dict[int, _Scope] = {}
 
 
@@ -199,28 +207,97 @@ def begin(
     if not hooks:
         _SCOPES.pop(run_id, None)
         return None
+    _persist(run_id, _SCOPES[run_id])
     return json.dumps({"hooks": hooks})
 
 
 def end(run_id: int) -> None:
     _SCOPES.pop(run_id, None)
+    try:
+        db.set_run_scope_record(run_id, "hook_scope", None)
+    except Exception:  # noqa: BLE001 - a stale record is refused by the status check anyway
+        log.exception("Could not clear the hook scope of run %s", run_id)
     from app import midrun as _midrun
 
     _midrun.end(run_id)
 
 
+def _persist(run_id: int, scope: _Scope) -> None:
+    """Write the scope onto the run's row so a portal process that adopts this
+    run after a restart can rebuild it. Best-effort: a run must start even if
+    the record cannot be written - it is then exactly as reachable as every
+    survivor was before this existed."""
+    try:
+        db.set_run_scope_record(run_id, "hook_scope", json.dumps({
+            "token": scope.token,
+            "allowed": [str(p) for p in scope.allowed],
+            "report_expected": scope.report_expected,
+            "workspace": str(scope.workspace) if scope.workspace is not None else None,
+            "started": scope.started,
+            "audit": scope.audit,
+            "midrun": scope.midrun,
+        }))
+    except Exception:  # noqa: BLE001
+        log.exception("Could not persist the hook scope of run %s", run_id)
+
+
+def _scope(run_id: int) -> Optional[_Scope]:
+    """This run's scope: the registry's entry, or one rebuilt from the run's
+    row for a run this process did not start. Only a run still 'running' is
+    revived - a finished run's late post stays unknown, and fails open."""
+    scope = _SCOPES.get(run_id)
+    if scope is not None:
+        return scope
+    return _revive(run_id)
+
+
+def _revive(run_id: int) -> Optional[_Scope]:
+    try:
+        row = db.get_run(run_id)
+        if row is None or row["status"] != "running":
+            return None
+        raw = db._row_get(row, "hook_scope")  # noqa: SLF001
+        if not raw:
+            return None
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("token"), str):
+            return None
+        workspace = data.get("workspace")
+        scope = _Scope(
+            token=data["token"],
+            allowed=[Path(p) for p in data.get("allowed") or [] if isinstance(p, str)],
+            report_expected=bool(data.get("report_expected")),
+            workspace=Path(workspace) if isinstance(workspace, str) and workspace else None,
+            started=float(data.get("started") or 0.0),
+            audit=bool(data.get("audit")),
+            midrun=bool(data.get("midrun")),
+        )
+        # The per-run tallies live in the table too: the audit cap picks up
+        # where it left off, and a Stop nudge already spent stays spent.
+        scope.audited = db.count_hook_events(run_id, "post_tool_use")
+        scope.stop_blocked = db.count_hook_events(run_id, "stop", "block") > 0
+    except Exception:  # noqa: BLE001 - an unreadable record is no scope, fail-open
+        log.exception("Could not revive the hook scope of run %s", run_id)
+        return None
+    _SCOPES[run_id] = scope
+    log.info("Revived the hook scope of run %s, adopted across a restart", run_id)
+    return scope
+
+
 def hears_midrun(run_id: int) -> bool:
     """Whether a live relay for this run can be held and handed a note - a
-    scope registered with `midrun` on. False after a restart, which is the
-    honest answer: the run's hooks post to a portal that no longer knows it."""
-    scope = _SCOPES.get(run_id)
+    scope registered with `midrun` on, this process's own or one revived
+    from the row of a run that outlived a restart. False for a run spawned
+    without the PostToolUse hook, or whose scope was never written down."""
+    scope = _scope(run_id)
     return scope is not None and scope.midrun
 
 
 def authorized(run_id: int, token: str) -> bool:
-    """Is this (run, token) pair a run this portal process spawned? The
-    check every hook endpoint makes before believing a payload."""
-    scope = _SCOPES.get(run_id)
+    """Is this (run, token) pair a live run this portal knows - spawned by
+    this process, or adopted from the one before it? The check every hook
+    endpoint makes before believing a payload."""
+    scope = _scope(run_id)
     return scope is not None and scope.token == token
 
 
@@ -248,7 +325,7 @@ def decide(run_id: int, token: str, payload: dict) -> tuple[str, str]:
     """The endpoint's brain: ("allow"|"deny", reason). Every uncertain case
     allows - see the module docstring."""
     try:
-        scope = _SCOPES.get(run_id)
+        scope = _scope(run_id)
         if scope is None or scope.token != token:
             log.warning("Hook post for unknown/stale run %s; allowing", run_id)
             return "allow", ""
@@ -285,7 +362,7 @@ def record_tool_use(run_id: int, token: str, payload: dict) -> None:
     so unlike `decide` there is no verdict to fail open to - a bad payload or
     a DB hiccup just means one unrecorded row."""
     try:
-        scope = _SCOPES.get(run_id)
+        scope = _scope(run_id)
         if scope is None or scope.token != token or not scope.audit:
             return
         if scope.audited >= AUDIT_CAP:
@@ -346,7 +423,7 @@ def decide_stop(run_id: int, token: str, payload: dict) -> tuple[str, str]:
     `decide`). A wrong block costs one extra turn; a missed one is just
     today's behavior."""
     try:
-        scope = _SCOPES.get(run_id)
+        scope = _scope(run_id)
         if scope is None or scope.token != token:
             return "allow", ""
         if not scope.report_expected or not stop_nudge_enabled():

@@ -569,6 +569,20 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # from here and `after` from the repo, and the undo button works on a
         # recovered run too. NULL on every run from before 2026-09-02.
         ("ws_head_start", "TEXT"),
+        # The hook scope this run was spawned with (app/hookguard.py), as JSON:
+        # the relay token its hooks carry, the workspaces it may write, and
+        # which hooks are installed. The registry that reads it is in memory,
+        # and until 2026-09-02 that was the only copy - so a run that outlived a
+        # service restart posted its tool calls to a portal that no longer knew
+        # it: no write guard, no audit trail, no pause, no note handed mid-run,
+        # on every run of the meta-project since each one restarts the service
+        # under itself. Written at spawn, cleared when the run ends, and read
+        # back by the process that adopts a survivor. NULL for an unhooked run.
+        ("hook_scope", "TEXT"),
+        # The same for the portal's MCP server (app/portalmcp.py): token and
+        # project id, so an adopted run can still ask a question and read a
+        # sibling project's context.
+        ("mcp_scope", "TEXT"),
         # When somebody reverted this run's commits from the portal. Set once
         # and never cleared: it is a record of what happened, not a toggle, and
         # the undo of an undo is a git operation rather than a second button.
@@ -750,6 +764,40 @@ def set_run_start_head(run_id: int, sha: Optional[str]) -> None:
         conn.commit()
 
 
+_SCOPE_COLUMNS = ("hook_scope", "mcp_scope")
+
+
+def set_run_scope_record(run_id: int, column: str, raw: Optional[str]) -> None:
+    """Write (or clear, with None) one of the persisted per-run scopes - see
+    `hook_scope` and `mcp_scope` in `_ADDED_COLUMNS`. The column name is
+    checked against the two that exist rather than interpolated blind."""
+    if column not in _SCOPE_COLUMNS:
+        raise ValueError(f"not a scope column: {column}")
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(f"UPDATE runs SET {column} = ? WHERE id = ?", (raw, run_id))
+        conn.commit()
+
+
+def count_hook_events(run_id: int, event: str, decision: Optional[str] = None) -> int:
+    """How many hook rows a run has already written - what a revived scope
+    resumes its per-run tallies from, so a restart neither resets the audit
+    cap nor lets the Stop nudge fire a second time."""
+    conn = get_conn()
+    with _LOCK:
+        if decision is None:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM hook_events WHERE run_id = ? AND event = ?",
+                (run_id, event),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT COUNT(*) FROM hook_events WHERE run_id = ? AND event = ? AND decision = ?",
+                (run_id, event, decision),
+            ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def set_run_workspace_heads(
     run_id: int, before: Optional[str], after: Optional[str]
 ) -> None:
@@ -816,13 +864,22 @@ def reconcile_orphaned_runs_on_boot() -> None:
     for run_id, project_id in adopted:
         log.info("Run %s survived the restart; adopted rather than orphaned", run_id)
         if project_id is not None:
+            row = get_run(run_id)
+            reachable = bool(row is not None and _row_get(row, "hook_scope"))
+            tail = (
+                " Its hooks still reach this portal, so it can be paused and handed "
+                "a note as before."
+                if reachable else
+                " It was started without a hook scope on record, so it cannot be "
+                "paused or handed a note until it finishes."
+            )
             add_journal(
                 project_id, "system", "status",
                 f"The service restarted while run {run_id} was still working. Its "
                 f"agent survived the restart (each run gets its own systemd scope, "
                 f"which a service restart does not touch), so the run was adopted "
                 f"rather than declared dead - and this project stays locked to it, "
-                f"so no second agent is started into the same workspace.",
+                f"so no second agent is started into the same workspace." + tail,
             )
 
 
