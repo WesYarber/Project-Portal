@@ -21,17 +21,23 @@ That wait is the whole mechanism:
   the hold has engaged and "paused" from then on, so the difference is never
   hidden.
 
-* **A note mid-flight.** A note typed while a run is in the workspace used to
-  wait for the next run (`worker._rerun_for_unseen_notes`). Now the relay's
-  answer carries it as the hook's `additionalContext`, which the CLI injects
-  into the model's context beside the tool result - the agent reads it before
-  its next move, in the same session, with nothing restarted. The note is
-  stamped delivered to that run, exactly as a prompt build would stamp it, so
-  no second run is queued afterwards to say the same thing again. "queue note"
-  keeps its meaning: a note pressed as queued is for the next run only.
+* **A note mid-flight.** A note typed while a run is in the workspace waits
+  for the next run (`worker._rerun_for_unseen_notes`) - unless Wes hands it
+  to the one already working. Then the relay's answer carries it as the
+  hook's `additionalContext`, which the CLI injects into the model's context
+  beside the tool result - the agent reads it before its next move, in the
+  same session, with nothing restarted. The note is stamped delivered to that
+  run, exactly as a prompt build would stamp it, so no second run is queued
+  afterwards to say the same thing again. Handing over is opt-in per note
+  (`journal.hear_now`): Wes, 2026-09-02, "don't deliver the queued notes by
+  default, but have an option on each one to be delivered in the middle of
+  the run" - the "deliver mid-run" button on the note form while an agent is
+  working, or the same button on the journal entry afterwards. The first cut
+  of this handed every note over and exempted only "queue note"; he wanted
+  the default the other way round.
 
-The two compose: pause a run, type several notes, resume - and the run reads
-all of them at once when it wakes.
+The two compose: pause a run, hand it several notes, resume - and the run
+reads all of them at once when it wakes.
 
 What this cannot do, and says so: a run that predates a service restart has no
 hook scope (the registry is in memory, like hookguard's), so it can neither
@@ -128,7 +134,7 @@ def pause(run_id: int, by: str = "") -> str:
     who = f" by {by}" if by else ""
     _event(run_id, "pause", "hold", f"Pause requested{who}; the run holds at its next tool call.")
     _journal(run, f"Run #{run_id} paused{who}. It holds at its next tool call, spending nothing, "
-                  "until resumed - and reads any note added meanwhile when it wakes.")
+                  "until resumed - and reads any note handed to it meanwhile when it wakes.")
     log.info("Run %s paused%s", run_id, who)
     return "paused"
 
@@ -289,14 +295,14 @@ def inject_notes(run_id: int) -> dict:
 
 
 def hearable_notes(project_id: int) -> list[db.sqlite3.Row]:
-    """The pending notes a live run may be handed: not the ones pressed as
-    "queue note" (those are for the next run by definition), and not a voice
-    memo whose transcript is still being written - the memo IS the note, and
-    handing over "(transcription is still running)" would deliver nothing and
-    stamp the note spent."""
+    """The pending notes a live run may be handed: only the ones Wes marked
+    "deliver mid-run" (`hear_now`; every other note waits for the next run),
+    and not a voice memo whose transcript is still being written - the memo
+    IS the note, and handing over "(transcription is still running)" would
+    deliver nothing and stamp the note spent."""
     from app import attachments
 
-    rows = [r for r in db.pending_notes(project_id) if not _for_next_run(r)]
+    rows = [r for r in db.pending_notes(project_id) if _hear_now(r)]
     if not rows:
         return []
     transcribing: set[int] = set()
@@ -313,8 +319,8 @@ def hearable_notes(project_id: int) -> list[db.sqlite3.Row]:
     return [r for r in rows if int(r["id"]) not in transcribing]
 
 
-def _for_next_run(row) -> bool:
-    return bool(db._row_get(row, "for_next_run", 0))  # noqa: SLF001
+def _hear_now(row) -> bool:
+    return bool(db._row_get(row, "hear_now", 0))  # noqa: SLF001
 
 
 def render(rows: list[db.sqlite3.Row], run_id: int) -> str:

@@ -256,7 +256,7 @@
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="midrun" name="midrun" {{ 'checked' if (settings.midrun or '1') == '1' else '' }}>
-        <label for="midrun">Pause a run, and hand it notes while it works{% call info() %}A running agent can be paused from its project page or run page: it holds at its next tool call, between two turns, so nothing is generated and nothing is spent until you resume it - and the run's time limit stops counting while it holds. A note added while an agent is working reaches that agent at its next tool call, in the same session, instead of waiting for a second run afterwards ("queue note" still waits for the next run). Both ride the tool-call hook, so a run started before the last portal restart can do neither, and the page says so.{% endcall %}</label>
+        <label for="midrun">Pause a run, and hand it notes while it works{% call info() %}A running agent can be paused from its project page or run page: it holds at its next tool call, between two turns, so nothing is generated and nothing is spent until you resume it - and the run's time limit stops counting while it holds. A note added while an agent is working waits for the next run unless you press "deliver mid-run" (on the note form, or on the note's journal entry afterwards): then it reaches that agent at its next tool call, in the same session, instead of waiting for a second run afterwards. Both ride the tool-call hook, so a run started before the last portal restart can do neither, and the page says so.{% endcall %}</label>
       </div>
       <div class="field checkbox-row">
         <input type="checkbox" id="mcp_tools" name="mcp_tools" {{ 'checked' if (settings.mcp_tools or '1') == '1' else '' }}>

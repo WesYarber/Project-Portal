@@ -372,15 +372,16 @@ through a reply engages once that reply's tool call lands — the page says
 mean paying for it again on resume. The run's time limit counts running time
 only, so a long hold is not a step closer to a timeout.
 
-A note added to a project while its agent is working reaches that agent at its
-next tool call, injected beside the tool result as the hook's
-`additionalContext`, in the same session, with nothing restarted. It is stamped
-delivered to that run, so no second run is queued for it afterwards. "queue
-note" keeps its meaning and waits for the next run; a note that arrives after
-the run has filed its report waits too. Files attached to such a note are moved
-into the workspace first, and a voice memo is held back until its transcript
-exists. The run page lists every hold and every note it heard under "while it
-ran". See `app/midrun.py`.
+A note added to a project while its agent is working waits for the next run by
+default. Press **deliver mid-run** instead — on the note form, or on the note's
+journal entry afterwards — and it reaches that agent at its next tool call,
+injected beside the tool result as the hook's `additionalContext`, in the same
+session, with nothing restarted. It is stamped delivered to that run, so no
+second run is queued for it afterwards. A note that arrives after the run has
+filed its report waits for the next run whatever it was pressed as. Files
+attached to such a note are moved into the workspace first, and a voice memo is
+held back until its transcript exists. The run page lists every hold and every
+note it heard under "while it ran". See `app/midrun.py`.
 
 Both ride the PostToolUse hook, so a run started before the last portal
 restart — whose hook scope died with that process — can do neither, and the

@@ -443,10 +443,16 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "journal": [
         ("delivered_at", "TEXT"),
         ("person_id", "INTEGER"),
-        # A note pressed as "queue note": for the agent's NEXT run, never
-        # handed to one already working (app/midrun.py hands the others over
-        # at the running agent's next tool call).
+        # Retired 2026-09-02, kept so old and new databases have the same
+        # shape: it marked a "queue note" as exempt from the mid-run channel
+        # back when every other note was handed to a running agent by default.
         ("for_next_run", "INTEGER NOT NULL DEFAULT 0"),
+        # A note Wes chose to hand to the agent already working, at its next
+        # tool call (app/midrun.py). Off by default: Wes, 2026-09-02, "don't
+        # deliver the queued notes by default, but have an option on each one
+        # to be delivered in the middle of the run." Set by the "deliver
+        # mid-run" button on the note form, or on the journal entry afterwards.
+        ("hear_now", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "attachments": [
         ("transcript", "TEXT"),
@@ -2159,14 +2165,15 @@ def add_journal(
     kind: str,
     content_md: str,
     person_id: Optional[int] = None,
-    for_next_run: bool = False,
+    hear_now: bool = False,
 ) -> int:
     """Returns the new entry's id, so a caller that has uploads in hand (see
     the note route) can attach them to the entry it just wrote.
 
-    `for_next_run` marks a note pressed as "queue note": it waits for the
-    agent's next run rather than being handed to one already working
-    (app/midrun.py). Meaningless on anything that is not a note.
+    `hear_now` marks a note Wes chose to hand to an agent already working: it
+    reaches that agent at its next tool call (app/midrun.py) instead of
+    waiting for the next run, which is what every other note does. Meaningless
+    on anything that is not a note.
 
     Anything that is not one of Wes's notes is stamped delivered immediately:
     only a note has an edit window, and a NULL on a status line would make the
@@ -2183,10 +2190,10 @@ def add_journal(
     with _LOCK:
         cur = conn.execute(
             "INSERT INTO journal (project_id, ts, author, kind, content_md, "
-            "delivered_at, person_id, for_next_run) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "delivered_at, person_id, hear_now) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (project_id, ts, author, kind, content_md, delivered,
              int(person_id) if person_id is not None else None,
-             1 if for_next_run else 0),
+             1 if hear_now else 0),
         )
         conn.commit()
         return int(cur.lastrowid)
@@ -2196,6 +2203,23 @@ def get_journal(entry_id: int) -> Optional[sqlite3.Row]:
     conn = get_conn()
     with _LOCK:
         return conn.execute("SELECT * FROM journal WHERE id = ?", (entry_id,)).fetchone()
+
+
+def set_note_hear_now(entry_id: int, on: bool) -> bool:
+    """Hand a not-yet-delivered note to the running agent (or take it back).
+    One guarded UPDATE rather than check-then-write, like the edit window:
+    a note that went into a prompt between the two is already read, and
+    flagging it then would only re-deliver it mid-run. Returns whether the
+    row changed."""
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "UPDATE journal SET hear_now = ? WHERE id = ? AND author = 'user' "
+            "AND kind = 'note' AND delivered_at IS NULL",
+            (1 if on else 0, entry_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def pending_notes(project_id: int) -> list[sqlite3.Row]:

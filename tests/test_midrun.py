@@ -9,8 +9,9 @@ of answering, so the CLI sits between turns spending nothing; a note typed
 mid-run rides back as the hook's additionalContext and is stamped delivered to
 that run so no second run is queued for it. These tests pin the hold state
 machine, the answers the endpoints give the relay, the relay's poll loop, the
-supervisor's pause-aware deadline, the "queue note" exemption, the report-tool
-rule, and the pages.
+supervisor's pause-aware deadline, the opt-in per note (Wes, later that day:
+"don't deliver the queued notes by default, but have an option on each one"),
+the report-tool rule, and the pages.
 """
 from __future__ import annotations
 
@@ -241,7 +242,7 @@ def test_a_note_typed_mid_run_rides_back_as_additional_context(temp_data_dir):
     project = _project()
     run_id, token = _live_run(project)
     try:
-        note_id = db.add_journal(project["id"], "user", "note", "Actually, make the button green.")
+        note_id = db.add_journal(project["id"], "user", "note", "Actually, make the button green.", hear_now=True)
         answer = midrun.after_tool_call(run_id, token, _payload())
         out = answer["hook_output"]["hookSpecificOutput"]
         assert out["hookEventName"] == "PostToolUse"
@@ -267,8 +268,8 @@ def test_notes_typed_during_a_hold_arrive_together_on_resume(temp_data_dir):
     try:
         midrun.pause(run_id)
         assert "poll" in midrun.after_tool_call(run_id, token, _payload())
-        db.add_journal(project["id"], "user", "note", "First thought.")
-        db.add_journal(project["id"], "user", "note", "Second thought, which corrects the first.")
+        db.add_journal(project["id"], "user", "note", "First thought.", hear_now=True)
+        db.add_journal(project["id"], "user", "note", "Second thought, which corrects the first.", hear_now=True)
         # Still held: the notes wait with the run.
         assert "poll" in midrun.hold_poll(run_id, token)
         assert len(notes.pending(project["id"])) == 2
@@ -282,11 +283,44 @@ def test_notes_typed_during_a_hold_arrive_together_on_resume(temp_data_dir):
         hookguard.end(run_id)
 
 
-def test_a_queued_note_waits_for_the_next_run(temp_data_dir):
+def test_a_plain_note_waits_for_the_next_run(temp_data_dir):
+    """Wes, 2026-09-02: "Don't deliver the queued notes by default." A note
+    nobody pressed as deliver-mid-run is left for the next run, however many
+    tool calls go by."""
     project = _project()
     run_id, token = _live_run(project)
     try:
-        db.add_journal(project["id"], "user", "note", "For next time.", for_next_run=True)
+        db.add_journal(project["id"], "user", "note", "For next time.")
+        assert midrun.after_tool_call(run_id, token, _payload()) == {}
+        assert midrun.hold_poll(run_id, token) == {}
+        assert len(notes.pending(project["id"])) == 1
+        assert midrun.state(run_id)["heard"] == 0
+    finally:
+        hookguard.end(run_id)
+
+
+def test_a_note_handed_over_from_the_journal_is_read_at_the_next_tool_call(temp_data_dir):
+    project = _project()
+    run_id, token = _live_run(project)
+    try:
+        note_id = db.add_journal(project["id"], "user", "note", "Now, please.")
+        assert midrun.after_tool_call(run_id, token, _payload()) == {}
+        assert db.set_note_hear_now(note_id, True) is True
+        answer = midrun.after_tool_call(run_id, token, _payload())
+        assert "Now, please." in answer["hook_output"]["hookSpecificOutput"]["additionalContext"]
+        assert notes.pending(project["id"]) == []
+        # Read now, so the switch has nothing left to flip.
+        assert db.set_note_hear_now(note_id, False) is False
+    finally:
+        hookguard.end(run_id)
+
+
+def test_taking_a_note_back_keeps_it_for_the_next_run(temp_data_dir):
+    project = _project()
+    run_id, token = _live_run(project)
+    try:
+        note_id = db.add_journal(project["id"], "user", "note", "Changed my mind.", hear_now=True)
+        assert db.set_note_hear_now(note_id, False) is True
         assert midrun.after_tool_call(run_id, token, _payload()) == {}
         assert len(notes.pending(project["id"])) == 1
     finally:
@@ -297,7 +331,7 @@ def test_a_note_after_the_report_is_filed_waits_for_the_next_run(temp_data_dir):
     project = _project()
     run_id, token = _live_run(project)
     try:
-        db.add_journal(project["id"], "user", "note", "One more thing.")
+        db.add_journal(project["id"], "user", "note", "One more thing.", hear_now=True)
         assert midrun.after_tool_call(run_id, token, _payload("StructuredOutput")) == {}
         assert len(notes.pending(project["id"])) == 1
         # An ordinary tool call after that still hands it over.
@@ -311,7 +345,7 @@ def test_the_setting_off_hands_nothing_over(temp_data_dir):
     run_id, token = _live_run(project)
     try:
         db.set_setting("midrun", "0")
-        db.add_journal(project["id"], "user", "note", "Hello?")
+        db.add_journal(project["id"], "user", "note", "Hello?", hear_now=True)
         assert midrun.after_tool_call(run_id, token, _payload()) == {}
         assert midrun.state(run_id)["can_pause"] is False
     finally:
@@ -322,7 +356,7 @@ def test_a_voice_memo_still_transcribing_is_held_back(temp_data_dir):
     project = _project()
     run_id, token = _live_run(project)
     try:
-        note_id = db.add_journal(project["id"], "user", "note", "(voice memo)")
+        note_id = db.add_journal(project["id"], "user", "note", "(voice memo)", hear_now=True)
         stored = attachments.store(
             project_id=project["id"], slug=project["slug"], orig_name="memo.m4a",
             data=b"\x00" * 16, declared_mime="audio/mp4", journal_id=note_id,
@@ -341,7 +375,7 @@ def test_files_with_a_note_are_revealed_and_named(temp_data_dir):
     project = _project()
     run_id, token = _live_run(project)
     try:
-        note_id = db.add_journal(project["id"], "user", "note", "Look at this shot.")
+        note_id = db.add_journal(project["id"], "user", "note", "Look at this shot.", hear_now=True)
         stored = attachments.store(
             project_id=project["id"], slug=project["slug"], orig_name="shot.png",
             data=b"\x89PNG\r\n\x1a\n" + b"\x00" * 16, declared_mime="image/png", journal_id=note_id,
@@ -364,8 +398,8 @@ def test_render_signs_each_note_when_more_than_one_person_wrote(temp_data_dir):
     wes = people.owner()
     karli = people.get(people.add("Karli", gender="female"))
     rows = [
-        db.get_journal(db.add_journal(project["id"], "user", "note", "Mine.", person_id=wes["id"])),
-        db.get_journal(db.add_journal(project["id"], "user", "note", "Hers.", person_id=karli["id"])),
+        db.get_journal(db.add_journal(project["id"], "user", "note", "Mine.", person_id=wes["id"], hear_now=True)),
+        db.get_journal(db.add_journal(project["id"], "user", "note", "Hers.", person_id=karli["id"], hear_now=True)),
     ]
     text = midrun.render(rows, 7)
     assert "2 notes from" in text
@@ -465,7 +499,7 @@ def test_post_tool_endpoint_carries_the_hold_and_the_note(client):
         assert resp.json()["poll"].endswith(f"/hooks/hold?run={run_id}&token={token}")
         # The audit row still landed underneath.
         assert len(db.hook_audit_for_run(run_id)) == 1
-        db.add_journal(project["id"], "user", "note", "Use tabs.")
+        db.add_journal(project["id"], "user", "note", "Use tabs.", hear_now=True)
         assert "poll" in client.post(f"/hooks/hold?run={run_id}&token={token}").json()
         midrun.resume(run_id)
         held = client.post(f"/hooks/hold?run={run_id}&token={token}").json()
@@ -504,13 +538,78 @@ def test_log_api_reports_the_hold(client):
         hookguard.end(run_id)
 
 
-def test_queue_note_is_marked_for_the_next_run_and_a_plain_note_is_not(client):
+def test_only_deliver_mid_run_marks_a_note_for_the_running_agent(client):
     project = _project()
     client.post(f"/project/{project['slug']}/note", data={"note": "later", "then": "queue"})
-    client.post(f"/project/{project['slug']}/note", data={"note": "now"})
+    client.post(f"/project/{project['slug']}/note", data={"note": "plain"})
+    client.post(f"/project/{project['slug']}/note", data={"note": "now", "then": "hear"})
     rows = {r["content_md"]: r for r in notes.pending(project["id"])}
-    assert rows["later"]["for_next_run"] == 1
-    assert rows["now"]["for_next_run"] == 0
+    assert rows["later"]["hear_now"] == 0
+    assert rows["plain"]["hear_now"] == 0
+    assert rows["now"]["hear_now"] == 1
+
+
+def test_deliver_mid_run_wakes_a_parked_project_if_its_agent_already_left(client, monkeypatch):
+    """The button was pressed for an agent that had just finished: the note
+    behaves like a plain one and puts a run on the project rather than sitting
+    unread behind the review badge."""
+    project = _project()
+    db.update_project(project["id"], stage="review")
+    queued = []
+
+    async def fake_queue(pid):
+        queued.append(pid)
+
+    monkeypatch.setattr(worker, "queue_manual_run", fake_queue)
+    client.post(f"/project/{project['slug']}/note", data={"note": "now", "then": "hear"})
+    assert queued == [project["id"]]
+    assert db.get_project(project["id"])["stage"] == "active"
+
+
+def test_the_journal_switch_flags_a_pending_note_and_takes_it_back(client):
+    project = _project()
+    note_id = db.add_journal(project["id"], "user", "note", "Flag me.")
+    url = f"/project/{project['slug']}/note/{note_id}/hear"
+    resp = client.post(url, data={"hear": "1"}, follow_redirects=False)
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"/project/{project['slug']}#journal"
+    assert db.get_journal(note_id)["hear_now"] == 1
+    client.post(url, data={"hear": "0"}, follow_redirects=False)
+    assert db.get_journal(note_id)["hear_now"] == 0
+    # A note some run has already read cannot be handed over again.
+    db.mark_notes_delivered([note_id])
+    assert client.post(url, data={"hear": "1"}, follow_redirects=False).status_code == 409
+    # Nor a note on some other project, by that project's address.
+    other = db.create_project("Other", stage="active", slug="other")
+    assert client.post(f"/project/{other['slug']}/note/{note_id}/hear", data={"hear": "1"},
+                       follow_redirects=False).status_code == 404
+    assert client.post(f"/project/{project['slug']}/note/999999/hear", data={"hear": "1"},
+                       follow_redirects=False).status_code == 404
+
+
+def test_the_page_offers_deliver_mid_run_only_while_an_agent_can_hear(client):
+    project = _project()
+    note_id = db.add_journal(project["id"], "user", "note", "Pending.")
+    page = client.get(f"/project/{project['slug']}").text
+    assert "deliver mid-run" not in page
+    run_id, _ = _live_run(project)
+    try:
+        page = client.get(f"/project/{project['slug']}").text
+        assert 'name="then" value="hear"' in page
+        assert f'action="/project/{project["slug"]}/note/{note_id}/hear"' in page
+        assert "deliver mid-run" in page
+        assert "badge-hear" not in page
+        db.set_note_hear_now(note_id, True)
+        page = client.get(f"/project/{project['slug']}").text
+        assert "badge-hear" in page
+        assert "hold for next run" in page
+        # Read by the run: the row loses its switch along with its edit window.
+        db.mark_notes_delivered([note_id])
+        page = client.get(f"/project/{project['slug']}").text
+        assert f'action="/project/{project["slug"]}/note/{note_id}/hear"' not in page
+        assert 'name="then" value="hear"' in page
+    finally:
+        hookguard.end(run_id)
 
 
 # --- the pages ----------------------------------------------------------------------------
@@ -527,7 +626,7 @@ def test_project_page_offers_pause_only_while_the_run_can_be_reached(client):
         page = client.get(f"/project/{project['slug']}").text
         assert f'action="/run/{run_id}/pause"' in page
         assert "pause this run" in page
-        assert "reaches the running agent at its next tool call" in page
+        assert "hands it to the running agent at its next tool call" in page
         midrun.pause(run_id)
         page = client.get(f"/project/{project['slug']}").text
         assert f'action="/run/{run_id}/resume"' in page
@@ -550,7 +649,7 @@ def test_run_page_shows_the_controls_and_what_happened_while_it_ran(client):
         assert "pause this run" in page
         midrun.pause(run_id, by="Wes")
         midrun.after_tool_call(run_id, token, _payload())
-        db.add_journal(project["id"], "user", "note", "Try the other font.")
+        db.add_journal(project["id"], "user", "note", "Try the other font.", hear_now=True)
         midrun.resume(run_id)
         midrun.hold_poll(run_id, token)
         page = client.get(f"/run/{run_id}").text
@@ -631,7 +730,7 @@ async def test_a_note_heard_mid_run_queues_no_rerun_afterwards(temp_data_dir, mo
 
     monkeypatch.setattr(worker, "queue_manual_run", fake_queue)
     try:
-        db.add_journal(project["id"], "user", "note", "Heard live.")
+        db.add_journal(project["id"], "user", "note", "Heard live.", hear_now=True)
         assert "hook_output" in midrun.after_tool_call(run_id, token, _payload())
         assert await worker._rerun_for_unseen_notes(project) is False  # noqa: SLF001
         assert queued == []

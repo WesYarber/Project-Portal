@@ -446,7 +446,7 @@
     {% if active_run.active and active_run.can_pause %}
     <form method="post" action="/run/{{ active_run.run_id }}/{{ 'resume' if active_run.paused else 'pause' }}" class="inline-form" data-inplace>
       <input type="hidden" name="next" value="/project/{{ project.slug }}">
-      <button type="submit" class="btn secondary" title="{{ 'Let the held run carry on from where it stopped; it reads any note added meanwhile first' if active_run.paused else 'Hold this run at its next tool call - between turns, so nothing is spent until you resume it' }}">
+      <button type="submit" class="btn secondary" title="{{ 'Let the held run carry on from where it stopped; it reads any note handed to it meanwhile first' if active_run.paused else 'Hold this run at its next tool call - between turns, so nothing is spent until you resume it' }}">
         {{ 'resume this run' if active_run.paused else 'pause this run' }}
       </button>
     </form>
@@ -497,7 +497,7 @@
     A note added now reaches it the moment it resumes.
   </p>
   {% elif active_run.active and agent_hears %}
-  <p class="hint run-hold">A note added now reaches the running agent at its next tool call, in this same run.</p>
+  <p class="hint run-hold">A note added now waits for the next run; "deliver mid-run" hands it to the running agent at its next tool call instead, and a note already in the journal can be handed over from its entry.</p>
   {% endif %}
   {% if research_queued %}
   <p class="hint research-queued">
@@ -1054,15 +1054,28 @@
          option next to queue note" for exactly that case. It starts a SECOND
          agent now, in a git worktree of its own, and the portal merges its
          branch back when the workspace frees up (app/parallel.py). #}
+      {# Only while a running agent can actually hear it (app/midrun.py). Off
+         the default path on purpose - Wes, 2026-09-02: "Don't deliver the
+         queued notes by default, but have an option on each one to be
+         delivered in the middle of the run ... clicked when adding a note
+         initially during a run in progress. Next to the queue note, add note,
+         etc." The note reaches the agent at its next tool call, inside this
+         same run, and is stamped read by it. #}
+      {% if agent_hears %}
+      <button type="submit" name="then" value="hear" class="btn secondary"
+              title="Hand this note to the agent already working - it reads it at its next tool call, inside this run, instead of waiting for the next one">
+        deliver mid-run
+      </button>
+      {% endif %}
       {% if agents_running %}
-      <button type="submit" name="then" value="parallel" class="btn secondary note-actions"
+      <button type="submit" name="then" value="parallel" class="btn secondary"
               title="Start a second agent on this note right now, alongside the {{ agents_running }} already running - it works in its own copy of the workspace and its commits are merged back when the workspace is free">
         parallel run
       </button>
       {% endif %}
       <button type="submit" class="btn go"
               title="{{ 'Add this note and start an agent run on it now' if note_runs_now
-                        else ('Add this note - the agent already working reads it at its next tool call' if agent_hears
+                        else ('Add this note for the next run - use deliver mid-run to hand it to the agent already working' if agent_hears
                         else 'Add this note for the agent to read on its next run') }}">add note</button>
     </div>
     {# The live recorder. Hidden until the mic button starts a recording;
@@ -1245,6 +1258,26 @@
       <span class="badge">{{ j.kind }}</span>
       <span class="small muted">{{ j.ts|timeago }}</span>
       {% if pending %}<span class="badge badge-unsent" title="No agent has read this yet, so you can still change it">not sent yet</span>{% endif %}
+      {# The per-note switch onto the mid-run channel (app/midrun.py). Offered
+         only while an agent this portal can reach is working, because that is
+         the only time it means anything: a note flagged with nobody running
+         simply goes into the next prompt like any other. Once handed over it
+         says so and offers the way back, until the agent's next tool call
+         stamps it read and the whole row loses its controls. #}
+      {% if pending and agent_hears %}
+      {% if j.hear_now %}
+      <span class="badge badge-hear" title="The running agent reads this at its next tool call">to the running agent</span>
+      <form method="post" action="/project/{{ project.slug }}/note/{{ j.id }}/hear" class="inline-form" data-inplace>
+        <input type="hidden" name="hear" value="0">
+        <button type="submit" class="small" title="Take it back - the note waits for the next run instead">hold for next run</button>
+      </form>
+      {% else %}
+      <form method="post" action="/project/{{ project.slug }}/note/{{ j.id }}/hear" class="inline-form" data-inplace>
+        <input type="hidden" name="hear" value="1">
+        <button type="submit" class="small" title="Hand this note to the agent already working - it reads it at its next tool call, inside this run">deliver mid-run</button>
+      </form>
+      {% endif %}
+      {% endif %}
     </div>
     <div class="content">{{ j.content_md|markdown_media(project.slug)|safe }}</div>
     {# Only offered while `delivered_at` is NULL. The moment this note goes into

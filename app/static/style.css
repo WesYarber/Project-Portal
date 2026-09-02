@@ -1018,6 +1018,7 @@ form.inline { display: inline-block; margin-right: 0.4rem; }
    anywhere. */
 .journal-entry.note-unsent { border-left-style: dashed; }
 .badge-unsent { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+.badge-hear { color: var(--ansi-green); border-color: var(--ansi-green); }
 /* A note drawn by app.js on the press, before the server has confirmed it
    (echoNote). Deliberately just dimmed rather than given a spinner: it is a
    real note in every way that matters, and it is replaced by the server's own

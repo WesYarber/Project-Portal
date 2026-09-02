@@ -54,7 +54,7 @@
     A note added on the project page now reaches it the moment it resumes.
   </p>
   {% elif midrun.can_pause %}
-  <p class="hint run-hold">A note added on the project page reaches this agent at its next tool call.</p>
+  <p class="hint run-hold">A note handed over on the project page ("deliver mid-run") reaches this agent at its next tool call.</p>
   {% endif %}
   {% endif %}
   <p class="hint">{{ run.started_at }}{% if run.ended_at %} &rarr; {{ run.ended_at }}{% endif %}</p>

@@ -1838,12 +1838,15 @@ async def add_note(
     if errors:
         body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
 
-    # "queue note" is for the agent's NEXT run by definition, so it is marked
-    # to stay out of the mid-run channel (app/midrun.py) that hands every other
-    # note to an agent already working.
+    # Every note waits for the agent's next run unless it was pressed as
+    # "deliver mid-run", which hands it to the agent already working at its
+    # next tool call (app/midrun.py). Wes, 2026-09-02: "don't deliver the
+    # queued notes by default, but have an option on each one" - so the
+    # channel is opt-in per note, and the journal entry offers the same switch
+    # afterwards (the /hear route below).
     journal_id = db.add_journal(
         project["id"], "user", "note", body, person_id=_person_id(request),
-        for_next_run=(then == "queue"),
+        hear_now=(then == "hear"),
     )
     for a in stored:
         db.set_attachment_journal(a["id"], journal_id)
@@ -1880,7 +1883,11 @@ async def add_note(
         # The plain green "add note": wake a put-down project (Wes's rule) and
         # start a run whenever one could start at all - see worker.note_arrived.
         # "queue note" is the explicit opt-out: the note is stored for whenever
-        # the agent next runs, and nothing else is touched.
+        # the agent next runs, and nothing else is touched. "deliver mid-run"
+        # takes this same path on purpose: while the agent it was meant for is
+        # working nothing here fires (the workspace is busy), and if that agent
+        # finished in the meantime the note wakes the project exactly as a
+        # plain one would, instead of sitting unread behind a review badge.
         if audio_ids:
             transcribe.kick(audio_ids, after=worker.note_arrived(project))
         else:
@@ -1920,6 +1927,26 @@ async def delete_note(slug: str, note_id: int) -> RedirectResponse:
     if entry is None or entry["project_id"] != project["id"]:
         raise HTTPException(status_code=404, detail="No such note on this project")
     db.delete_journal_note(note_id)
+    return RedirectResponse(url=f"/project/{slug}#journal", status_code=303)
+
+
+@app.post("/project/{slug}/note/{note_id}/hear")
+async def hear_note(slug: str, note_id: int, hear: str = Form("1")) -> RedirectResponse:
+    """Hand a note no agent has read yet to the agent already working - or
+    take it back (`hear=0`) so it waits for the next run again.
+
+    Wes, 2026-09-02: the switch "can be manually clicked from the journal
+    entry". Same single guarded UPDATE as editing: a note that went into a
+    prompt between the page render and this press is already read, and the
+    route refuses to flag it rather than deliver it a second time mid-run.
+    """
+    project = _get_project_or_404(slug)
+    entry = db.get_journal(note_id)
+    if entry is None or entry["project_id"] != project["id"]:
+        raise HTTPException(status_code=404, detail="No such note on this project")
+    on = hear.strip().lower() not in ("0", "off", "false", "no", "")
+    if not db.set_note_hear_now(note_id, on):
+        raise HTTPException(status_code=409, detail="An agent has already read this note")
     return RedirectResponse(url=f"/project/{slug}#journal", status_code=303)
 
 
