@@ -732,7 +732,9 @@ def test_a_call_gives_up_after_the_retry_budget(clock, monkeypatch):
     result = relay.call("ask", {"question": "Blue?"})
     assert result["isError"]
     assert "could not be reached" in result["content"][0]["text"]
-    assert clock.now - started == pytest.approx(mcpstdio.POST_RETRY_SEC, abs=mcpstdio.RETRY_INTERVAL_SEC)
+    # The retry interval divides the budget, so the last attempt lands exactly
+    # on the deadline and an extra tick is a defect, not rounding.
+    assert clock.now - started == pytest.approx(mcpstdio.POST_RETRY_SEC, abs=0.01)
     assert len(posted) > 2
 
 
@@ -784,7 +786,10 @@ def test_an_http_error_is_the_portal_answering_and_is_not_retried(clock, monkeyp
 
 def test_a_connection_the_server_closed_mid_response_is_retried(clock, monkeypatch):
     answer = {"content": [{"type": "text", "text": "ok"}]}
-    posted = _posting(monkeypatch, [http.client.RemoteDisconnected("gone"), answer])
+    # IncompleteRead is an HTTPException and not an OSError, unlike
+    # RemoteDisconnected, which is both - so this is the case that proves the
+    # second entry in TRANSPORT_ERRORS earns its place.
+    posted = _posting(monkeypatch, [http.client.IncompleteRead(b""), answer])
     assert mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"}) == answer
     assert len(posted) == 2
 
