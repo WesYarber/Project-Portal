@@ -89,6 +89,15 @@ def temp_data_dir(tmp_path, monkeypatch):
     # spawns nothing) pass in a full run and fail on its own, and it meant the
     # suite behaved differently on a machine with no CLI installed. Pinned, so
     # no test can reach the real binary.
+    #
+    # NOTE this pins the version BELOW `config.MODEL_MIN_CLI["fable"]`, so under
+    # the suite `cli_model("fable")` degrades to the bare alias rather than
+    # returning claude-fable-5-1. That is deliberate on both ends - the gate
+    # fails open, and DEFAULT_CLI_VERSION is what an install with no readable
+    # CLI reports - but it means a test asserting a research burst's spawn args
+    # sees `fable`, not the pinned id, which reads exactly like the pin being
+    # broken. Set your own version with monkeypatch if you are testing the pin;
+    # tests/test_models.py has a `_at_cli_version` helper for it.
     monkeypatch.setattr(config, "_cli_version_cache", config.DEFAULT_CLI_VERSION,
                         raising=False)
 
