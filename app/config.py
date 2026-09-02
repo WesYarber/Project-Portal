@@ -61,7 +61,7 @@ SUGGESTIONS_MD = MEMORY_DIR / "suggestions.md"
 # wide as its longest sales pitch.
 MODEL_CHOICES: list[tuple[str, str]] = [
     ("opus", "Opus 5"),
-    ("fable", "Fable 5"),
+    ("fable", "Fable 5.1"),
     ("sonnet", "Sonnet 5"),
     ("haiku", "Haiku 4.5"),
 ]
@@ -69,16 +69,54 @@ MODEL_VALUES = [value for value, _ in MODEL_CHOICES]
 DEFAULT_MODEL = "opus"
 
 # The string actually handed to `claude --model` for each internal alias. The
-# CLI's own short aliases MOSTLY track the current model, but CLI 2.1.215's
-# `opus` alias still resolves to claude-opus-4-8, not Opus 5 (verified live
-# 2026-07-25: `--model opus` bills claude-opus-4-8, `--model claude-opus-5`
-# bills claude-opus-5). Wes wants Opus 5 to replace 4.8 (same cost), so opus is
-# pinned to the explicit id. sonnet/haiku/fable resolve correctly through their
-# alias and pass through unchanged. Drop the opus entry once the CLI's alias
-# catches up (then it auto-tracks the next Opus again).
+# CLI's own short aliases MOSTLY track the current model, but they lag a release
+# by days, which is long enough to matter twice now:
+#
+#   opus   - CLI 2.1.215's `opus` still meant claude-opus-4-8 after Opus 5 shipped
+#            (verified live 2026-07-25). By 2.1.258 the alias had caught up and
+#            `--model opus` bills claude-opus-5, so this pin is now belt and
+#            braces. It STAYS anyway: `modelwatch` exists so Wes decides when the
+#            portal moves to a new model, and an alias that auto-tracks would
+#            move every run onto Opus 6 the day it ships without him being asked.
+#            Pinning is what makes his answer to that question mean anything.
+#   fable  - `--model fable` still means claude-fable-5 on CLI 2.1.258 (verified
+#            live 2026-09-02, after Wes answered "adopt it" to Fable 5.1), so
+#            reaching 5.1 at all requires the explicit id.
+#
+# Keep this in step with MODEL_MIN_CLI below when adding a pin.
 CLI_MODEL_IDS: dict[str, str] = {
     "opus": "claude-opus-5",
+    "fable": "claude-fable-5-1",
 }
+
+# The oldest Claude CLI that can spawn a pinned id, for pins the CLI gates on
+# its own version. Fable 5.1 is such a model: on 2.1.223 the explicit id comes
+# back as `API Error: 400 ... does not support this model; version 2.1.251 or
+# newer is required`, which reads like an outage rather than a stale CLI, and
+# would fail EVERY research burst on that install.
+#
+# This is not hypothetical any more. Since 2026-09-01 the portal publishes
+# itself and Wes installs it on a second computer from that repo, so this code
+# now runs on machines whose CLI nobody here has looked at. An alias that merely
+# resolves to an older model is a fine degradation; a 400 on every spawn is not.
+# An alias with no entry here is assumed to work on any CLI.
+MODEL_MIN_CLI: dict[str, str] = {
+    "fable": "2.1.251",
+}
+
+
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """"2.1.258" -> (2, 1, 258), stopping at the first non-numeric part.
+
+    Only used to compare two CLI versions, so a build suffix the CLI might grow
+    later ("2.2.0-rc1") truncates to what did parse rather than raising.
+    """
+    parts: list[int] = []
+    for part in str(version).split("."):
+        if not part.isdigit():
+            break
+        parts.append(int(part))
+    return tuple(parts)
 
 
 def cli_model(alias: str) -> str:
@@ -86,8 +124,21 @@ def cli_model(alias: str) -> str:
 
     Unknown aliases (and the ones whose CLI alias is already current) pass
     through unchanged, so this is safe to wrap every `--model` argument with.
+
+    A pinned id whose CLI requirement the installed CLI does not meet degrades
+    to the bare alias, which every CLI understands - an older model, but a
+    running one. Fails open: when the version cannot be read at all,
+    `cli_version()` reports DEFAULT_CLI_VERSION, which is older than every
+    entry in MODEL_MIN_CLI, so an undetectable CLI also degrades rather than
+    spawning an id it may not support.
     """
-    return CLI_MODEL_IDS.get(alias, alias)
+    pinned = CLI_MODEL_IDS.get(alias)
+    if pinned is None:
+        return alias
+    required = MODEL_MIN_CLI.get(alias)
+    if required and _version_tuple(cli_version()) < _version_tuple(required):
+        return alias
+    return pinned
 # Model for a research burst. Deliberately not the ordinary default: a burst
 # only runs on allowance that is about to evaporate, so it is the one place
 # where reaching for the newest, most expensive model costs nothing real.
