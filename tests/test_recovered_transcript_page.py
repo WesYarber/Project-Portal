@@ -171,10 +171,14 @@ def test_a_subagents_turns_are_not_drawn(tmp_path):
 
 
 def test_a_torn_line_is_skipped_not_fatal(tmp_path):
+    # Torn in the MIDDLE: a line at the end of the file could be one the CLI is
+    # still writing, and stopping there would look the same as skipping it.
     path = _write(tmp_path / "ws", "sess-1")
-    with path.open("a", encoding="utf-8") as fh:
-        fh.write('{"type": "assistant", "message": {"content": [{"type": "te')
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    lines.insert(3, '{"type": "assistant", "message": {"content": [{"type": "te\n')
+    path.write_text("".join(lines), encoding="utf-8")
     out = transcript.render(path)
+    assert "Looking at the log first." in out.text
     assert "AFTER THE RESTART" in out.text
 
 
