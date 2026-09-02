@@ -1476,6 +1476,13 @@ summary:hover { color: var(--ansi-blue); }
   border-top: 1px solid var(--window-border);
 }
 .live-idle-reason { opacity: 0.75; }
+/* A run on hold (app/midrun.py): the dot goes amber and stops pulsing, and the
+   last activity line dims, because "working" is the one thing it is not. */
+.dot.held { background: var(--ansi-yellow); box-shadow: 0 0 8px var(--ansi-yellow); }
+.live-run-row.held .live-activity { opacity: 0.6; }
+.live-hold { color: var(--ansi-yellow); }
+.live-hold::before { content: "["; }
+.live-hold::after { content: "]"; }
 .bonus { color: var(--ansi-magenta); }
 
 /* The account's real Claude windows on the status line. Chips rather than

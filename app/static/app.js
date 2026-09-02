@@ -1702,7 +1702,38 @@ function startLiveRunPoll() {
       if (activity) activity.textContent = run.last_activity;
       var meta = row.querySelector(".live-meta");
       if (meta) meta.textContent = run.model + " · " + run.elapsed + " · " + run.events + " events";
+      paintHold(row, run);
     });
+  }
+
+  // The hold state of one row (app/midrun.py): a pause pressed on the project
+  // page, the run page or another phone has to show here without a reload,
+  // and the hold ENGAGING - the run reaching the tool call it stops at - is a
+  // change nobody pressed a button for. Same three parts the template
+  // renders: the dot, the pausing/paused badge, and the button's direction.
+  // The button is only patched, never created: whether a run can be paused
+  // at all (`can_pause`) is settled when the run starts and rendered by the
+  // server, and a run whose hooks this portal cannot reach must not grow a
+  // pause button from a poll.
+  function paintHold(row, run) {
+    var paused = !!run.paused;
+    if (row.classList) row.classList.toggle("held", paused);
+    var dot = row.querySelector(".dot");
+    if (dot && dot.classList) {
+      dot.classList.toggle("held", paused);
+      dot.classList.toggle("running", !paused);
+    }
+    var badge = row.querySelector(".live-hold");
+    if (badge) {
+      badge.hidden = !paused;
+      badge.textContent = run.engaged ? "paused" : "pausing";
+    }
+    var form = row.querySelector(".live-hold-form");
+    if (form) {
+      form.setAttribute("action", "/run/" + run.run_id + "/" + (paused ? "resume" : "pause"));
+      var button = form.querySelector("button");
+      if (button) button.textContent = paused ? "resume" : "pause";
+    }
   }
 
   function tick() {

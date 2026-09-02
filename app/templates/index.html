@@ -124,9 +124,13 @@
 <div class="card live-run {{ '' if active_run.active else 'idle' }}" id="live-run"
      data-run-ids="{{ active_run.run_ids }}">
   {% for r in active_run.runs %}
-  <div class="live-run-row" data-run-id="{{ r.run_id }}">
+  {# `held` on the row and the dot while the run is on hold (app/midrun.py),
+     so a strip full of green pulses does not say "working" about an agent
+     that is deliberately doing nothing. The poller below keeps the class, the
+     badge and the button current between page loads. #}
+  <div class="live-run-row{{ ' held' if r.paused }}" data-run-id="{{ r.run_id }}">
     <div class="live-head">
-      <span class="dot running"></span>
+      <span class="dot {{ 'held' if r.paused else 'running' }}"></span>
       <strong class="live-what">
         {# A one-off's label already opens with "task:", so "task on task:"
            would say it twice - the title alone carries the whole line. #}
@@ -135,7 +139,21 @@
         {% else %}{{ r.task }} on {{ r.project_title }}{% endif %}
       </strong>
       <span class="muted small live-meta">{{ r.model }} &middot; {{ r.elapsed }} &middot; {{ r.events }} events</span>
+      {# "pausing" until the hold engages at the run's next tool call, "paused"
+         once it has - the same two words the project page's hint uses. Always
+         in the markup, hidden while the run is not held, so the poller has
+         something to show without building elements. #}
+      <span class="small live-hold"{{ '' if r.paused else ' hidden' }}>{{ 'paused' if r.engaged else 'pausing' }}</span>
       <a class="small" href="/run/{{ r.run_id }}">full transcript &rarr;</a>
+      {# Pause and resume, offered only while this portal process can reach
+         the run's hooks - the project page's rule, for the same reason: a
+         button that silently did nothing would be worse than none. #}
+      {% if r.can_pause %}
+      <form method="post" action="/run/{{ r.run_id }}/{{ 'resume' if r.paused else 'pause' }}" class="inline-form live-hold-form" data-inplace>
+        <input type="hidden" name="next" value="/">
+        <button type="submit" class="btn secondary small" title="{{ 'Let the held run carry on from where it stopped; it reads any note handed to it meanwhile first' if r.paused else 'Hold this run at its next tool call - between turns, so nothing is spent until you resume it' }}">{{ 'resume' if r.paused else 'pause' }}</button>
+      </form>
+      {% endif %}
       <form method="post" action="/run/{{ r.run_id }}/cancel" class="inline-form">
         <input type="hidden" name="next" value="/">
         <button type="submit" class="btn danger small">stop</button>
