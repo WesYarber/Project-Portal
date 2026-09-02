@@ -13,9 +13,12 @@ It is the CLI's own OAuth dance, not a private one: the same client id, the
 same scopes, the same PKCE exchange, and the result is written where the CLI
 keeps it, in the shape the CLI writes - so a token minted here is
 indistinguishable from one minted by `/login`, and the CLI happily refreshes
-it from then on. The constants are read out of the installed CLI bundle
-(2.1.223); if Anthropic moves an endpoint, a login attempt fails with the
-server's own words on the card rather than anything silent.
+it from then on. The constants are read out of the installed CLI bundle, and
+re-checked against it on 2026-09-02 when the CLI was updated to 2.1.258 for
+Fable 5.1: the client id and both endpoints are byte-identical to 2.1.223's, so
+a CLI update is not by itself a reason to re-derive them. If Anthropic moves an
+endpoint, a login attempt fails with the server's own words on the card rather
+than anything silent.
 
 Flow, as the Settings card walks it:
 

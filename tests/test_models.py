@@ -109,6 +109,12 @@ def test_an_ungated_pin_is_not_held_back_by_an_ancient_cli(monkeypatch):
     _at_cli_version(monkeypatch, "0.0.1")
     assert "opus" not in config.MODEL_MIN_CLI
     assert config.cli_model("opus") == "claude-opus-5"
+    # Not even an unreadable version may withhold an ungated pin. cli_version()
+    # regex-checks its output before returning it, so this should be
+    # unreachable today - but the gate must not lean on that, since an empty
+    # parse sorts BELOW every requirement and would strip opus from every run.
+    _at_cli_version(monkeypatch, "garbage")
+    assert config.cli_model("opus") == "claude-opus-5"
 
 
 def test_an_unpinned_alias_passes_through_untouched(monkeypatch):
@@ -142,6 +148,27 @@ def test_version_tuple_truncates_at_a_non_numeric_part():
     assert config._version_tuple("2.1.258") == (2, 1, 258)
     assert config._version_tuple("2.2.0-rc1") == (2, 2)
     assert config._version_tuple("garbage") == ()
+    # It STOPS at the bad part rather than skipping over it: "2.x.5" is (2,),
+    # not (2, 5). Skipping would read a trailing number as if it were the minor
+    # version and compare two different fields against each other.
+    assert config._version_tuple("2.x.5") == (2,)
     # An unparseable version must not sort ABOVE a requirement, or it would
     # open the gate it cannot answer for.
     assert config._version_tuple("garbage") < config._version_tuple("2.1.251")
+
+
+def test_versions_compare_numerically_not_as_strings(monkeypatch):
+    # The gate's whole job is refusing the pinned id to a CLI that would 400 on
+    # it, and a string comparison gets exactly that case backwards: "2.1.99" is
+    # four dozen releases OLDER than "2.1.251", but sorts after it as text
+    # because "9" > "2". Compared as strings, the oldest CLIs most in need of
+    # the fallback are the ones that would be handed the pinned id.
+    _at_cli_version(monkeypatch, "2.1.99")
+    assert "2.1.99" > "2.1.251", "the string comparison this guards against"
+    assert config.cli_model("fable") == "fable"
+
+
+def test_a_two_digit_minor_version_is_newer_than_a_one_digit_one():
+    # The same trap one field to the left, and the one that arrives on its own
+    # the day the CLI reaches 2.10: as text "2.10.0" sorts BELOW "2.9.0".
+    assert config._version_tuple("2.10.0") > config._version_tuple("2.9.0")
