@@ -415,6 +415,26 @@ restart — whose hook scope died with that process — can do neither, and the
 buttons are not offered for it. The switch is Settings > agent > "Pause a run,
 and hand it notes while it works".
 
+### A run that outlives a restart
+
+The portal restarts itself to load its own updates, and a run in flight keeps
+going: each run lives in its own systemd scope, which a service restart does
+not touch, and the new process adopts it rather than starting a second agent
+into the same workspace. What the new process does not have is the run's
+stdout, so the `result` event carrying its report would go down a dead pipe.
+The CLI writes every turn to a transcript on disk as it goes
+(`~/.claude/projects/<encoded cwd>/<session id>.jsonl`), including the
+StructuredOutput call with the report as its input, so when the adopted run's
+scope dies the portal reads the report back out of that file and files the run
+exactly as a watched one: ok, the summary on the run list, the journal entry,
+todos, questions and stage on the project, plus a status line saying the
+report was recovered. The session id that names the transcript is recorded
+from the CLI's first stream event, not at the end. A transcript with no report
+in it — the agent was killed mid-work — still settles as an error, so a run
+that failed is not dressed up by its last words. What a recovered run lacks is
+its cost, which only the stream carries, and an undo button, since nobody
+wrote down the workspace HEAD before it started. See `app/transcript.py`.
+
 ### Where the budget goes
 
 `/activity` groups the window's runs by project, ranked by cost rather than run
