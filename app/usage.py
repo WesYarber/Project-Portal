@@ -54,6 +54,35 @@ def format_cost(value: Any, precision: int = 3, units: Optional[str] = None) -> 
     return f"{amount:.{precision}f}w"
 
 
+ESTIMATE_MARK = "~"
+ESTIMATE_TITLE = (
+    "An estimate: this run outlived a portal restart, so the figure the CLI "
+    "reports never arrived, and the portal priced the token counts in the "
+    "transcript at list prices instead."
+)
+
+
+def format_run_cost(run: Any, precision: int = 3, units: Optional[str] = None) -> str:
+    """A run's cost figure as the pages show it: `format_cost`, with a tilde in
+    front when the figure is the portal's estimate rather than the CLI's own
+    (`db.cost_is_estimated`). A blank figure is never marked - there is
+    nothing to be approximate about."""
+    value = _get(run, "cost_usd")
+    text = format_cost(value, precision, units)
+    if value is not None and text != "-" and bool(_get(run, "cost_estimated")):
+        return ESTIMATE_MARK + text
+    return text
+
+
+def cost_label(run: Any, units: Optional[str] = None) -> str:
+    """The stat label under a run's figure: the noun, or 'estimated <noun>'
+    when the figure is one."""
+    noun = cost_noun(units)
+    if _get(run, "cost_usd") is not None and bool(_get(run, "cost_estimated")):
+        return f"estimated {noun}"
+    return noun
+
+
 def _parse(value: Optional[str]) -> Optional[datetime]:
     if not value:
         return None

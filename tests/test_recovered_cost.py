@@ -491,3 +491,106 @@ def test_a_recovered_one_off_reply_carries_its_cost_too(monkeypatch):
         "cache_write_1h": 200,
     }))
     assert row["output_tokens"] == 150
+
+
+# --- the figure says it is an estimate ----------------------------------------
+# `finish_run` writes a recovered run's list-price estimate into the same
+# column the CLI's own figure goes in. `runs.cost_source` says which it is, and
+# the run page and the activity table mark an estimate with a tilde.
+
+from starlette.testclient import TestClient  # noqa: E402
+
+from app import usage as usage_mod  # noqa: E402
+
+
+@pytest.fixture
+def client():
+    from app import main
+
+    return TestClient(main.app)
+
+
+def test_a_recovered_runs_figure_is_marked_as_an_estimate(project, workspace, monkeypatch):
+    run_id = adopted_run(project["id"], workspace)
+    write_transcript(workspace, "sess-m", default_events("sess-m", started(run_id)))
+    scope_gone(monkeypatch)
+    worker._reap_adopted()
+    row = db.get_run(run_id)
+    assert row["cost_source"] == db.COST_SOURCE_TRANSCRIPT
+    assert db.cost_is_estimated(row)
+
+
+def test_an_unpriced_recovered_run_is_not_marked(project, workspace, monkeypatch):
+    run_id = adopted_run(project["id"], workspace)
+    write_transcript(workspace, "sess-n",
+                     default_events("sess-n", started(run_id), model="claude-someday-9"))
+    scope_gone(monkeypatch)
+    worker._reap_adopted()
+    row = db.get_run(run_id)
+    assert row["cost_usd"] is None and row["cost_source"] is None
+    assert not db.cost_is_estimated(row)
+
+
+def test_a_recovered_run_without_a_report_is_marked_too(project, workspace, monkeypatch):
+    run_id = adopted_run(project["id"], workspace)
+    write_transcript(workspace, "sess-o",
+                     default_events("sess-o", started(run_id), report=False))
+    scope_gone(monkeypatch)
+    worker._reap_adopted()
+    row = db.get_run(run_id)
+    assert row["status"] == "error" and row["cost_usd"] is not None
+    assert db.cost_is_estimated(row)
+
+
+def test_a_watched_runs_figure_is_not_marked(project):
+    run_id = db.create_run(project["id"], "build", FABLE)
+    db.record_run_usage(run_id, input_tokens=10, output_tokens=20,
+                        cache_write_tokens=0, cache_read_tokens=0)
+    db.finish_run(run_id, "ok", "sess-w", 1.25, 3, "done")
+    row = db.get_run(run_id)
+    assert row["cost_usd"] == 1.25 and row["cost_source"] is None
+    assert not db.cost_is_estimated(row)
+
+
+def test_a_row_without_the_column_is_not_an_estimate():
+    assert not db.cost_is_estimated({"cost_usd": 1.0})
+
+
+def test_the_figure_is_rendered_with_a_tilde_and_labeled_as_an_estimate():
+    estimated = {"cost_usd": 6.9538, "cost_estimated": True}
+    measured = {"cost_usd": 6.9538, "cost_estimated": False}
+    blank = {"cost_usd": None, "cost_estimated": True}
+    assert usage_mod.format_run_cost(estimated, units="weight") == "~6.954w"
+    assert usage_mod.format_run_cost(estimated, units="usd") == "~$6.954"
+    assert usage_mod.format_run_cost(measured, units="weight") == "6.954w"
+    assert usage_mod.format_run_cost(blank, units="weight") == "-"
+    assert usage_mod.cost_label(estimated, units="weight") == "estimated weight"
+    assert usage_mod.cost_label(estimated, units="usd") == "estimated cost"
+    assert usage_mod.cost_label(measured, units="weight") == "weight"
+    assert usage_mod.cost_label(blank, units="weight") == "weight"
+
+
+def test_the_run_page_and_the_activity_table_mark_a_recovered_runs_figure(
+    project, workspace, monkeypatch, client
+):
+    run_id = adopted_run(project["id"], workspace)
+    write_transcript(workspace, "sess-p", default_events("sess-p", started(run_id)))
+    scope_gone(monkeypatch)
+    worker._reap_adopted()
+    figure = usage_mod.format_cost(db.get_run(run_id)["cost_usd"])
+
+    page = client.get(f"/run/{run_id}").text
+    assert f"<em>~{figure}</em>estimated weight" in page
+    assert usage_mod.ESTIMATE_TITLE in page
+
+    table = client.get("/activity").text
+    assert f">~{figure}</td>" in table
+    assert usage_mod.ESTIMATE_TITLE in table
+
+
+def test_the_run_page_shows_a_watched_runs_figure_plain(project, client):
+    run_id = db.create_run(project["id"], "build", FABLE)
+    db.finish_run(run_id, "ok", "sess-q", 1.25, 3, "done")
+    page = client.get(f"/run/{run_id}").text
+    assert "<em>1.250w</em>weight" in page
+    assert "~1.250w" not in page and usage_mod.ESTIMATE_TITLE not in page

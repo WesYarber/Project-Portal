@@ -15,7 +15,9 @@
   <div class="stat-row">
     <span class="stat"><em class="run-status-{{ run.status }}">{{ run.status }}</em>status</span>
     <span class="stat"><em>{{ run.duration }}</em>duration</span>
-    <span class="stat"><em>{{ run.cost_usd|cost }}</em>{{ cost_noun() }}</span>
+    {# A recovered run's figure is an estimate (app/usage.py `format_run_cost`):
+       marked with a tilde and labeled as one, with the reason on hover. #}
+    <span class="stat"{% if run.cost_estimated and run.cost_usd is not none %} title="{{ estimate_title }}"{% endif %}><em>{{ run_cost(run) }}</em>{{ cost_label(run) }}</span>
     <span class="stat"><em>{{ run.num_turns if run.num_turns is not none else '-' }}</em>turns</span>
     <span class="stat"><em>{{ run.events }}</em>events</span>
     {# What the run cost, off the CLI's own result event, plus the size of the

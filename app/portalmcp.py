@@ -115,9 +115,9 @@ class _Scope:
 # this server, and the process that adopted it rebuilds the scope from the row
 # (`_scope`) rather than refusing every call. A run no longer 'running' is
 # never revived, so a call from a finished run is refused as before. The ask
-# cap starts over on revival - questions carry no run id to count them by,
-# and three more asks from a survivor is bounded where a refused ask is a lost
-# question.
+# tally rides along on the record, rewritten on every ask, so the cap holds
+# across the restart too: a survivor that had asked twice gets one more, not
+# three. A record from before the tally was written reads as zero.
 _SCOPES: dict[int, _Scope] = {}
 
 # Question id -> the run currently blocked on it. In memory *because the fact
@@ -158,14 +158,26 @@ def begin(run_id: int, project_id: int, task: str = "build") -> Optional[str]:
     if not carries_tools(task):
         return None
     token = _secrets.token_urlsafe(16)
-    _SCOPES[run_id] = _Scope(token=token, project_id=int(project_id), run_id=int(run_id))
+    scope = _Scope(token=token, project_id=int(project_id), run_id=int(run_id))
+    _SCOPES[run_id] = scope
+    _persist(scope)
+    return json.dumps(mcp_config(run_id, token))
+
+
+def _persist(scope: _Scope) -> None:
+    """Mirror the scope onto its run's row, tally included. A failed write
+    never stops the run or the ask: it is then merely unreachable (or one ask
+    richer) after a restart."""
     try:
         db.set_run_scope_record(
-            run_id, "mcp_scope", json.dumps({"token": token, "project_id": int(project_id)})
+            scope.run_id,
+            "mcp_scope",
+            json.dumps(
+                {"token": scope.token, "project_id": scope.project_id, "asked": scope.asked}
+            ),
         )
-    except Exception:  # noqa: BLE001 - the run must start; it is then merely unreachable after a restart
-        log.exception("Could not persist the MCP scope of run %s", run_id)
-    return json.dumps(mcp_config(run_id, token))
+    except Exception:  # noqa: BLE001 - see docstring
+        log.exception("Could not persist the MCP scope of run %s", scope.run_id)
 
 
 def end(run_id: int) -> None:
@@ -227,7 +239,12 @@ def _revive(run_id: int) -> Optional[_Scope]:
         data = json.loads(raw)
         if not isinstance(data, dict) or not isinstance(data.get("token"), str):
             return None
-        scope = _Scope(token=data["token"], project_id=int(data["project_id"]), run_id=run_id)
+        scope = _Scope(
+            token=data["token"],
+            project_id=int(data["project_id"]),
+            run_id=run_id,
+            asked=max(0, int(data.get("asked") or 0)),
+        )
     except Exception:  # noqa: BLE001
         log.exception("Could not revive the MCP scope of run %s", run_id)
         return None
@@ -426,7 +443,14 @@ async def _ask(scope: _Scope, args: dict) -> dict:
     # The cap counts asks, not insertions: three deduped asks are still three
     # attempts to interrupt somebody, and a run that keeps rewording the same
     # question should be stopped by the cap rather than spinning on the dedupe.
-    scope.asked += 1
+    # The one exception is the relay's own retry (app/mcpstdio.py): an ask
+    # whose connection died under a restart is posted again, and when it lands
+    # on the question it already filed it is the same ask, not a second one.
+    # A retry that files a fresh question did not reach the portal the first
+    # time, and counts.
+    if not (bool(args.get("retry")) and not filing.created):
+        scope.asked += 1
+        _persist(scope)
 
     if not filing.created:
         # Already being asked, in some wording. If it has an answer, that is the
@@ -463,7 +487,8 @@ async def _ask(scope: _Scope, args: dict) -> dict:
             f"Carry on without the answer, and do not repeat it in your report."
         )
     return _result(
-        f"No answer in {wait}s. The question is filed on {project['title']} and waiting, "
+        f"{'No answer yet' if wait <= 0 else f'No answer in {wait}s'}. "
+        f"The question is filed on {project['title']} and waiting, "
         f"so carry on without it - do the parts that do not depend on the answer, and "
         f"leave it out of your report's \"questions\" list, since it is already asked."
     )

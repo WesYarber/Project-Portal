@@ -806,6 +806,14 @@ def _note_recovered_run(
 
 
 def _record_recovered_usage(run_id: int, row: db.sqlite3.Row, rec: transcript.Recovered) -> None:
+    """The token counts onto the row, and the cost figure marked as the
+    portal's estimate: `finish_run` writes `rec.cost()` into the same column
+    the CLI's own figure goes in, and without the mark a recovered run's page
+    and the activity table would show a list-price estimate exactly like a
+    measured figure. Unpriced (a model missing from the table) is blank, and
+    blank needs no mark."""
+    if rec.cost() is not None:
+        db.mark_cost_estimated(run_id)
     totals = rec.totals()
     if not pricing.billable(totals):
         return

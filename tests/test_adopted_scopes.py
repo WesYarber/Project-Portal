@@ -390,7 +390,7 @@ def test_mcp_begin_writes_the_scope_onto_the_run_row(project):
     run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
     token = _mcp_begin(project, run_id)
     data = json.loads(db.get_run(run_id)["mcp_scope"])
-    assert data == {"token": token, "project_id": project["id"]}
+    assert data == {"token": token, "project_id": project["id"], "asked": 0}
 
 
 def test_mcp_end_clears_the_record(project):
@@ -442,6 +442,98 @@ def test_a_survivor_can_still_ask(project, monkeypatch):
                                         {"question": "Blue or green?", "wait_seconds": 0}))
     assert not result.get("isError"), result
     assert db.count_open_questions(project["id"]) == 1
+
+
+def _quiet_notify(monkeypatch):
+    async def fake_notify(title, body, **kw):
+        pass
+
+    monkeypatch.setattr(portalmcp.notify, "notify", fake_notify)
+
+
+def _ask(run_id, token, question, **extra):
+    args = {"question": question, "wait_seconds": 0, **extra}
+    return asyncio.run(portalmcp.call(run_id, token, "ask", args))
+
+
+def test_the_ask_tally_is_written_onto_the_row_on_every_ask(project, monkeypatch):
+    _quiet_notify(monkeypatch)
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    token = _mcp_begin(project, run_id)
+    _ask(run_id, token, "Blue or green?")
+    assert json.loads(db.get_run(run_id)["mcp_scope"])["asked"] == 1
+    _ask(run_id, token, "Tabs or spaces?")
+    assert json.loads(db.get_run(run_id)["mcp_scope"])["asked"] == 2
+
+
+def test_a_survivor_s_ask_tally_carries_across_the_restart(project, monkeypatch):
+    """A run that had asked twice gets one more after the restart, not three:
+    the cap is on a person's attention, which the restart did not refresh."""
+    _quiet_notify(monkeypatch)
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    token = _mcp_begin(project, run_id)
+    _ask(run_id, token, "Blue or green?")
+    _ask(run_id, token, "Tabs or spaces?")
+    _restart()
+    third = _ask(run_id, token, "Ship on Friday?")
+    assert not third.get("isError"), third
+    fourth = _ask(run_id, token, "One more thing?")
+    assert fourth.get("isError") and "cap" in fourth["content"][0]["text"]
+    assert db.count_open_questions(project["id"]) == 3
+
+
+def test_a_record_without_a_tally_reads_as_zero(project, monkeypatch):
+    _quiet_notify(monkeypatch)
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    db.set_run_scope_record(
+        run_id, "mcp_scope", json.dumps({"token": "t", "project_id": project["id"]})
+    )
+    assert portalmcp.tools(run_id, "t") is not None
+    assert portalmcp._SCOPES[run_id].asked == 0  # noqa: SLF001
+    db.set_run_scope_record(
+        run_id, "mcp_scope", json.dumps({"token": "t", "project_id": project["id"], "asked": -4})
+    )
+    _restart()
+    portalmcp.tools(run_id, "t")
+    assert portalmcp._SCOPES[run_id].asked == 0  # noqa: SLF001
+
+
+def test_a_retried_ask_that_lands_on_its_own_question_is_not_a_second_ask(project, monkeypatch):
+    """The relay posts an ask again when a restart cuts its connection
+    (app/mcpstdio.py). The question was filed the first time, so the retry
+    dedupes onto it and the tally does not move - but a retry that files a
+    fresh question never reached the portal before, and counts."""
+    _quiet_notify(monkeypatch)
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    token = _mcp_begin(project, run_id)
+    _ask(run_id, token, "Blue or green?")
+    again = _ask(run_id, token, "Blue or green?", retry=True)
+    assert not again.get("isError"), again
+    assert portalmcp._SCOPES[run_id].asked == 1  # noqa: SLF001
+    assert db.count_open_questions(project["id"]) == 1
+    fresh = _ask(run_id, token, "Tabs or spaces?", retry=True)
+    assert not fresh.get("isError"), fresh
+    assert portalmcp._SCOPES[run_id].asked == 2  # noqa: SLF001
+    assert json.loads(db.get_run(run_id)["mcp_scope"])["asked"] == 2
+    # A plain repeat, no retry flag, is a second attempt on the same person.
+    _ask(run_id, token, "Blue or green?")
+    assert portalmcp._SCOPES[run_id].asked == 3  # noqa: SLF001
+
+
+def test_a_retried_ask_after_the_restart_finds_its_answer(project, monkeypatch):
+    """The whole point of the retry: the person answered while the portal was
+    off the air, and the retried ask comes back with the answer."""
+    _quiet_notify(monkeypatch)
+    run_id = db.create_run(project["id"], "build", "claude-fable-5-1")
+    token = _mcp_begin(project, run_id)
+    _ask(run_id, token, "Blue or green?")
+    question = db.open_questions(project["id"])[0]
+    db.answer_question(question["id"], "green")
+    _restart()
+    again = _ask(run_id, token, "Blue or green?", retry=True)
+    assert not again.get("isError"), again
+    assert "green" in again["content"][0]["text"]
+    assert portalmcp._SCOPES[run_id].asked == 1  # noqa: SLF001
 
 
 def test_a_failed_mcp_record_write_does_not_stop_the_run(project, monkeypatch):

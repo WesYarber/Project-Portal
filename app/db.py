@@ -592,6 +592,14 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # the relay keeps asking through the restart and the process that
         # comes back reads this to answer "keep holding". NULL when never held.
         ("hold_state", "TEXT"),
+        # Where `cost_usd` came from. NULL is the CLI's own figure off its
+        # result event (or no figure at all); 'transcript' means the run
+        # outlived a restart and the portal priced its transcript's token
+        # counts at list prices (app/pricing.py) - within a percent of the
+        # CLI's figure, but an estimate, and the pages say so rather than
+        # showing it beside watched runs' figures with nothing to tell them
+        # apart.
+        ("cost_source", "TEXT"),
         # When somebody reverted this run's commits from the portal. Set once
         # and never cleared: it is a record of what happened, not a toggle, and
         # the undo of an undo is a git operation rather than a second button.
@@ -852,6 +860,26 @@ def set_run_workspace_heads(
             (before, after, run_id),
         )
         conn.commit()
+
+
+COST_SOURCE_TRANSCRIPT = "transcript"
+
+
+def mark_cost_estimated(run_id: int) -> None:
+    """Note that this run's `cost_usd` was priced from its transcript rather
+    than reported by the CLI - see `cost_source` in `_ADDED_COLUMNS`."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET cost_source = ? WHERE id = ?", (COST_SOURCE_TRANSCRIPT, run_id)
+        )
+        conn.commit()
+
+
+def cost_is_estimated(row) -> bool:
+    """Whether a run row's cost figure is the portal's estimate (a recovered
+    run) rather than the CLI's own. False for a row without the column."""
+    return _row_get(row, "cost_source") == COST_SOURCE_TRANSCRIPT
 
 
 def mark_run_reverted(run_id: int) -> None:

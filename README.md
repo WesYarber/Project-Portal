@@ -454,6 +454,22 @@ that lands in the restart window is screened by the write guard once the portal
 is back rather than waved through. Only a portal down past the relay's budget
 wakes a held run; the boot journal line says when a survivor is still held.
 
+The MCP side keeps the same discipline. The run's ask tally rides on its row
+with the scope, so a survivor that had asked twice gets one more question, not
+three. And the stdio relay (`app/mcpstdio.py`) retries a portal that is not
+answering for the same budget as the hook relay, counted from the failure
+rather than from the start of the call, because an `ask` legitimately holds
+its connection open for minutes before a restart cuts it; the retried ask
+carries `retry: true` and the wait it has left, the portal dedupes it onto the
+question it already filed without counting it twice, and if the person
+answered while the portal was off the air the retry comes back with the
+answer. Before this the agent was told "the portal could not be reached, so
+nothing was filed", which was false. A recovered run's cost is marked as what
+it is, too: `runs.cost_source` records that the figure was priced from the
+transcript, and the run page and the activity table show it with a tilde and
+label it an estimate rather than beside watched runs' figures with nothing to
+tell them apart.
+
 ### Where the budget goes
 
 `/activity` groups the window's runs by project, ranked by cost rather than run

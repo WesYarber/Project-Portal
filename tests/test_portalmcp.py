@@ -211,7 +211,7 @@ def test_an_unanswered_question_ends_the_call_rather_than_the_run(project):
     result = _ask(project, question="Should I ship it?")
     assert result["isError"] is False
     text = _text(result)
-    assert "No answer in 0s" in text
+    assert "No answer yet" in text
     assert "carry on without it" in text
     # And it must not be asked twice - the report is the other channel.
     assert "leave it out of your report" in text
@@ -660,3 +660,159 @@ def test_junk_posted_to_the_call_endpoint_files_nothing(client, project):
     body = client.post(f"/mcp/call?run=1&token={token}", content=b"not json").json()
     assert body["isError"] is True
     assert db.open_questions(int(project["id"])) == []
+
+
+# --------------------------------------------------------------------------
+# The relay through a restart
+# --------------------------------------------------------------------------
+# The portal restarts itself to load an update, and a call that lands in that
+# window - or an `ask` holding its connection open when the window opens - used
+# to be reported as "the portal could not be reached, so nothing was filed".
+# Now the relay keeps posting for `POST_RETRY_SEC` after the first transport
+# failure, and a retried ask carries the wait it has left.
+
+import http.client
+import urllib.error
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+
+
+@pytest.fixture
+def clock(monkeypatch):
+    c = _Clock()
+    monkeypatch.setattr(mcpstdio, "_clock", c)
+    monkeypatch.setattr(mcpstdio, "_sleep", c.sleep)
+    return c
+
+
+def _posting(monkeypatch, script, clock=None):
+    """`_post` replaced by a script: each entry is an exception to raise, a
+    number of seconds the attempt takes before it dies (then it raises a
+    reset), or a dict to answer with. Records every payload posted."""
+    posted = []
+    steps = list(script)
+
+    def fake_post(url, payload, timeout):
+        posted.append(payload["arguments"])
+        step = steps.pop(0) if steps else {"content": [{"type": "text", "text": "late"}]}
+        if isinstance(step, (int, float)):
+            clock.now += step
+            raise ConnectionResetError("reset")
+        if isinstance(step, BaseException):
+            raise step
+        return step
+
+    monkeypatch.setattr(mcpstdio, "_post", fake_post)
+    return posted
+
+
+def test_a_call_is_retried_through_a_portal_that_is_not_answering(clock, monkeypatch):
+    answer = {"content": [{"type": "text", "text": "filed"}]}
+    posted = _posting(monkeypatch, [ConnectionRefusedError(), ConnectionRefusedError(), answer])
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    assert relay.call("ask", {"question": "Blue?", "wait_seconds": 30}) == answer
+    assert len(posted) == 3
+    assert "retry" not in posted[0]
+    assert posted[1]["retry"] is True and posted[2]["retry"] is True
+
+
+def test_a_call_gives_up_after_the_retry_budget(clock, monkeypatch):
+    posted = _posting(monkeypatch, [ConnectionRefusedError()] * 100)
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    started = clock.now
+    result = relay.call("ask", {"question": "Blue?"})
+    assert result["isError"]
+    assert "could not be reached" in result["content"][0]["text"]
+    assert clock.now - started == pytest.approx(mcpstdio.POST_RETRY_SEC, abs=mcpstdio.RETRY_INTERVAL_SEC)
+    assert len(posted) > 2
+
+
+def test_the_retry_budget_counts_from_the_failure_not_the_start(clock, monkeypatch):
+    """An ask holds its connection open for minutes before a restart cuts it;
+    that time is the person's, not the budget's."""
+    answer = {"content": [{"type": "text", "text": "green"}]}
+    posted = _posting(monkeypatch, [200, ConnectionRefusedError(), answer], clock)
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    assert relay.call("ask", {"question": "Blue?", "wait_seconds": 240}) == answer
+    assert len(posted) == 3
+
+
+def test_a_retried_ask_carries_the_wait_it_has_left(clock, monkeypatch):
+    answer = {"content": [{"type": "text", "text": "ok"}]}
+    posted = _posting(monkeypatch, [60, answer], clock)
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    relay.call("ask", {"question": "Blue?", "wait_seconds": 100})
+    assert posted[0] == {"question": "Blue?", "wait_seconds": 100}
+    assert posted[1]["wait_seconds"] == pytest.approx(40, abs=1) and posted[1]["retry"] is True
+
+
+def test_a_retried_ask_with_no_wait_given_counts_down_from_the_default(clock, monkeypatch):
+    posted = _posting(monkeypatch, [30, {"content": []}], clock)
+    mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"})
+    assert posted[1]["wait_seconds"] == pytest.approx(mcpstdio.DEFAULT_WAIT - 30, abs=1)
+
+
+def test_a_retried_ask_never_asks_for_a_negative_wait(clock, monkeypatch):
+    posted = _posting(monkeypatch, [500, {"content": []}], clock)
+    mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call(
+        "ask", {"question": "Blue?", "wait_seconds": "nonsense"}
+    )
+    assert posted[1]["wait_seconds"] == 0
+
+
+def test_a_retried_call_to_another_tool_keeps_its_arguments(clock, monkeypatch):
+    posted = _posting(monkeypatch, [ConnectionRefusedError(), {"content": []}])
+    mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("project_context", {"slug": "x"})
+    assert posted[1] == {"slug": "x", "retry": True}
+
+
+def test_an_http_error_is_the_portal_answering_and_is_not_retried(clock, monkeypatch):
+    err = urllib.error.HTTPError("http://x", 500, "boom", {}, None)
+    posted = _posting(monkeypatch, [err, {"content": []}])
+    result = mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"})
+    assert result["isError"] and len(posted) == 1
+
+
+def test_a_connection_the_server_closed_mid_response_is_retried(clock, monkeypatch):
+    answer = {"content": [{"type": "text", "text": "ok"}]}
+    posted = _posting(monkeypatch, [http.client.RemoteDisconnected("gone"), answer])
+    assert mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"}) == answer
+    assert len(posted) == 2
+
+
+def test_the_tool_list_is_retried_too(clock, monkeypatch):
+    calls = []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        if len(calls) < 3:
+            raise ConnectionRefusedError()
+        return {"tools": [{"name": "ask"}]}
+
+    monkeypatch.setattr(mcpstdio, "_get", fake_get)
+    assert mcpstdio.Relay("http://127.0.0.1:1", "7", "t").tools() == [{"name": "ask"}]
+    assert len(calls) == 3
+
+
+def test_the_relays_default_wait_is_the_portals():
+    assert mcpstdio.DEFAULT_WAIT == portalmcp.DEFAULT_WAIT
+
+
+def test_a_retried_ask_still_fits_under_the_relays_own_timeout():
+    """The worst case: an ask that waits its full cap, is cut by a restart,
+    and is retried at the end of the budget with no wait left."""
+    assert portalmcp.MAX_WAIT + mcpstdio.POST_RETRY_SEC < mcpstdio.CALL_TIMEOUT
+
+
+def test_the_relay_gives_the_portal_no_less_time_than_the_hook_relay_does():
+    from app import hookrelay
+    assert mcpstdio.POST_RETRY_SEC >= hookrelay.POST_RETRY_SEC

@@ -1006,6 +1006,9 @@ templates.env.globals["DEFAULT_MODEL"] = config.DEFAULT_MODEL
 # weight-vs-dollars choice lives in exactly one place.
 templates.env.filters["cost"] = usage.format_cost
 templates.env.globals["cost_noun"] = usage.cost_noun
+templates.env.globals["run_cost"] = usage.format_run_cost
+templates.env.globals["cost_label"] = usage.cost_label
+templates.env.globals["estimate_title"] = usage.ESTIMATE_TITLE
 templates.env.globals["COST_UNIT_CHOICES"] = usage.COST_UNIT_CHOICES
 
 # Last, deliberately: a template may reference a filter or a global at compile
@@ -2144,6 +2147,10 @@ def _decorate_runs(rows) -> list[dict]:
                 "ended_at": row["ended_at"],
                 "duration": usage.humanize_seconds(secs),
                 "cost_usd": row["cost_usd"],
+                # A recovered run's figure is the portal's estimate off its
+                # transcript, and the pages mark it (app/usage.py
+                # `format_run_cost`) rather than show it beside measured ones.
+                "cost_estimated": db.cost_is_estimated(row),
                 "num_turns": row["num_turns"],
                 # `_row_get`, because not every query that reaches here selects
                 # the whole runs table. See app/promptbudget.py for what these

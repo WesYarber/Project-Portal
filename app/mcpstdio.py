@@ -26,8 +26,10 @@ the other way to get dropped.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -42,6 +44,54 @@ PROTOCOL_VERSION = "2025-06-18"
 # the wait from the wrong end and lose an answer that was about to arrive.
 CALL_TIMEOUT = 300
 LIST_TIMEOUT = 15
+
+# How long a portal that is not answering is given before a call is reported
+# as failed - the same figure as `app/hookrelay.py`'s `POST_RETRY_SEC`, and for
+# the same reason: the portal restarts itself to load an update (about four
+# seconds off the air, ten at the outside while it waits for a request in
+# flight), and a call that lands in that window used to be reported as "the
+# portal could not be reached, so nothing was filed". For an `ask` cut off
+# mid-wait that was false - the question was filed the moment the first post
+# arrived - and it lost the answer the person was about to give. The budget is
+# counted from the *failure*, not from the start of the call, because an ask
+# legitimately holds its connection open for minutes before a restart cuts it.
+POST_RETRY_SEC = 10.0
+RETRY_INTERVAL_SEC = 0.5
+# `ask`'s own default wait, so a retried ask can be told how much of its wait
+# is left. `app/portalmcp.py` owns the figure; a test pins the two together.
+DEFAULT_WAIT = 120
+
+# Seams for the tests' fake clock.
+_clock = time.monotonic
+_sleep = time.sleep
+
+# What a transport failure looks like from urllib: a refused or reset
+# connection, nothing listening, a socket timeout (all OSError, which
+# URLError is), and a connection the server closed mid-response
+# (RemoteDisconnected is both, IncompleteRead is only an HTTPException).
+TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
+
+
+def _patiently(attempt, budget_sec: float):
+    """Call `attempt()` again through a portal that is not answering, until
+    `budget_sec` has passed since the first transport failure. An HTTP error
+    is the portal answering and is raised at once. Each retry is told it is
+    one, so the portal can tell a repeated ask from a new one."""
+    deadline = None
+    retry = False
+    while True:
+        try:
+            return attempt(retry)
+        except urllib.error.HTTPError:
+            raise
+        except TRANSPORT_ERRORS:
+            now = _clock()
+            if deadline is None:
+                deadline = now + budget_sec
+            elif now >= deadline:
+                raise
+            retry = True
+            _sleep(RETRY_INTERVAL_SEC)
 
 
 def _post(url: str, payload: dict, timeout: int) -> dict:
@@ -71,7 +121,9 @@ class Relay:
 
     def tools(self) -> list:
         try:
-            answer = _get(self._url("tools"), LIST_TIMEOUT)
+            answer = _patiently(
+                lambda retry: _get(self._url("tools"), LIST_TIMEOUT), POST_RETRY_SEC
+            )
         except Exception as exc:  # noqa: BLE001 - no tools beats a broken server
             print(f"portal mcp: could not list tools: {exc}", file=sys.stderr)
             return []
@@ -79,12 +131,17 @@ class Relay:
         return tools if isinstance(tools, list) else []
 
     def call(self, name: str, arguments) -> dict:
-        try:
-            answer = _post(
+        started = _clock()
+
+        def attempt(retry: bool) -> dict:
+            return _post(
                 self._url("call"),
-                {"name": name, "arguments": arguments},
+                {"name": name, "arguments": self._arguments(name, arguments, retry, started)},
                 CALL_TIMEOUT,
             )
+
+        try:
+            answer = _patiently(attempt, POST_RETRY_SEC)
         except Exception as exc:  # noqa: BLE001
             print(f"portal mcp: call failed: {exc}", file=sys.stderr)
             return {
@@ -103,6 +160,24 @@ class Relay:
                 "isError": True,
             }
         return answer
+
+    @staticmethod
+    def _arguments(name: str, arguments, retry: bool, started: float):
+        """The arguments as posted. A retry carries `retry: true`, and a
+        retried `ask` carries the wait it has left rather than the wait it
+        started with: the person's time to answer was promised once, and the
+        CLI's own tool timeout is counted from the first attempt."""
+        if not retry or not isinstance(arguments, dict):
+            return arguments
+        out = dict(arguments)
+        out["retry"] = True
+        if name == "ask":
+            try:
+                wait = int(out.get("wait_seconds", DEFAULT_WAIT))
+            except (TypeError, ValueError):
+                wait = DEFAULT_WAIT
+            out["wait_seconds"] = max(0, wait - int(_clock() - started))
+        return out
 
 
 def handle(relay: Relay, message: dict) -> dict | None:

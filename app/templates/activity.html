@@ -255,7 +255,7 @@
         <td class="small" data-label="model">{{ r.model }}</td>
         <td class="cell-status"><span class="badge run-status-{{ r.status }}">{{ r.status }}</span></td>
         <td class="small" data-label="took">{{ r.duration }}</td>
-        <td class="small" data-label="{{ cost_noun() }}">{{ r.cost_usd|cost }}</td>
+        <td class="small" data-label="{{ cost_noun() }}"{% if r.cost_estimated and r.cost_usd is not none %} title="{{ estimate_title }}"{% endif %}>{{ run_cost(r) }}</td>
         <td class="small" data-label="events">{{ r.events }}</td>
       </tr>
       {% endfor %}
