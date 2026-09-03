@@ -577,8 +577,8 @@ body.theme-walmart button.quick-option:hover { background: rgba(0, 83, 226, 0.38
    - in the right corner of the dashboard masthead, as tall as the masthead
      itself, so it fills the empty space beside the block letters. Wes chose
      the brand drawing there over a block-character rendering of the same
-     spark (2026-09-03); tools/spark_ascii.py still prints that version and
-     the preview's switcher still shows it.
+     spark (2026-09-03); the script that printed that rejected version lived
+     in the office node's workspace and is not part of this repo.
 
    Brand Center's one rule for the mark is no yellow spark on a low-contrast
    ground; Spark Yellow on this navy is about 12:1. */
