@@ -12,7 +12,9 @@
 ;   TimeoutStopSec=10  The default is 90s. Nothing currently comes close to
 ;                      that, but if some future background task ever refuses
 ;                      to unwind, this caps the outage at ten seconds instead
-;                      of a minute and a half.
+;                      of a minute and a half. (An agent's `ask` holding its
+;                      connection open used to be exactly that case; it now
+;                      lets go at the stop signal - see app/portalmcp.py.)
 ;   Restart=always     `on-failure` does not cover a clean-but-unintended exit,
 ;                      which would otherwise leave the portal simply gone.
 ;   RestartSec=2       The default 10s is 10s of error page after a crash.

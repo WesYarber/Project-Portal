@@ -1051,6 +1051,13 @@ async def on_startup() -> None:
     # a booting portal is entitled to draw. See db.reconcile_orphaned_runs_on_boot.
     if not smoke:
         db.reconcile_orphaned_runs_on_boot()
+    # An `ask` in flight must let go the moment this process is told to stop,
+    # or a restart waits out TimeoutStopSec and ends in a kill. See
+    # portalmcp.install_stop_signal; a no-op off the main thread.
+    try:
+        portalmcp.install_stop_signal()
+    except Exception:  # noqa: BLE001 - never let a signal chain stop the app booting
+        log.exception("Could not chain the stop signal")
     # Say the configuration problems out loud. Both of these otherwise present
     # only as something quietly not working - every printed link dead on the
     # phone that reads it, or every run failing inside the CLI with an auth

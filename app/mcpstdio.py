@@ -72,19 +72,31 @@ _sleep = time.sleep
 TRANSPORT_ERRORS = (OSError, http.client.HTTPException)
 
 
+class PortalRestarting(Exception):
+    """The portal answered an `ask` with `restarting: true`: it was told to
+    stop while the ask was waiting, and let the wait go rather than hold its
+    own restart open (`portalmcp._await_answer`). The question is filed; the
+    call is posted again once the portal is back, like one cut by a reset."""
+
+
 def _patiently(attempt, budget_sec: float):
     """Call `attempt()` again through a portal that is not answering, until
     `budget_sec` has passed since the first transport failure. An HTTP error
-    is the portal answering and is raised at once. Each retry is told it is
-    one, so the portal can tell a repeated ask from a new one."""
+    is the portal answering and is raised at once; an answer that says the
+    portal is restarting is the portal going away, and counts as a failure.
+    Each retry is told it is one, so the portal can tell a repeated ask from
+    a new one."""
     deadline = None
     retry = False
     while True:
         try:
-            return attempt(retry)
+            answer = attempt(retry)
+            if isinstance(answer, dict) and answer.get("restarting"):
+                raise PortalRestarting()
+            return answer
         except urllib.error.HTTPError:
             raise
-        except TRANSPORT_ERRORS:
+        except TRANSPORT_ERRORS + (PortalRestarting,):
             now = _clock()
             if deadline is None:
                 deadline = now + budget_sec
@@ -142,6 +154,22 @@ class Relay:
 
         try:
             answer = _patiently(attempt, POST_RETRY_SEC)
+        except PortalRestarting:
+            # It answered, so the ask was filed; only the restart never came
+            # back inside the budget. Say what is true, not "nothing was filed".
+            print("portal mcp: the portal restarted and did not come back", file=sys.stderr)
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "The portal went down for a restart and has not come back "
+                                f"in {int(POST_RETRY_SEC)}s. If this was `ask`, the question "
+                                "is filed and waiting, so carry on without the answer and "
+                                "leave it out of your report; anything else was not done.",
+                    }
+                ],
+                "isError": True,
+            }
         except Exception as exc:  # noqa: BLE001
             print(f"portal mcp: call failed: {exc}", file=sys.stderr)
             return {

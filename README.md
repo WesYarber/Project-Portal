@@ -464,7 +464,15 @@ carries `retry: true` and the wait it has left, the portal dedupes it onto the
 question it already filed without counting it twice, and if the person
 answered while the portal was off the air the retry comes back with the
 answer. Before this the agent was told "the portal could not be reached, so
-nothing was filed", which was false. A recovered run's cost is marked as what
+nothing was filed", which was false. The restart itself does not wait on the
+ask either: uvicorn will not exit while a request is in flight, and an ask
+holds its connection open for minutes, so a restart under one used to run out
+the unit's `TimeoutStopSec` and end in a kill. Now the stop signal is chained
+in front of uvicorn's own handler (`portalmcp.install_stop_signal`, from the
+startup event), every waiting ask lets go the moment it arrives and answers
+`restarting: true`, and the relay reads that as the portal going away and posts
+the ask again once it is back. Measured: the ask returns within a few
+milliseconds of SIGTERM and the process is gone 0.2 s later. A recovered run's cost is marked as what
 it is, too: `runs.cost_source` records that the figure was priced from the
 transcript, and the run page and the activity table show it with a tilde and
 label it an estimate rather than beside watched runs' figures with nothing to

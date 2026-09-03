@@ -76,8 +76,10 @@ import asyncio
 import json
 import logging
 import secrets as _secrets
+import signal
 import sqlite3
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -126,6 +128,89 @@ _SCOPES: dict[int, _Scope] = {}
 # leave the questions page urging somebody to answer a run that died an hour
 # ago. Nothing here needs to survive a restart, and nothing should.
 _WAITING: dict[int, int] = {}
+
+# Set the moment this process is told to stop (SIGTERM from a service restart,
+# SIGINT from a terminal), read by every `ask` holding a connection open. An
+# ask legitimately blocks for minutes, and uvicorn will not exit while a
+# request is in flight; so a restart under an ask used to take the whole of
+# the unit's TimeoutStopSec (10 s) and end with systemd killing the process,
+# where a restart with nothing in flight takes about a second. Now the wait
+# lets go at once and answers "restarting" - the relay (`app/mcpstdio.py`)
+# reads that as the portal going away and posts the ask again once it is
+# back, the way it already does for a connection cut mid-wait. The flag is a
+# plain bool because a signal handler may run between any two bytecodes; the
+# event beside it is what wakes a sleeping wait without waiting out its poll.
+_STOPPING = False
+_STOP: Optional[tuple[asyncio.AbstractEventLoop, asyncio.Event]] = None
+_SIGNALS_CHAINED = False
+STOP_SIGNALS = (signal.SIGTERM, signal.SIGINT)
+
+
+def stopping() -> bool:
+    return _STOPPING
+
+
+def mark_stopping() -> None:
+    """Record that the process is on its way out and wake every waiting ask.
+
+    Safe to call from a signal handler: `call_soon_threadsafe` is the one
+    loop entry point designed for that, and it is what asyncio's own signal
+    handling is built on."""
+    global _STOPPING
+    _STOPPING = True
+    if _STOP is not None:
+        loop, event = _STOP
+        try:
+            loop.call_soon_threadsafe(event.set)
+        except RuntimeError:
+            pass  # the loop is already closed; nothing is waiting on it
+
+
+def _stop_event() -> asyncio.Event:
+    """The stop event for the running loop. An asyncio.Event binds to the
+    first loop that waits on it, and the tests run one loop per test, so a
+    fresh event is made whenever the loop has changed."""
+    global _STOP
+    loop = asyncio.get_running_loop()
+    if _STOP is None or _STOP[0] is not loop:
+        event = asyncio.Event()
+        if _STOPPING:
+            event.set()
+        _STOP = (loop, event)
+    return _STOP[1]
+
+
+def install_stop_signal() -> bool:
+    """Chain `mark_stopping` in front of whatever already handles SIGTERM and
+    SIGINT - uvicorn's own `handle_exit`, when this is the service starting.
+
+    uvicorn installs its handlers with `signal.signal` before the lifespan
+    startup runs, so reading the current handler here and calling it after
+    ours keeps its behavior exactly (a second SIGINT still forces the exit).
+    Signals can only be handled from the main thread, which the test client's
+    lifespan is not; there this is a no-op and says so. Installed once per
+    process: a second call would chain the chain."""
+    global _SIGNALS_CHAINED
+    if _SIGNALS_CHAINED:
+        return True
+    if threading.current_thread() is not threading.main_thread():
+        log.debug("Not on the main thread; the stop signal is not chained")
+        return False
+    for sig in STOP_SIGNALS:
+        previous = signal.getsignal(sig)
+
+        def chained(signum, frame, previous=previous, sig=sig):
+            mark_stopping()
+            if callable(previous):
+                previous(signum, frame)
+            elif previous == signal.SIG_DFL:
+                # Nothing was handling it: do what the default would have.
+                signal.signal(sig, signal.SIG_DFL)
+                signal.raise_signal(sig)
+
+        signal.signal(sig, chained)
+    _SIGNALS_CHAINED = True
+    return True
 
 
 def waiting_run(question_id: int) -> Optional[int]:
@@ -481,6 +566,19 @@ async def _ask(scope: _Scope, args: dict) -> dict:
     outcome, answer = await _watch(scope, int(row["id"]), wait)
     if outcome == "answered":
         return _result(f"{name} answered:\n\n{answer}\n\nDo not repeat it in your report.")
+    if outcome == "restarting":
+        # The relay retries this (`app/mcpstdio.py` reads the flag); the text
+        # is for a relay from before the flag existed, which hands it to the
+        # model as the answer, and it has to be an honest one.
+        return {
+            **_result(
+                f"The portal is restarting to load an update. Your question is filed "
+                f"on {project['title']} and waiting, so ask it again in the same words "
+                f"to keep waiting for the answer, or carry on without it and leave it "
+                f"out of your report's \"questions\" list."
+            ),
+            "restarting": True,
+        }
     if outcome == "skipped":
         return _result(
             f"{name} put the question aside for now rather than answering it. "
@@ -520,11 +618,14 @@ async def _watch(scope: _Scope, question_id: int, wait: int) -> tuple[str, str]:
 async def _await_answer(question_id: int, wait: int) -> tuple[str, str]:
     """Watch one question until it stops being open, or the wait runs out.
 
-    Returns ("answered", text) / ("skipped", "") / ("waiting", ""). Polling
-    rather than a condition variable on purpose: an answer can arrive from the
-    web UI, a push action, the Telegram bot or another process entirely, and a
-    signal every one of those would have to remember to raise is a signal one of
-    them eventually forgets.
+    Returns ("answered", text) / ("skipped", "") / ("waiting", "") /
+    ("restarting", ""). Polling rather than a condition variable on purpose:
+    an answer can arrive from the web UI, a push action, the Telegram bot or
+    another process entirely, and a signal every one of those would have to
+    remember to raise is a signal one of them eventually forgets. The one
+    thing that does wake it early is the process being told to stop, and the
+    row is read before that is checked, so an answer already given wins over
+    a restart.
     """
     deadline = asyncio.get_event_loop().time() + max(0, wait)
     while True:
@@ -536,9 +637,15 @@ async def _await_answer(question_id: int, wait: int) -> tuple[str, str]:
             return "answered", _answer_of(row) or "(no text)"
         if status in ("dismissed", "deleted"):
             return "skipped", ""
+        if _STOPPING:
+            return "restarting", ""
         if asyncio.get_event_loop().time() >= deadline:
             return "waiting", ""
-        await asyncio.sleep(min(POLL_SEC, max(0.05, deadline - asyncio.get_event_loop().time())))
+        nap = min(POLL_SEC, max(0.05, deadline - asyncio.get_event_loop().time()))
+        try:
+            await asyncio.wait_for(_stop_event().wait(), timeout=nap)
+        except asyncio.TimeoutError:
+            pass
 
 
 def _answer_of(row: sqlite3.Row) -> str:

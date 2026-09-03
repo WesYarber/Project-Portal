@@ -831,3 +831,246 @@ def test_an_unreadable_wait_counts_down_from_the_default_not_from_zero(clock, mo
         "ask", {"question": "Blue?", "wait_seconds": "nonsense"}
     )
     assert posted[1]["wait_seconds"] == pytest.approx(mcpstdio.DEFAULT_WAIT - 30, abs=1)
+
+
+# --- the portal told to stop while an ask is waiting -------------------------
+#
+# uvicorn will not exit while a request is in flight, and an ask holds its
+# connection open for minutes, so a restart under an ask used to wait out the
+# unit's TimeoutStopSec (10 s) and end with systemd killing the process. Now
+# the wait lets go the moment the stop signal arrives and answers
+# `restarting: true`, which the relay reads as the portal going away and
+# retries once it is back.
+
+import signal
+import threading
+import time
+
+
+@pytest.fixture
+def not_stopping(monkeypatch):
+    monkeypatch.setattr(portalmcp, "_STOPPING", False)
+    monkeypatch.setattr(portalmcp, "_STOP", None)
+
+
+def _ask_until_filed(project, token, wait_seconds=30):
+    """Start an ask and return (task, question row) once its row exists."""
+
+    async def drive():
+        task = asyncio.create_task(
+            portalmcp.call(1, token, "ask", {"question": "Ship it?", "wait_seconds": wait_seconds})
+        )
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            rows = db.open_questions(int(project["id"]))
+            if rows:
+                return task, rows[0]
+        raise AssertionError("the ask never filed its question")
+
+    return drive
+
+
+def test_an_ask_in_flight_lets_go_the_moment_the_portal_is_told_to_stop(project, not_stopping):
+    token = _begin(project)
+    filed = _ask_until_filed(project, token)
+
+    async def drive():
+        task, row = await filed()
+        assert portalmcp._WAITING.get(int(row["id"])) == 1
+        before = time.monotonic()
+        portalmcp.mark_stopping()
+        result = await asyncio.wait_for(task, timeout=10)
+        return result, time.monotonic() - before, row
+
+    result, took, row = asyncio.run(drive())
+    assert result["restarting"] is True
+    assert result["isError"] is False
+    assert "filed" in _text(result) and "ask it again" in _text(result)
+    # Woken by the stop, not by the next poll: well inside POLL_SEC.
+    assert took < portalmcp.POLL_SEC / 2
+    # And the questions page is no longer told a run is holding for it.
+    assert int(row["id"]) not in portalmcp._WAITING
+
+
+def test_an_answer_already_given_wins_over_the_stop(project, not_stopping):
+    token = _begin(project)
+    filed = _ask_until_filed(project, token)
+
+    async def drive():
+        task, row = await filed()
+        db.answer_question(int(row["id"]), "yes, ship it")
+        portalmcp.mark_stopping()
+        return await asyncio.wait_for(task, timeout=10)
+
+    result = asyncio.run(drive())
+    assert "restarting" not in result
+    assert "yes, ship it" in _text(result)
+
+
+def test_a_stopping_portal_answers_a_fresh_ask_with_restarting_at_once(project, not_stopping):
+    token = _begin(project)
+    portalmcp.mark_stopping()
+    result = _ask(project, token=token, question="Blue?", wait_seconds=30)
+    assert result["restarting"] is True
+    assert result["isError"] is False
+    # The question was filed all the same - that is what the text promises.
+    assert len(db.open_questions(int(project["id"]))) == 1
+
+
+def test_the_retry_after_the_restart_lands_on_the_same_question_and_is_not_a_second_ask(
+    project, not_stopping, monkeypatch
+):
+    token = _begin(project)
+    portalmcp.mark_stopping()
+    first = _ask(project, token=token, question="Blue?", wait_seconds=30)
+    assert first["restarting"] is True
+    assert portalmcp._SCOPES[1].asked == 1
+    # The portal comes back: a new process, nothing stopping.
+    monkeypatch.setattr(portalmcp, "_STOPPING", False)
+    monkeypatch.setattr(portalmcp, "_STOP", None)
+    rows = db.open_questions(int(project["id"]))
+    db.answer_question(int(rows[0]["id"]), "green")
+    again = _ask(project, token=token, question="Blue?", wait_seconds=30, retry=True)
+    assert "restarting" not in again
+    assert "green" in _text(again)
+    assert portalmcp._SCOPES[1].asked == 1
+    with db.get_conn() as conn:
+        count = conn.execute("select count(*) from questions where project_id=?",
+                             (int(project["id"]),)).fetchone()[0]
+    assert count == 1
+
+
+def test_the_stop_event_follows_the_running_loop(not_stopping):
+    """One loop per test, and an asyncio.Event binds to the first loop that
+    waits on it - so the event is remade when the loop changes, or the second
+    wait would raise 'bound to a different event loop'."""
+
+    async def get():
+        return portalmcp._stop_event()
+
+    first = asyncio.run(get())
+    second = asyncio.run(get())
+    assert first is not second
+
+
+def test_the_stop_event_made_after_the_stop_is_already_set(not_stopping):
+    portalmcp.mark_stopping()
+
+    async def get():
+        return portalmcp._stop_event().is_set()
+
+    assert asyncio.run(get()) is True
+
+
+def test_marking_stopping_with_no_loop_yet_does_not_blow_up(not_stopping):
+    portalmcp.mark_stopping()
+    assert portalmcp.stopping() is True
+
+
+def test_marking_stopping_on_a_closed_loop_does_not_blow_up(not_stopping):
+    async def get():
+        return portalmcp._stop_event()
+
+    asyncio.run(get())  # the loop this bound to is closed now
+    portalmcp.mark_stopping()
+    assert portalmcp.stopping() is True
+
+
+def test_the_stop_signal_is_chained_in_front_of_the_existing_handler(not_stopping, monkeypatch):
+    monkeypatch.setattr(portalmcp, "_SIGNALS_CHAINED", False)
+    seen = []
+    saved = {sig: signal.getsignal(sig) for sig in portalmcp.STOP_SIGNALS}
+    try:
+        for sig in portalmcp.STOP_SIGNALS:
+            signal.signal(sig, lambda signum, frame: seen.append(signum))
+        assert portalmcp.install_stop_signal() is True
+        # A second install must not chain the chain: the handler stays put.
+        chained = signal.getsignal(signal.SIGTERM)
+        assert portalmcp.install_stop_signal() is True
+        assert signal.getsignal(signal.SIGTERM) is chained
+        signal.raise_signal(signal.SIGTERM)
+    finally:
+        for sig, handler in saved.items():
+            signal.signal(sig, handler)
+    assert portalmcp.stopping() is True
+    assert seen == [signal.SIGTERM]
+
+
+def test_the_stop_signal_is_not_chained_off_the_main_thread(not_stopping, monkeypatch):
+    monkeypatch.setattr(portalmcp, "_SIGNALS_CHAINED", False)
+    saved = {sig: signal.getsignal(sig) for sig in portalmcp.STOP_SIGNALS}
+    out = []
+    t = threading.Thread(target=lambda: out.append(portalmcp.install_stop_signal()))
+    t.start()
+    t.join()
+    assert out == [False]
+    assert portalmcp._SIGNALS_CHAINED is False
+    for sig, handler in saved.items():
+        assert signal.getsignal(sig) is handler
+
+
+@pytest.mark.asyncio
+async def test_the_service_startup_chains_the_stop_signal(monkeypatch):
+    """Pins the wiring: the chain is only worth anything if the service
+    actually installs it."""
+    from app import main
+
+    called = []
+    monkeypatch.setattr(portalmcp, "install_stop_signal", lambda: called.append(True) or True)
+    monkeypatch.setattr(db, "reconcile_orphaned_runs_on_boot", lambda: None)
+    monkeypatch.setattr(main.memory, "snapshot_all", lambda: None)
+    monkeypatch.setattr(main.site, "warnings", lambda: [])
+    monkeypatch.setattr(main.spawnauth, "problems", lambda: [])
+    monkeypatch.setattr(main.asyncio, "create_task", lambda coro: coro.close())
+    try:
+        await main.on_startup()
+    finally:
+        main._BACKGROUND_TASKS.clear()
+    assert called == [True]
+
+
+# --- and the relay's side of it ----------------------------------------------
+
+
+def _restarting():
+    return {"content": [{"type": "text", "text": "restarting"}], "isError": False, "restarting": True}
+
+
+def test_a_portal_that_says_it_is_restarting_is_retried_like_a_dead_one(clock, monkeypatch):
+    answer = {"content": [{"type": "text", "text": "green"}]}
+    posted = _posting(monkeypatch, [_restarting(), ConnectionRefusedError(), answer], clock)
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    assert relay.call("ask", {"question": "Blue?", "wait_seconds": 30}) == answer
+    assert len(posted) == 3
+    assert "retry" not in posted[0]
+    assert posted[1]["retry"] is True and posted[2]["retry"] is True
+
+
+def test_a_restarting_answer_never_reaches_the_cli(clock, monkeypatch):
+    posted = _posting(monkeypatch, [_restarting()] * 100, clock)
+    relay = mcpstdio.Relay("http://127.0.0.1:1", "7", "t")
+    started = clock.now
+    result = relay.call("ask", {"question": "Blue?"})
+    assert result["isError"] is True
+    assert "restarting" not in result
+    assert "question is filed" in result["content"][0]["text"]
+    assert "could not be reached" not in result["content"][0]["text"]
+    assert clock.now - started == pytest.approx(mcpstdio.POST_RETRY_SEC, abs=0.01)
+    assert len(posted) > 2
+
+
+def test_a_restarting_flag_that_is_false_is_an_ordinary_answer(clock, monkeypatch):
+    answer = {"content": [{"type": "text", "text": "ok"}], "restarting": False}
+    posted = _posting(monkeypatch, [answer], clock)
+    assert mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"}) == answer
+    assert len(posted) == 1
+
+
+def test_a_portal_that_dies_after_saying_restarting_is_still_the_same_budget(clock, monkeypatch):
+    """The budget counts from the first failure - the restarting answer - so a
+    dead portal afterwards does not get a second budget."""
+    posted = _posting(monkeypatch, [_restarting()] + [ConnectionRefusedError()] * 100, clock)
+    started = clock.now
+    result = mcpstdio.Relay("http://127.0.0.1:1", "7", "t").call("ask", {"question": "Blue?"})
+    assert result["isError"] is True
+    assert clock.now - started == pytest.approx(mcpstdio.POST_RETRY_SEC, abs=0.01)
