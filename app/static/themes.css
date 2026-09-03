@@ -499,6 +499,103 @@ body.theme-amber button.quick-option { background: rgba(255, 176, 46, 0.10); }
 body.theme-amber button.quick-option:hover { background: rgba(255, 176, 46, 0.22); }
 
 
+/* Walmart ----------------------------------------------------------------
+   Dark stock, mono voice: the terminal look printed on a navy taken down
+   from Bentonville Blue, with True Blue and Spark Yellow where the CRT had
+   cyan and orange. Built for the office node, so that install is
+   unmistakably not the home one at a glance - same portal, different
+   building.
+
+   Brand values (Walmart's 2025 refresh): True Blue #0053e2, Spark Yellow
+   #ffc220, Bentonville Blue #001e60, Everyday Blue #4dbdf5, Sky Blue #a9ddf7.
+   Bentonville Blue as printed is too bright a ground to read on for long, so
+   the page and the window sit at #001138, about half its lightness, and the
+   title bar keeps the printed value. True Blue is tuned for white paper and
+   reads dim as text on the navy, so the text roles carry it lifted; the
+   fills below use it as printed. */
+
+body.theme-walmart {
+  --terminal-fg: hsl(200, 83%, 82%);          /* Sky Blue, #a9ddf7 */
+  --terminal-dim: hsl(205, 50%, 68%);
+  --terminal-glow: rgba(77, 189, 245, 0.16);  /* Everyday Blue */
+
+  --bg-color: hsl(222, 100%, 11%);            /* Bentonville Blue, darkened: #001138 */
+  --window-bg: rgba(0, 14, 48, 0.86);
+  --window-border: rgba(77, 189, 245, 0.28);
+  --header-bg: rgba(0, 30, 96, 0.92);         /* the title bar is Bentonville Blue as printed */
+  --panel-bg: rgba(0, 4, 20, 0.5);
+
+  --ansi-blue: hsl(218, 100%, 70%);           /* True Blue, lifted for text on the navy */
+  --ansi-cyan: hsl(200, 89%, 63%);            /* Everyday Blue, #4dbdf5 */
+  --ansi-green: hsl(150, 70%, 58%);
+  --ansi-yellow: hsl(44, 100%, 56%);          /* Spark Yellow, #ffc220 */
+  --ansi-red: hsl(4, 90%, 70%);
+  --ansi-magenta: hsl(280, 70%, 76%);
+  --portal-blue: hsl(218, 100%, 70%);
+  --portal-orange: hsl(44, 100%, 56%);        /* the second O is the spark's yellow */
+}
+html:has(> body.theme-walmart) { background-color: hsl(222, 100%, 11%) !important; }
+
+/* The four heatmap steps are a hard-coded neon green in style.css. Activity
+   stays green here - Wes asked that the green elements not be recolored to
+   the spark's yellow - restated only so the ramp is this theme's own green
+   from step one to step four instead of the CRT neon. */
+body.theme-walmart .heat-1 { background: rgba(73, 223, 148, 0.30); }
+body.theme-walmart .heat-2 { background: rgba(73, 223, 148, 0.54); }
+body.theme-walmart .heat-3 { background: rgba(73, 223, 148, 0.78); }
+body.theme-walmart .heat-4 { background: var(--ansi-green); }
+
+/* The three button washes style.css spells out as CRT literals: the default
+   blue, the affirmative green and the destructive red. The default wash is
+   True Blue as printed - a fill can carry the brand value where text cannot. */
+body.theme-walmart button,
+body.theme-walmart .btn { background: rgba(0, 83, 226, 0.22); }
+body.theme-walmart button:hover,
+body.theme-walmart .btn:hover { background: rgba(0, 83, 226, 0.36); }
+body.theme-walmart button.go,
+body.theme-walmart .btn.go {
+  background: rgba(74, 222, 160, 0.12);
+  border-color: rgba(74, 222, 160, 0.45);
+}
+body.theme-walmart button.go:hover,
+body.theme-walmart .btn.go:hover { background: rgba(74, 222, 160, 0.24); color: var(--ansi-green); }
+body.theme-walmart button.danger,
+body.theme-walmart .btn.danger { background: rgba(255, 120, 110, 0.10); }
+body.theme-walmart button.danger:hover,
+body.theme-walmart .btn.danger:hover { background: rgba(255, 120, 110, 0.20); color: var(--ansi-red); }
+body.theme-walmart button.quick-option { background: rgba(0, 83, 226, 0.22); }
+body.theme-walmart button.quick-option:hover { background: rgba(0, 83, 226, 0.38); }
+
+/* The spark, drawn inline so the theme is still one stylesheet and no
+   request. Two placements, both inside what a theme may write (background-*
+   and padding can neither move nor hide a control), and both the brand's own
+   drawing - six tapered rays, one path turned by 60 degrees, the same
+   SPARK_RAY the tab icon is drawn from in deploy/make_icons.py:
+
+   - after the wordmark in every page's title bar, the way the brand sets the
+     spark after the word: small, at the cap height of the letters;
+   - in the right corner of the dashboard masthead, as tall as the masthead
+     itself, so it fills the empty space beside the block letters. Wes chose
+     the brand drawing there over a block-character rendering of the same
+     spark (2026-09-03); tools/spark_ascii.py still prints that version and
+     the preview's switcher still shows it.
+
+   Brand Center's one rule for the mark is no yellow spark on a low-contrast
+   ground; Spark Yellow on this navy is about 12:1. */
+body.theme-walmart .wordmark {
+  padding-right: 1.5em;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3Cpath id='ray' d='M 32.00,2.00 C 29.41,2.00 27.31,4.10 27.31,6.68 C 27.31,7.81 28.45,19.85 28.85,21.05 C 29.30,22.43 30.57,23.35 32.00,23.35 C 33.43,23.35 34.70,22.43 35.15,21.05 C 35.55,19.85 36.69,7.81 36.69,6.68 C 36.69,4.10 34.59,2.00 32.00,2.00 Z'/%3E%3C/defs%3E%3Cg fill='%23ffc220'%3E%3Cuse href='%23ray' transform='rotate(0 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(60 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(120 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(180 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(240 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(300 32 32)'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 1.15em;
+}
+body.theme-walmart .banner {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3Cpath id='ray' d='M 32.00,2.00 C 29.41,2.00 27.31,4.10 27.31,6.68 C 27.31,7.81 28.45,19.85 28.85,21.05 C 29.30,22.43 30.57,23.35 32.00,23.35 C 33.43,23.35 34.70,22.43 35.15,21.05 C 35.55,19.85 36.69,7.81 36.69,6.68 C 36.69,4.10 34.59,2.00 32.00,2.00 Z'/%3E%3C/defs%3E%3Cg fill='%23ffc220'%3E%3Cuse href='%23ray' transform='rotate(0 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(60 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(120 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(180 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(240 32 32)'/%3E%3Cuse href='%23ray' transform='rotate(300 32 32)'/%3E%3C/g%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 0.5rem center;
+  background-size: contain;
+}
+
 /* Paper -------------------------------------------------------------------
    Warm off-white stock, ink-dark text, a serif for anything you actually read,
    and one restrained ink-blue accent. Everything the CRT theme does with glow,

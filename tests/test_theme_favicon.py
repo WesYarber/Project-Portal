@@ -166,16 +166,17 @@ def test_every_shipped_mark_still_matches_its_palette():
     from app import main
 
     for theme, palette in mod.mark_palettes().items():
+        raster, svg_of = mod.mark_for(theme)
         for base, edge in mod.MARK_SIZES.items():
             name = main.themed_icon_name(base, theme)
             shipped = Image.open(STATIC / name).convert("RGB")
             assert shipped.size == (edge, edge), name
-            want = mod.portal_mark(edge, palette)
+            want = raster(edge, palette)
             assert list(shipped.getdata()) == list(want.getdata()), (
                 f"{name} is stale - run venv/bin/python deploy/make_icons.py"
             )
         svg = STATIC / main.themed_icon_name("favicon.svg", theme)
-        assert svg.read_text() == mod.mark_svg(palette), f"{svg.name} is stale"
+        assert svg.read_text() == svg_of(palette), f"{svg.name} is stale"
 
 
 def test_the_unsuffixed_files_are_the_default_theme_untouched():
@@ -207,6 +208,130 @@ def test_the_generator_and_the_server_name_files_the_same_way():
             assert mod.themed_name(base, theme) == main.themed_icon_name(base, theme)
     assert main.themed_icon_name("favicon.svg", "paper") == "favicon-paper.svg"
     assert main.themed_icon_name("favicon-32.png", "paper") == "favicon-32-paper.png"
+
+
+# --------------------------------------------------------------------------
+# A second mark, drawn from the same palette
+#
+# The office node's walmart theme wears Walmart's spark on its tab rather than
+# the two portals. That is a different DRAWING, not a different source of
+# colors: the table in the generator says which theme wears which mark, and
+# every mark reads the same three palette variables out of the stylesheet, so
+# the load-bearing claim above - the CSS is the only place the colors live -
+# survives a theme that does not look like the rest.
+# --------------------------------------------------------------------------
+
+def _palette():
+    """A synthetic triple with three colors nothing could confuse: the tile,
+    the left/blue ring, the right/orange ring (which the spark uses)."""
+    return ((0, 0, 0), (0, 0, 255), (255, 0, 0))
+
+
+def test_every_theme_wears_the_rings_unless_the_table_says_otherwise():
+    mod = _make_icons()
+    assert mod.mark_for(DEFAULT_THEME) == (mod.portal_mark, mod.mark_svg)
+    assert mod.mark_for("walmart") == (mod.spark_mark, mod.spark_svg)
+    for theme in THEMES:
+        if theme not in mod.THEME_MARK:
+            assert mod.mark_for(theme) == (mod.portal_mark, mod.mark_svg), theme
+
+
+def test_the_mark_table_names_only_shipped_themes_and_drawn_marks():
+    """A theme renamed out from under the table would silently go back to the
+    rings; a mark name with no drawing behind it would be a KeyError in the
+    middle of a generator run, with half the icons written."""
+    mod = _make_icons()
+    for theme, mark in mod.THEME_MARK.items():
+        assert theme in THEMES, theme
+        assert mark in mod.MARKS, mark
+    assert mod.DEFAULT_MARK in mod.MARKS
+
+
+def test_an_unknown_mark_name_raises_rather_than_shipping_the_rings(monkeypatch):
+    mod = _make_icons()
+    monkeypatch.setitem(mod.THEME_MARK, "walmart", "starburst")
+    with pytest.raises(ValueError, match="unknown mark 'starburst'"):
+        mod.mark_for("walmart")
+
+
+def test_the_spark_is_six_rays_of_one_color_around_an_empty_center():
+    """Sampled at the geometry the generator says it draws: the tip of every
+    ray is the spark color, the middle of every gap between rays is the tile,
+    the center is the tile, and the palette's middle color - the blue ring the
+    spark has no use for - never appears. A two-tone spark would be a
+    different mark from the one on the page."""
+    import math
+
+    mod = _make_icons()
+    tile, blue, spark = _palette()
+    img = mod.spark_mark(64, _palette())
+    px = img.load()
+    assert px[0, 0] == tile and px[32, 32] == tile
+    for i in range(mod.SPARK_RAYS):
+        a = math.radians(i * 360 / mod.SPARK_RAYS)
+        gap = math.radians((i + 0.5) * 360 / mod.SPARK_RAYS)
+        # Radius 22 is well inside a ray, which runs from about 8.6 to 30.
+        tip = (round(32 - 22 * math.sin(-a)), round(32 - 22 * math.cos(a)))
+        between = (round(32 - 22 * math.sin(-gap)), round(32 - 22 * math.cos(gap)))
+        assert px[tip] == spark, (i, tip, px[tip])
+        assert px[between] == tile, (i, between, px[between])
+    assert blue not in set(img.getdata())
+
+
+def test_the_spark_svg_is_the_same_six_rays_from_the_same_numbers():
+    """The raster and the SVG share SPARK_RAY and the `i * 60` turn, and the
+    SVG has to say so in its own terms: one path per ray carrying that very
+    string, turned about the center, in the spark color on the tile."""
+    mod = _make_icons()
+    svg = mod.spark_svg(_palette())
+    rays = re.findall(r'<path d="([^"]+)" fill="([^"]+)" transform="rotate\((\d+) 32 32\)"/>', svg)
+    assert len(rays) == mod.SPARK_RAYS
+    assert {r[0] for r in rays} == {mod.SPARK_RAY}
+    assert {r[1] for r in rays} == {"rgb(255,0,0)"}
+    assert [int(r[2]) for r in rays] == [i * 60 for i in range(6)]
+    assert 'rx="10" fill="rgb(0,0,0)"' in svg
+    assert "rgb(0,0,255)" not in svg
+
+
+def test_the_ray_is_the_brands_tapered_ray_not_a_capsule():
+    """The unrotated ray points straight up from the center: its tip is on
+    the axis at radius 30, its inner end on the axis at about radius 8.6, it
+    is mirror-symmetric about that axis, and it is narrower at the inner end
+    than at the cap - the taper that makes it the brand's spark and not the
+    portal's earlier six-capsule stand-in."""
+    mod = _make_icons()
+    pts = mod._flatten_ray()
+    assert pts[0] == pts[-1] == (32.0, 2.0)
+    assert 23 < max(y for _, y in pts) < 24
+    xs = [x for x, _ in pts]
+    assert abs(max(xs) - 32) == pytest.approx(abs(32 - min(xs)), abs=0.02)
+    at_cap = max(x for x, y in pts if y < 8) - min(x for x, y in pts if y < 8)
+    at_inner = max(x for x, y in pts if y > 20) - min(x for x, y in pts if y > 20)
+    assert at_inner < at_cap
+
+
+def test_a_corrupted_ray_string_raises_instead_of_drawing_something(monkeypatch):
+    mod = _make_icons()
+    monkeypatch.setattr(mod, "SPARK_RAY", "M 32,2 L 40,20 Z")
+    with pytest.raises(ValueError, match="unexpected token 'L'"):
+        mod._flatten_ray()
+
+
+def test_the_walmart_tab_is_the_spark_and_not_the_rings():
+    """The one that proves the table is consulted rather than merely present:
+    the committed walmart icon matches the spark drawn from its palette and
+    differs from the rings drawn from the same palette."""
+    Image = pytest.importorskip("PIL.Image", reason="Pillow is build-time only")
+    mod = _make_icons()
+    from app import main
+
+    palette = mod.mark_palettes()["walmart"]
+    shipped = Image.open(STATIC / main.themed_icon_name("favicon-32.png", "walmart"))
+    shipped = list(shipped.convert("RGB").getdata())
+    assert shipped == list(mod.spark_mark(32, palette).getdata())
+    assert shipped != list(mod.portal_mark(32, palette).getdata())
+    svg = (STATIC / main.themed_icon_name("favicon.svg", "walmart")).read_text()
+    assert svg == mod.spark_svg(palette) and "<ellipse" not in svg
 
 
 # --------------------------------------------------------------------------

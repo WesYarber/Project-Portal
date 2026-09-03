@@ -46,6 +46,16 @@ first time somebody nudged a hue, and the drift would be invisible at 16px.
 Adding a theme therefore stays what themes.css promises it is - a palette block
 and four config lines - plus one run of this script.
 
+**A theme may carry a different mark, but never different colors.** The
+office node's `walmart` theme wears Walmart's spark on its tab rather than the
+two portals, so there is a second drawn mark, `spark_mark`, and a table,
+`THEME_MARK`, that says which theme wears which. What does not change is where
+the colors come from: the spark is drawn from the same `--bg-color` and
+`--portal-orange` the rings are, so the stylesheet is still the only place a
+tab icon's colors live and `test_theme_favicon.py` can still redraw every icon
+from the CSS. A theme that needs a third mark adds a pair of drawing functions
+to `MARKS` and a line to `THEME_MARK`; it does not get to hand-place a PNG.
+
 Usage:  venv/bin/python deploy/make_icons.py [source.png]
 """
 from __future__ import annotations
@@ -86,7 +96,31 @@ ICO_SIZES = [16, 32, 48]
 
 # The three palette variables the mark is drawn from, in the order
 # `portal_mark` wants them: the tile, then the left ring, then the right one.
+# `spark_mark` reads the same triple and uses the tile and the right-hand
+# color; one palette shape for every mark, so `mark_palettes` has one job.
 MARK_VARS = ("--bg-color", "--portal-blue", "--portal-orange")
+# Which drawn mark each theme's tab icon is. "rings" - the two portals from the
+# wordmark - is what every theme gets unless it is named here, so the table
+# lists only the exceptions. Values must be keys of `MARKS` (below the drawing
+# functions); `mark_for` raises on anything else rather than falling back,
+# because a fallback here would ship the wrong mark with no error anywhere.
+THEME_MARK: dict[str, str] = {
+    "walmart": "spark",
+}
+DEFAULT_MARK = "rings"
+# The spark's geometry on the same 64-unit viewBox as the rings, shared by the
+# raster and the SVG so the two cannot drift: one ray of Walmart's spark as an
+# absolute cubic path - a tapered ray with a round outer cap, its tip at
+# radius 30 and its inner point at about 8.6, lifted from the brand's own SVG
+# and centered on x=32 - turned by multiples of 60 degrees about the center.
+SPARK_RAYS = 6
+SPARK_RAY = (
+    "M 32.00,2.00 C 29.41,2.00 27.31,4.10 27.31,6.68 C 27.31,7.81 28.45,19.85 28.85,21.05 "
+    "C 29.30,22.43 30.57,23.35 32.00,23.35 C 33.43,23.35 34.70,22.43 35.15,21.05 "
+    "C 35.55,19.85 36.69,7.81 36.69,6.68 C 36.69,4.10 34.59,2.00 32.00,2.00 Z"
+)
+SPARK_CENTER = (32, 32)
+SPARK_STEPS = 16                 # samples per curve when the raster flattens the path
 # Where each theme's palette block is. `terminal` has no block in themes.css on
 # purpose - it IS style.css - so it is read from that sheet's `:root`.
 STOCK_SHEET = ("style.css", ":root")
@@ -255,6 +289,124 @@ def portal_mark(edge: int, palette: tuple[tuple[int, int, int], ...]) -> Image.I
     return img.resize((edge, edge), Image.LANCZOS)
 
 
+def _flatten_ray(steps: int = SPARK_STEPS) -> list[tuple[float, float]]:
+    """SPARK_RAY as a closed polygon: the M point, then every C sampled
+    `steps` times along the cubic. Only the three commands the ray uses;
+    anything else is a corrupted constant and raises."""
+    toks = SPARK_RAY.replace(",", " ").split()
+    pts: list[tuple[float, float]] = []
+    cur = (0.0, 0.0)
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t == "M":
+            cur = (float(toks[i + 1]), float(toks[i + 2]))
+            pts.append(cur)
+            i += 3
+        elif t == "C":
+            p0 = cur
+            p1, p2, p3 = ((float(toks[j]), float(toks[j + 1])) for j in (i + 1, i + 3, i + 5))
+            for step in range(1, steps + 1):
+                u = step / steps
+                v = 1 - u
+                pts.append(tuple(
+                    v ** 3 * a + 3 * v * v * u * b + 3 * v * u * u * c + u ** 3 * d
+                    for a, b, c, d in zip(p0, p1, p2, p3)
+                ))
+            cur = p3
+            i += 7
+        elif t == "Z":
+            i += 1
+        else:
+            raise ValueError(f"SPARK_RAY: unexpected token {t!r}")
+    return pts
+
+
+def _spark_polygons() -> list[list[tuple[float, float]]]:
+    """The six rays as polygons in viewBox units: the flattened SPARK_RAY
+    turned `i * 60` degrees about the center - the same transform the SVG
+    writes as `rotate(...)`."""
+    import math
+
+    ray = _flatten_ray()
+    cx, cy = SPARK_CENTER
+    out = []
+    for i in range(SPARK_RAYS):
+        a = math.radians(i * 360 / SPARK_RAYS)
+        cos, sin = math.cos(a), math.sin(a)
+        out.append([(cx + (x - cx) * cos - (y - cy) * sin,
+                     cy + (x - cx) * sin + (y - cy) * cos) for x, y in ray])
+    return out
+
+
+def spark_mark(edge: int, palette: tuple[tuple[int, int, int], ...]) -> Image.Image:
+    """Walmart's spark, rasterized: six tapered rays on a tile.
+
+    Takes the same (tile, left, right) triple as `portal_mark` and uses the
+    tile and the right-hand color, which on the walmart theme is Spark Yellow.
+    The middle color is deliberately unused: the spark is one color, and a
+    two-tone spark would be a different mark from the one on the page.
+
+    Each ray is the brand path flattened to a polygon and turned by hand
+    rather than an image rotation, because PIL's rotate resamples the whole
+    tile and a 16px icon has no pixels to spare for that. Drawn at 8x and
+    downsampled like the rings, for the same reason.
+    """
+    tile, _unused, spark = palette
+    s = edge * 8
+    k = s / 64
+    img = Image.new("RGB", (s, s), tile)
+    d = ImageDraw.Draw(img)
+    for poly in _spark_polygons():
+        d.polygon([(x * k, y * k) for x, y in poly], fill=spark)
+    return img.resize((edge, edge), Image.LANCZOS)
+
+
+def spark_svg(palette: tuple[tuple[int, int, int], ...]) -> str:
+    """The same spark as `spark_mark`, as an SVG document: one path per ray,
+    the SPARK_RAY string verbatim, turned with the same `i * 60` the raster
+    uses."""
+    tile, _unused, spark = (f"rgb({r},{g},{b})" for r, g, b in palette)
+    cx, cy = SPARK_CENTER
+    rays = "".join(
+        f'  <path d="{SPARK_RAY}" fill="{spark}" '
+        f'transform="rotate({i * 360 // SPARK_RAYS} {cx} {cy})"/>\n'
+        for i in range(SPARK_RAYS)
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        "<!-- Generated by deploy/make_icons.py from this theme's palette block\n"
+        "     in static/themes.css. Do not hand-edit: run the script. -->\n"
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" '
+        'width="64" height="64">\n'
+        f'  <rect width="64" height="64" rx="10" fill="{tile}"/>\n'
+        f"{rays}"
+        "</svg>\n"
+    )
+
+
+# mark name -> (raster, svg). Both take the same palette triple.
+MARKS = {
+    "rings": (portal_mark, mark_svg),
+    "spark": (spark_mark, spark_svg),
+}
+
+
+def mark_for(theme: str):
+    """The (raster, svg) pair of drawing functions for a theme's tab icon.
+
+    Every theme gets the rings unless THEME_MARK says otherwise. A name in the
+    table that is not in MARKS raises rather than falling back to the rings:
+    the only way to notice a wrong favicon is to look at a tab, and the tab of
+    the person who chose the theme is the last place anybody else looks.
+    """
+    name = THEME_MARK.get(theme, DEFAULT_MARK)
+    try:
+        return MARKS[name]
+    except KeyError:
+        raise ValueError(f"{theme} names an unknown mark {name!r} - see MARKS") from None
+
+
 def main() -> int:
     source = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SOURCE
     if not source.exists():
@@ -271,7 +423,9 @@ def main() -> int:
 
     # The tab icons are drawn, not cut from the artwork - see the docstring.
     palettes = mark_palettes()
-    stock = palettes[config.APPEARANCE_DEFAULTS["ui_theme"]]
+    stock_theme = config.APPEARANCE_DEFAULTS["ui_theme"]
+    stock = palettes[stock_theme]
+    stock_raster, stock_svg = mark_for(stock_theme)
 
     # The unsuffixed set is the default theme's mark, byte for byte. It is what
     # `main.favicon_url` falls back to for a theme with no set of its own, and
@@ -280,19 +434,23 @@ def main() -> int:
     # own constants, which is precisely how the old pair drifted.
     for name, edge in MARK_SIZES.items():
         out = STATIC / name
-        portal_mark(edge, stock).save(out, "PNG", optimize=True)
+        stock_raster(edge, stock).save(out, "PNG", optimize=True)
         print(f"  wrote {name} ({edge}px, {out.stat().st_size // 1024} KB)")
-    (STATIC / "favicon.svg").write_text(mark_svg(stock))
+    (STATIC / "favicon.svg").write_text(stock_svg(stock))
 
-    # One set per theme, drawn from that theme's own palette block.
+    # One set per theme, drawn from that theme's own palette block, in
+    # whichever mark THEME_MARK says the theme wears.
     for theme, palette in palettes.items():
+        raster, svg = mark_for(theme)
         for name, edge in MARK_SIZES.items():
-            portal_mark(edge, palette).save(
+            raster(edge, palette).save(
                 STATIC / themed_name(name, theme), "PNG", optimize=True
             )
-        (STATIC / themed_name("favicon.svg", theme)).write_text(mark_svg(palette))
+        (STATIC / themed_name("favicon.svg", theme)).write_text(svg(palette))
         tile, blue, orange = ("#%02x%02x%02x" % c for c in palette)
-        print(f"  wrote {theme}: tile {tile}, rings {blue} / {orange}")
+        mark = THEME_MARK.get(theme, DEFAULT_MARK)
+        colors = f"rays {orange}" if mark == "spark" else f"rings {blue} / {orange}"
+        print(f"  wrote {theme}: {mark}, tile {tile}, {colors}")
 
     # A real multi-size .ico, for the browsers that probe /favicon.ico at the
     # origin root regardless of what the <link> tags say. Deliberately NOT
@@ -300,7 +458,7 @@ def main() -> int:
     # tag and the root probe answer with the same bytes is worth more than an
     # icon a browser only reaches when the two PNGs and the SVG have all failed.
     ico = STATIC / "favicon.ico"
-    portal_mark(max(ICO_SIZES), stock).save(ico, "ICO", sizes=[(n, n) for n in ICO_SIZES])
+    stock_raster(max(ICO_SIZES), stock).save(ico, "ICO", sizes=[(n, n) for n in ICO_SIZES])
     print(f"  wrote favicon.ico ({ICO_SIZES}, {ico.stat().st_size // 1024} KB)")
     return 0
 
