@@ -20,6 +20,7 @@ from fastapi.responses import (
     JSONResponse,
     PlainTextResponse,
     RedirectResponse,
+    Response,
 )
 from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
@@ -56,6 +57,7 @@ from app import (
     people,
     portalmcp,
     preview,
+    proposals,
     quickreplies,
     quiet,
     quoting,
@@ -1395,8 +1397,29 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "adopt_parents": subprojects.adoptive_parents(project),
             "child_question_counts": db.open_question_counts(),
             **_related_context(project),
+            **_proposals_context(project),
         },
     )
+
+
+def _proposals_context(project) -> dict:
+    """What the "Proposed changes" block needs: on the publisher's own project,
+    every pending series from the other portals; on any project, the series
+    its own workspace has cut. Both empty is the common case, and the block
+    is not drawn."""
+    incoming: list = []
+    if project["slug"] == config.META_PROJECT_SLUG and proposals.pulls_enabled():
+        incoming = proposals.pending()
+    try:
+        outgoing = proposals.outgoing(project["slug"])
+    except Exception:  # noqa: BLE001 - a workspace that cannot be read is not worth the page
+        log.exception("Could not list the series under %s/patches", project["slug"])
+        outgoing = []
+    return {
+        "proposals_in": incoming,
+        "proposals_out": outgoing,
+        "proposals_pending": len(incoming),
+    }
 
 
 def _related_context(project) -> dict:
@@ -4039,6 +4062,164 @@ async def update_node(node_id: str) -> RedirectResponse:
     meta project's journal."""
     nodes.start_update(node_id)
     return RedirectResponse(url="/settings?saved=nodes#nodes", status_code=303)
+
+
+# --- proposals: patch series from another portal (app/proposals.py) --------
+
+def _proposal_or_404(proposal_id: int) -> dict:
+    row = proposals.get(proposal_id)
+    if row is None or row["direction"] != "in":
+        raise HTTPException(status_code=404, detail="No such proposal")
+    return row
+
+
+def _meta_project():
+    return db.get_project_by_slug(config.META_PROJECT_SLUG)
+
+
+@app.get("/proposals", response_class=HTMLResponse)
+async def proposals_page(request: Request, pulled: str = "") -> HTMLResponse:
+    return templates.TemplateResponse(
+        request,
+        "proposals.html",
+        {
+            "incoming": proposals.list_rows("in"),
+            "outgoing": proposals.outgoing(),
+            "meta": _meta_project(),
+            "pulls_enabled": proposals.pulls_enabled(),
+            "pulled": pulled or None,
+        },
+    )
+
+
+@app.get("/proposals/{proposal_id}", response_class=HTMLResponse)
+async def proposal_page(
+    request: Request, proposal_id: int, decided: str = "", error: str = ""
+) -> HTMLResponse:
+    row = _proposal_or_404(proposal_id)
+    return templates.TemplateResponse(
+        request,
+        "proposal.html",
+        {
+            "p": row,
+            "commits": proposals.read_commits(row),
+            "meta": _meta_project(),
+            "decided": decided or None,
+            "error": error or None,
+        },
+    )
+
+
+def _decider(request: Request, by: str) -> str:
+    """Who decided: the form's `by` (an agent says "agent"), else the person
+    the request resolves to, else nobody."""
+    if by.strip():
+        return by.strip()[:80]
+    try:
+        person = _CURRENT_PERSON.get()
+        return str(person["name"]) if person is not None else ""
+    except (LookupError, KeyError, TypeError, IndexError):
+        return ""
+
+
+def _after_decision(proposal_id: int, request: Request, next_url: str, ok: str, error: str):
+    """Where a decision lands. A browser goes back to the page it pressed the
+    button on; an agent's curl asking for JSON gets JSON it can read the
+    outcome from (409 when the decision did not take)."""
+    accepts = request.headers.get("accept", "")
+    if "application/json" in accepts:
+        return JSONResponse({"ok": not error, "detail": error or ok, "id": proposal_id}, status_code=200 if not error else 409)
+    target = next_url if next_url.startswith("/") else f"/proposals/{proposal_id}"
+    sep = "&" if "?" in target else "?"
+    if error:
+        return RedirectResponse(url=f"/proposals/{proposal_id}?error={quote(error)}", status_code=303)
+    if target.startswith("/proposals/"):
+        base, _, frag = target.partition("#")
+        return RedirectResponse(url=f"{base}{sep}decided={quote(ok)}" + (f"#{frag}" if frag else ""), status_code=303)
+    return RedirectResponse(url=target, status_code=303)
+
+
+@app.post("/proposals/{proposal_id}/approve")
+async def approve_proposal(
+    request: Request, proposal_id: int, note: str = Form(""), by: str = Form(""), next: str = Form("")
+):
+    """Apply the series to the source checkout. The git work runs off the
+    loop; on success the same restart the meta project's own runs use carries
+    the new code live, and the verdict goes back to the node that offered it."""
+    row = _proposal_or_404(proposal_id)
+    who = _decider(request, by)
+    outcome = await asyncio.to_thread(proposals.apply, proposal_id, who, note)
+    if not outcome.ok:
+        return _after_decision(proposal_id, request, next, "", outcome.detail)
+    row = proposals.get(proposal_id) or row
+    proposals.journal_decision(row, outcome)
+    meta = _meta_project()
+    if meta is not None and outcome.applied:
+        try:
+            worker.schedule_source_restart(meta["id"], outcome.applied[-1])
+        except Exception:  # noqa: BLE001 - the commits are in; a missed restart is the next tick's
+            log.exception("Could not schedule the restart after proposal #%s", proposal_id)
+    asyncio.create_task(asyncio.to_thread(proposals.tell_sender, row, config.HOST_LABEL))
+    return _after_decision(proposal_id, request, next, f"approved: {outcome.detail}", "")
+
+
+@app.post("/proposals/{proposal_id}/reject")
+async def reject_proposal(
+    request: Request, proposal_id: int, note: str = Form(""), by: str = Form(""), next: str = Form("")
+):
+    _proposal_or_404(proposal_id)
+    who = _decider(request, by)
+    outcome = proposals.reject(proposal_id, who, note)
+    if not outcome.ok:
+        return _after_decision(proposal_id, request, next, "", outcome.detail)
+    row = proposals.get(proposal_id)
+    assert row is not None
+    proposals.journal_decision(row, outcome)
+    asyncio.create_task(asyncio.to_thread(proposals.tell_sender, row, config.HOST_LABEL))
+    return _after_decision(proposal_id, request, next, "rejected", "")
+
+
+@app.post("/proposals/pull")
+async def pull_proposals() -> RedirectResponse:
+    """Ask every registered portal now instead of at the next probe."""
+    filed = await asyncio.to_thread(proposals.pull_all)
+    await proposals.announce_new()
+    msg = f"{len(filed)} new proposal{'' if len(filed) == 1 else 's'} filed." if filed else "Nothing new on the other portals."
+    return RedirectResponse(url=f"/proposals?pulled={quote(msg)}", status_code=303)
+
+
+@app.get("/api/proposals")
+async def api_proposals() -> JSONResponse:
+    """What this install is offering upstream: every `patches/*.mbox` in a
+    workspace, by sha. The publisher's poller reads this; see app/proposals.py."""
+    return JSONResponse({"portal": config.HOST_LABEL, "proposals": await asyncio.to_thread(proposals.outgoing)})
+
+
+@app.get("/api/proposals/{sha}/mbox")
+async def api_proposal_mbox(sha: str) -> Response:
+    data = await asyncio.to_thread(proposals.outgoing_bytes, sha)
+    if data is None:
+        raise HTTPException(status_code=404, detail="No such series")
+    return Response(content=data, media_type="application/mbox")
+
+
+@app.post("/api/proposals/{sha}/decision")
+async def api_proposal_decision(sha: str, request: Request) -> JSONResponse:
+    """The publisher's verdict on a series this install offered. Lands on the
+    journal of the project that cut it."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 - junk in, 400 out
+        body = None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Expected a JSON object")
+    item = await asyncio.to_thread(
+        proposals.record_decision, sha, str(body.get("verdict") or ""), str(body.get("note") or ""),
+        str(body.get("by") or ""), str(body.get("portal") or ""),
+    )
+    if item is None:
+        raise HTTPException(status_code=404, detail="No such series here, or not a verdict")
+    return JSONResponse({"ok": True, "project": item["project"], "name": item["name"]})
 
 
 @app.get("/api/usage/history")

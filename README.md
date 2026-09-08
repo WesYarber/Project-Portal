@@ -207,6 +207,33 @@ restart never lands in the middle of one. The follower's own timer is the
 backstop for when it cannot be reached. The push needs this machine's ssh key
 in that account's `authorized_keys`; nothing else is configured on the far side.
 
+### Changes proposed by another portal
+
+A follower cannot write to the mirror it follows (the mirror is a generated copy
+of the publisher's tree, so anything pushed there is erased by the next
+publish), and it must never edit its own checkout. What it can do is *propose*.
+An agent on a follower that improves the portal commits on a branch in a clone
+and cuts the series into its project workspace:
+
+```bash
+git format-patch --stdout <base>..<branch> > patches/<name>.mbox
+```
+
+Every install lists those files at `/api/proposals`, keyed by the sha256 of the
+bytes. The install that publishes asks each registered portal after every probe,
+fetches any series it has not seen, checks the bytes against the sha, and files
+it as a proposal: a journal entry on the portal's own project, a notification
+that opens the proposal, and a run on that project so an agent reviews it —
+reads the diff, applies it on a throwaway worktree, runs the tests it touches,
+and approves or rejects with a note. **Approve and apply** on the proposal page
+(or on the portal project's "Proposed changes" block) runs `git am -3` on the
+source checkout; the self-update restart, the publish and the update push to
+the proposing node all follow by themselves. The verdict and its note are
+posted back to the node that offered the series and land on the journal of the
+project that cut it, where the agent there reads them next run. A series is
+judged once: a revision is a new file, never an edit of the old one. See
+`app/proposals.py`.
+
 ## Configure
 
 **Nothing is required.** With no config at all the portal reads the machine
@@ -326,16 +353,24 @@ time has passed since the last run (or a manual "Run now" was queued), it:
 
 ### The build gate
 
-Agents triage and plan any project unasked — those passes are cheap, reversible,
-and produce a title, an assessment and a `PLAN.md`. Writing the project's code
-does not happen until Wes says so.
+Off by default since 2026-09-08. Taking an idea off the backlog is the
+decision: the first run on an active project builds, planning what it needs
+inside that same run, and never stops to have the plan confirmed ("There should
+be no need to confirm the plan from the user after onboarding a new project.
+Just start building."). The backlog itself is still never scheduled — an idea
+typed in stays an idea until somebody starts it.
+
+With **Settings → agent → Ask before building** on, the older behavior
+returns: agents triage and plan any project unasked — those passes are cheap,
+reversible, and produce a title, an assessment and a `PLAN.md` — but writing
+the project's code does not happen until Wes says so.
 
 `projects.build_approved` is that permission. An agent setting `new_status` to
 `building` is a *request*: the portal records it in `projects.build_requested`
 (the project stays `active`, folded to the Paused shelf with a "needs your OK"
 badge), journals it once, and notifies. Approval comes from Wes choosing
 `active` in the status picker, pressing **approve build** on the project page,
-or saying so over Telegram. The gate is `settings.require_build_approval` (on
+or saying so over Telegram. The gate is `settings.require_build_approval` (off
 by default).
 
 This exists because it failed the other way first: a pass over the backlog

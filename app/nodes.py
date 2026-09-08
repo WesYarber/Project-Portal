@@ -48,7 +48,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Optional
 
-from app import config, db, live, mirror
+from app import config, db, live, mirror, proposals
 
 log = logging.getLogger("portal.nodes")
 
@@ -405,6 +405,7 @@ def view() -> list[dict]:
                 "running": info.get("running") or 0,
                 "open_questions": info.get("open_questions") or 0,
                 "worker_enabled": info.get("worker_enabled"),
+                "publishes": bool(info.get("publishes")),
                 "latency_ms": (status or {}).get("latency_ms"),
                 "checked": _ago((status or {}).get("checked_at")) if status else "never",
                 "seen": _ago((status or {}).get("seen_at")) if status and status.get("seen_at") else "never",
@@ -538,6 +539,11 @@ async def poll_loop() -> None:
                 statuses = await asyncio.to_thread(snapshot)
                 for node_id in due_updates(statuses, published_commit()):
                     start_update(node_id)
+                # The other direction: anything a node is offering upstream.
+                # Filed in the thread, announced on the loop (a run is queued
+                # and a notification sent), and idempotent between the two.
+                await asyncio.to_thread(proposals.pull_all)
+                await proposals.announce_new()
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - a poller that dies is worse than one that logs

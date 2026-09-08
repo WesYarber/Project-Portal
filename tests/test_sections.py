@@ -67,8 +67,8 @@ def test_every_section_survives_a_junk_value():
 
 
 def test_a_full_stored_order_is_honored_exactly():
-    """What the settings form actually posts: all nine names, in order."""
-    wanted = ["journal", "todo", "note", "questions", "files", "project", "console", "subprojects", "ask"]
+    """What the settings form actually posts: all ten names, in order."""
+    wanted = ["journal", "todo", "note", "questions", "files", "project", "proposals", "console", "subprojects", "ask"]
     assert sections.order(",".join(wanted)) == wanted
 
 

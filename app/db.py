@@ -342,6 +342,29 @@ CREATE TABLE IF NOT EXISTS project_links (
     CHECK (a_id < b_id)
 );
 CREATE INDEX IF NOT EXISTS idx_project_links_b ON project_links(b_id);
+
+-- Patch series proposed by another portal (direction 'in', reviewed here) or
+-- cut here and decided elsewhere (direction 'out'). Identity is the sha256 of
+-- the mailbox bytes on both sides. See app/proposals.py.
+CREATE TABLE IF NOT EXISTS proposals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    direction TEXT NOT NULL,
+    sha TEXT NOT NULL UNIQUE,
+    node_id TEXT NOT NULL DEFAULT '',
+    node_name TEXT NOT NULL DEFAULT '',
+    project_slug TEXT NOT NULL DEFAULT '',
+    name TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    subjects_json TEXT NOT NULL DEFAULT '[]',
+    size INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    note TEXT NOT NULL DEFAULT '',
+    applied_json TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    announced_at TEXT,
+    decided_at TEXT,
+    decided_by TEXT NOT NULL DEFAULT ''
+);
 """
 
 

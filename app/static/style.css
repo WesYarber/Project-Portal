@@ -2076,6 +2076,7 @@ select.status-abandoned { color: var(--ansi-red); border-color: var(--ansi-red);
   background: rgba(74, 222, 128, 0.08);
 }
 .flash.ok { color: var(--ansi-green); }
+.flash.err { color: var(--ansi-red); }
 
 /* Equal-height field cells: hints vary in length, so the inputs are pinned to
    the top of each cell and the hint fills whatever is left. */
@@ -4173,3 +4174,33 @@ label.diff-line:hover { background: rgba(122, 162, 247, 0.12); }
 .node-behind .node-state, .node-updating .node-state, .node-unknown .node-state { color: var(--ansi-yellow); border-color: rgba(250, 204, 21, 0.45); }
 .node-off .node-state { color: var(--ansi-red); border-color: rgba(255, 110, 110, 0.45); }
 .node-chip a { color: inherit; }
+
+
+/* --- the card a notification was about ---------------------------------- */
+/* Lit for a few seconds when the page is opened at its anchor (app.js
+   spotlightHashTarget): a tapped notification lands here and this is how
+   the page says "this one". An outline, not a background, so the card's own
+   colors keep meaning what they mean. */
+@keyframes spotlight {
+  0%   { box-shadow: 0 0 0 3px var(--portal-orange), 0 0 22px var(--portal-orange); }
+  70%  { box-shadow: 0 0 0 3px var(--portal-orange), 0 0 12px var(--portal-orange); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.spotlight { animation: spotlight 3.2s ease-out 1; }
+@media (prefers-reduced-motion: reduce) {
+  .spotlight { animation: none; box-shadow: 0 0 0 3px var(--portal-orange); }
+}
+
+/* --- proposed changes (app/proposals.py) ---------------------------------- */
+.proposal-row { padding: 0.6rem 0; border-bottom: 1px solid var(--window-border); }
+.proposal-row:last-child { border-bottom: 0; }
+.proposal-head { flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.proposal-detail { margin: 0.25rem 0 0; }
+.proposal-note { color: var(--ansi-yellow); }
+.proposal-subjects { margin: 0.2rem 0 0 1.2rem; padding: 0; }
+.proposal-verdict { margin: 0.4rem 0 0; padding-left: 0.8rem; border-left: 2px solid var(--window-border); color: var(--terminal-dim); }
+.proposal-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.5rem; }
+.proposal-reject { gap: 0.4rem; align-items: center; }
+.proposal-reject input[type="text"] { min-width: 14rem; flex: 1 1 14rem; }
+.proposal-body { white-space: pre-wrap; font-size: 0.85em; color: var(--terminal-dim); margin: 0.3rem 0 0.6rem; }
+.proposal-commit .diff-body { overflow-x: auto; }

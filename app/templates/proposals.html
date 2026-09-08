@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% from "_proposals.html" import proposal_rows, outgoing_rows %}
+{% block title %}Proposed changes{% endblock %}
+{% block header_stat %}proposals{% endblock %}
+{% block content %}
+
+<p class="small muted">{% if meta %}<a href="/project/{{ meta.slug }}">&larr; {{ meta.title }}</a>{% else %}<a href="/">&larr; dashboard</a>{% endif %}</p>
+<h1>Proposed changes</h1>
+<p class="small muted">Patch series another portal cut for this one. Approving applies a series to the source
+  checkout; the service restarts onto it, the mirror publishes, and the portal that proposed it updates from there.
+  Every verdict, with its note, is written to that portal's journal.</p>
+
+{% if pulls_enabled %}
+<form method="post" action="/proposals/pull" class="inline-form">
+  <button type="submit" class="btn">check the other portals now</button>
+  <span class="hint">Otherwise they are asked every two minutes, with the node probe.</span>
+</form>
+{% endif %}
+{% if pulled is not none %}<p class="flash ok" role="status">{{ pulled }}</p>{% endif %}
+
+<div class="card">
+  {% if incoming %}
+  {{ proposal_rows(incoming, next='/proposals') }}
+  {% elif pulls_enabled %}
+  <p class="empty-state">Nothing proposed yet. A series appears here within two minutes of a registered portal writing it under <code>patches/</code> in one of its workspaces.</p>
+  {% else %}
+  <p class="empty-state">This portal follows another one, so proposals are reviewed there, not here.</p>
+  {% endif %}
+</div>
+
+{% if outgoing %}
+<h2>Offered by this portal</h2>
+<div class="card">
+  {{ outgoing_rows(outgoing) }}
+</div>
+{% endif %}
+
+{% endblock %}

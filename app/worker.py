@@ -114,9 +114,17 @@ async def _rate_limit_backoff(
     return until, why
 
 
+# Off by default since 2026-09-08. Wes: "There should be no need to confirm
+# the plan from the user after onboarding a new project. Just start building."
+# Onboarding - taking an idea off the backlog - is the decision; with the gate
+# off, the first run on an active project builds. The gate itself stays for an
+# install that wants the explicit OK (Settings > agent > "Ask before building").
+BUILD_APPROVAL_DEFAULT = "0"
+
+
 def require_build_approval() -> bool:
-    """Whether writing code needs Wes's explicit OK first. On by default."""
-    return (db.get_setting("require_build_approval") or "1") == "1"
+    """Whether writing code needs an explicit OK first. Off by default."""
+    return (db.get_setting("require_build_approval") or BUILD_APPROVAL_DEFAULT) == "1"
 
 
 def build_allowed(project: db.sqlite3.Row) -> bool:

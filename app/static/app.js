@@ -4900,6 +4900,29 @@ document.addEventListener("click", function (ev) {
   jumpTo(el);
 });
 
+// A notification tapped on a phone lands on the project page with the
+// question's own anchor (`#question-12`, see app/notify.py `landing`). The
+// browser scrolls to the anchor by itself; what it cannot do is say WHICH card
+// the tap was about once three of them are on the screen, so the card is lit
+// for a moment. Wes, 2026-09-08: "take the user directly to the relevant
+// project and highlight the question, if possible." Also fires on a hash
+// change, for a second notification tapped while the same page is open.
+function spotlightHashTarget() {
+  var hash = (location.hash || "").replace(/^#/, "");
+  if (!/^(question|proposal|todo|entry)-\d+$/.test(hash)) return;
+  var el = document.getElementById(hash);
+  if (!el) return;
+  document.querySelectorAll(".spotlight").forEach(function (old) {
+    old.classList.remove("spotlight");
+  });
+  // Re-adding the class restarts the animation on the same card.
+  void el.offsetWidth;
+  el.classList.add("spotlight");
+  el.scrollIntoView({ block: "center", behavior: "auto" });
+}
+document.addEventListener("DOMContentLoaded", spotlightHashTarget);
+window.addEventListener("hashchange", spotlightHashTarget);
+
 document.addEventListener("DOMContentLoaded", railChapters);
 
 // ---------------------------------------------------------------------------

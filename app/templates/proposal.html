@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% from "_proposals.html" import proposal_rows, patch_commit %}
+{% block title %}Proposal #{{ p.id }} - {{ p.title }}{% endblock %}
+{% block header_stat %}proposal #{{ p.id }}{% endblock %}
+{% block content %}
+
+<p class="small muted"><a href="/proposals">&larr; proposed changes</a>{% if meta %} &middot; <a href="/project/{{ meta.slug }}">{{ meta.title }}</a>{% endif %}</p>
+<h1>{{ p.title }}</h1>
+<p class="small muted">Proposed by <strong>{{ p.node_name or p.node_id }}</strong> from its <code>{{ p.project_slug }}</code> project as <code>{{ p.name }}</code>,
+  sha <code>{{ p.sha[:12] }}</code>.</p>
+
+{% if decided %}<p class="flash ok" role="status">{{ decided }}</p>{% endif %}
+{% if error %}<p class="flash err" role="alert">{{ error }}</p>{% endif %}
+
+<div class="card">
+  {{ proposal_rows([p], next='/proposals/' ~ p.id) }}
+  {% if p.status == 'approved' and p.applied %}
+  <p class="hint">Applied to the source as {% for sha in p.applied %}<code>{{ sha[:7] }}</code>{{ ', ' if not loop.last }}{% endfor %}.
+    The service restarts onto it once nothing is running, then the mirror publishes and {{ p.node_name or 'the node' }} is updated from there.</p>
+  {% endif %}
+</div>
+
+{% if commits %}
+<h2>The series</h2>
+{% for c in commits %}{{ patch_commit(c, loop.index) }}{% endfor %}
+{% else %}
+<p class="empty-state">The mailbox for this proposal could not be read.</p>
+{% endif %}
+
+{% endblock %}

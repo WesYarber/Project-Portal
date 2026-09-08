@@ -187,8 +187,8 @@
         <label for="worker_enabled">Worker enabled</label>
       </div>
       <div class="field checkbox-row">
-        <input type="checkbox" id="require_build_approval" name="require_build_approval" {{ 'checked' if (settings.require_build_approval or '1') == '1' else '' }}>
-        <label for="require_build_approval">Ask before building{% call info() %}Agents always triage and plan on their own. With this on, actually writing code waits until you press <strong>approve build</strong> on the project (or set its status to building yourself). Off means a finished plan rolls straight into a build.{% endcall %}</label>
+        <input type="checkbox" id="require_build_approval" name="require_build_approval" {{ 'checked' if (settings.require_build_approval or '0') == '1' else '' }}>
+        <label for="require_build_approval">Ask before building{% call info() %}Off, the default: taking an idea off the backlog is the decision, and the first run on an active project builds - it plans what it needs inside that same run and never stops to have the plan confirmed. On: agents still triage and plan on their own, but writing code waits until you press <strong>approve build</strong> on the project (or set its status to active yourself).{% endcall %}</label>
       </div>
       <div class="field">
         <label for="verification_depth">Self-verification{% call info() %}How hard a build run works to prove its own change before it commits. Proving is about 60% of what a run spends, so this is the biggest single lever on your Claude allowance. <strong>Scaled to the change</strong> is your answer from 2026-08-07: a docs edit owes nothing, a label change runs the tests that own it, and only a change to real logic earns the full suite and a delete-the-fix mutation sweep. <strong>Full suite and a sweep, always</strong> is how runs behaved before that. <strong>Only the tests it touches</strong> is for a stretch where clearing the backlog matters more than proving each step. Whatever you pick, a run still has to leave the tree green and may never report a test result it did not watch run.{% endcall %}</label>

@@ -74,6 +74,7 @@ class Section:
 SECTIONS: tuple[Section, ...] = (
     Section("ask", "Ask project", "The folded box that asks a read-only question."),
     Section("project", "Overview", "Stage, model, title and description."),
+    Section("proposals", "Proposed changes", "Patch series another portal is offering, or this project has offered one."),
     Section("console", "Agent console", "The live transcript of the run that is working."),
     Section("subprojects", "Sub-projects", "The children of this project, or its parent."),
     Section("questions", "Questions", "Open questions, plus saved and deleted ones."),

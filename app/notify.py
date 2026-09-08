@@ -28,8 +28,15 @@ async def notify(
     project_title: Optional[str] = None,
     question_slot: Optional[int] = None,
     project_id: Optional[int] = None,
+    navigate: Optional[str] = None,
 ) -> None:
     """Send one notification to everybody it is addressed to.
+
+    `navigate` is where a tap on the notification lands (a path on the
+    portal). Left None it is worked out from what the notification is about:
+    a question opens its project's page scrolled to that question, anything
+    else about a project opens the project, and the rest opens the dashboard.
+    See `landing`.
 
     `project_id` is what makes it addressed to anybody in particular: with it,
     this reaches that project's members; without it, everybody. Which concrete
@@ -90,7 +97,32 @@ async def notify(
         urgency="high" if question_id is not None else "normal",
         badges=question_badges() if subs else None,
         actions=push_actions(question_id) if subs else None,
+        navigate=navigate if navigate is not None else landing(question_id, project_id),
     )
+
+
+def landing(question_id: Optional[int], project_id: Optional[int]) -> str:
+    """The page a notification about this question or project opens on: the
+    project page, with the question's own anchor when there is one, so the
+    page can scroll to it and light it up (app.js spotlights `#question-N`).
+    Never raises - a lookup that fails lands on the dashboard."""
+    try:
+        if question_id is not None and project_id is None:
+            row = db.get_question(question_id)
+            if row is not None:
+                project_id = row["project_id"]
+        if project_id is None:
+            return ""
+        project = db.get_project(project_id)
+        if project is None:
+            return ""
+        path = f"/project/{project['slug']}"
+        if question_id is not None:
+            path += f"#question-{int(question_id)}"
+        return path
+    except Exception:  # noqa: BLE001 - a landing page is never worth losing the notification
+        log.warning("Could not work out where a notification should land", exc_info=True)
+        return ""
 
 
 def question_badges() -> dict:

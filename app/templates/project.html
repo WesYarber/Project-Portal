@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "_question.html" import question_card %}
+{% from "_proposals.html" import proposal_rows, outgoing_rows %}
 {% block title %}{{ project.title }} - Project Portal{% endblock %}
 {% block header_stat %}{{ project.slug }}{% endblock %}
 {% block content %}
@@ -508,6 +509,28 @@
   </p>
   {% endif %}
 </div>
+{% endmacro %}
+
+{% macro sec_proposals() %}<!-- section: proposals -->
+{# Patch series crossing between portals (app/proposals.py). On the portal's
+   own project of the install that publishes: what the other portals are
+   offering, with approve and reject right here - Wes, 2026-09-08: "add a
+   button to this project to view proposed changes and approve them or not
+   from here". On any project whose workspace has cut a series into
+   `patches/`: what became of it. Draws nothing on every other project. #}
+{% if proposals_in or proposals_out %}
+<div class="card" data-jump="proposals" data-jump-label="Proposed changes">
+  <h2>Proposed changes{% if proposals_pending %} <span class="badge">{{ proposals_pending }} waiting</span>{% endif %}</h2>
+  {% if proposals_in %}
+  {{ proposal_rows(proposals_in, next='/project/' ~ project.slug ~ '#proposals') }}
+  <p class="small muted"><a href="/proposals">every proposal, decided ones included</a></p>
+  {% endif %}
+  {% if proposals_out %}
+  {% if proposals_in %}<h3>Offered by this project</h3>{% endif %}
+  {{ outgoing_rows(proposals_out) }}
+  {% endif %}
+</div>
+{% endif %}
 {% endmacro %}
 
 {% macro sec_console() %}<!-- section: console -->
@@ -1381,7 +1404,7 @@
    once whatever is stored, so there is no guard here and no way for a bad
    preference to leave a block off the page. #}
 {%- set MOVABLE = {
-      'ask': sec_ask, 'project': sec_project, 'console': sec_console,
+      'ask': sec_ask, 'project': sec_project, 'proposals': sec_proposals, 'console': sec_console,
       'subprojects': sec_subprojects, 'questions': sec_questions,
       'todo': sec_todo, 'note': sec_note, 'files': sec_files,
       'journal': sec_journal } -%}

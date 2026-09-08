@@ -42,6 +42,15 @@ def _clean_worker_state(temp_data_dir):
     reset()
 
 
+@pytest.fixture(autouse=True)
+def gate_on():
+    """These tests are about the gate, so they run with it ON. It is off by
+    default since 2026-09-08 (Wes: "There should be no need to confirm the
+    plan from the user after onboarding a new project. Just start building.");
+    the default itself is pinned by the tests at the bottom of this file."""
+    db.set_setting("require_build_approval", "1")
+
+
 @pytest.fixture
 def spawned(monkeypatch):
     started: list[tuple[str, str]] = []
@@ -372,3 +381,37 @@ def test_the_dashboard_flags_projects_waiting_for_an_ok(client):
     assert rail.count("needs your OK") == 1  # and the rail row agrees
     db.approve_build(gated["id"])
     assert "needs your OK" not in client.get("/").text
+
+
+# --- the default: onboarding is the approval --------------------------------
+
+def test_the_gate_is_off_by_default(temp_data_dir):
+    db.set_setting("require_build_approval", "")
+    assert worker.BUILD_APPROVAL_DEFAULT == "0"
+    assert worker.require_build_approval() is False
+
+
+def test_an_onboarded_idea_builds_on_its_first_run(temp_data_dir):
+    """Wes, 2026-09-08: no plan to confirm after onboarding. An active project
+    with no run behind it is picked, and picked for a build, not a plan."""
+    db.set_setting("require_build_approval", "")
+    project = idea(stage="active")
+    assert worker.build_gated(project) is False
+    assert worker.task_for(project) == "build"
+    picked, _ = worker._pick_project(None)
+    assert picked["slug"] == project["slug"]
+
+
+def test_the_backlog_still_waits_with_the_gate_off(temp_data_dir):
+    db.set_setting("require_build_approval", "")
+    project = idea(stage="backlog")
+    assert worker._pick_project(None) == (None, False)
+    assert worker.task_for(project, manual=True) == "triage"
+
+
+def test_the_first_build_run_is_told_not_to_wait_for_a_plan(temp_data_dir):
+    db.set_setting("require_build_approval", "")
+    project = idea(stage="active")
+    text = agent_runner.guidance_for("build", project)
+    assert "If there is no PLAN.md yet" in text
+    assert "never stop to have the plan confirmed" in text

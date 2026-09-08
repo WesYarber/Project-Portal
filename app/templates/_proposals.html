@@ -1,0 +1,115 @@
+{# Patch series another portal is offering (app/proposals.py). Two macros:
+
+   `proposal_rows` lists proposals with their approve/reject forms - the
+   portal's own project page uses it for what is waiting, the /proposals page
+   for the whole history. `next` is where the buttons land afterwards.
+
+   `outgoing_rows` is the other direction: the series THIS install's project
+   has cut into its `patches/` directory, with whatever verdict came back. #}
+
+{% macro proposal_rows(rows, next, show_all=false) %}
+{% for p in rows %}
+<div class="proposal-row proposal-{{ p.status }}" id="proposal-{{ p.id }}">
+  <div class="row proposal-head">
+    <span class="dot {{ 'warn' if p.status == 'pending' else ('ok' if p.status == 'approved' else 'err') }}"></span>
+    <a href="/proposals/{{ p.id }}"><strong>#{{ p.id }} {{ p.title }}</strong></a>
+    <span class="badge">{{ p.status }}</span>
+    <span class="small muted">from {{ p.node_name or p.node_id }} / <code>{{ p.project_slug }}</code></span>
+  </div>
+  <p class="hint proposal-detail">
+    {{ p.subjects|length }} commit{{ '' if p.subjects|length == 1 else 's' }}, {{ (p.size // 1024) or 1 }} KB,
+    received {{ p.created_at|timeago }}{% if p.decided_at %}, {{ p.status }} {{ p.decided_at|timeago }}{% if p.decided_by %} by {{ p.decided_by }}{% endif %}{% endif %}.
+    {% if p.status == 'pending' and p.note %}<span class="proposal-note">Last attempt: {{ p.note }}</span>{% endif %}
+  </p>
+  {% if p.subjects|length > 1 %}
+  <ul class="small proposal-subjects">
+    {% for s in p.subjects %}<li>{{ s }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+  {% if p.status != 'pending' and p.note %}
+  <blockquote class="small proposal-verdict">{{ p.note }}</blockquote>
+  {% endif %}
+  {% if p.status == 'pending' %}
+  {# Two forms, one note box each, so a tap is one decision and the note
+     rides with it. The note reaches the other portal's journal, where the
+     agent that cut the series reads it - so it is written for that agent. #}
+  <div class="proposal-actions">
+    <form method="post" action="/proposals/{{ p.id }}/approve" class="inline-form">
+      <input type="hidden" name="next" value="{{ next }}">
+      <button type="submit" class="btn go">approve and apply</button>
+    </form>
+    <form method="post" action="/proposals/{{ p.id }}/reject" class="inline-form proposal-reject">
+      <input type="hidden" name="next" value="{{ next }}">
+      <input type="text" name="note" placeholder="why (reaches the other portal's journal)" aria-label="reason for rejecting">
+      <button type="submit" class="btn">reject</button>
+    </form>
+    <a class="btn" href="/proposals/{{ p.id }}">read the diff</a>
+  </div>
+  {% endif %}
+</div>
+{% endfor %}
+{% endmacro %}
+
+{% macro outgoing_rows(rows) %}
+{% for p in rows %}
+<div class="proposal-row proposal-{{ p.status }}">
+  <div class="row proposal-head">
+    <span class="dot {{ 'warn' if p.status == 'pending' else ('ok' if p.status == 'approved' else 'err') }}"></span>
+    <a href="/download/{{ p.project }}/patches/{{ p.name }}"><code>patches/{{ p.name }}</code></a>
+    <span class="badge">{{ 'waiting for review' if p.status == 'pending' else p.status }}</span>
+  </div>
+  <p class="hint proposal-detail">
+    {{ p.commits }} commit{{ '' if p.commits == 1 else 's' }}: {{ p.subjects|join('; ') }}.
+    {% if p.decided_at %}{{ p.status|capitalize }} {{ p.decided_at|timeago }}{% if p.decided_by %} by {{ p.decided_by }}{% endif %}{% if p.node_name %} at {{ p.node_name }}{% endif %}.{% endif %}
+  </p>
+  {% if p.note %}<blockquote class="small proposal-verdict">{{ p.note }}</blockquote>{% endif %}
+</div>
+{% endfor %}
+{% endmacro %}
+
+{# One commit of a series, read-only. The same line classes as the run diff
+   (style.css .diff-*), without the comment form: a proposal is answered whole,
+   by approving or rejecting it, not line by line. #}
+{% macro patch_commit(c, index) %}
+<div class="card proposal-commit">
+  <p><strong>{{ index }}. {{ c.subject }}</strong>
+    <span class="small"><span class="diff-plus">+{{ '{:,}'.format(c.insertions) }}</span>
+      <span class="diff-minus">&minus;{{ '{:,}'.format(c.deletions) }}</span></span></p>
+  {% if c.author or c.date %}<p class="small muted">{{ c.author }}{% if c.date %} &mdash; {{ c.date }}{% endif %}</p>{% endif %}
+  {% if c.body %}<pre class="proposal-body">{{ c.body }}</pre>{% endif %}
+  {% for f in c.files %}
+  <details class="diff-file" {{ 'open' if c.files|length <= 4 }}>
+    <summary>
+      <code class="diff-path">{{ f.path }}</code>
+      <span class="diff-counts small">
+        {% if f.binary %}<span class="muted">binary</span>
+        {% else %}<span class="diff-plus">+{{ f.insertions }}</span>
+        <span class="diff-minus">&minus;{{ f.deletions }}</span>{% endif %}
+      </span>
+    </summary>
+    {% if f.renamed %}<p class="hint">renamed from <code>{{ f.old_path }}</code></p>{% endif %}
+    {% if f.lines %}
+    <div class="diff-body">
+      <div class="diff-lines">
+        {% for line in f.lines %}
+        {% if line.commentable %}
+        <div class="diff-line diff-{{ line.kind }}">
+          <span class="diff-ln">{{ line.new if line.new is not none else line.old }}</span>
+          <span class="diff-mark">{{ line.marker }}</span><span class="diff-code">{{ line.text }}</span>
+        </div>
+        {% else %}
+        <div class="diff-line diff-hunk"><span class="diff-code">{{ line.text }}</span></div>
+        {% endif %}
+        {% endfor %}
+      </div>
+      {% if f.truncated %}
+      <p class="hint">... and {{ f.truncated }} more line{{ '' if f.truncated == 1 else 's' }} not shown.</p>
+      {% endif %}
+    </div>
+    {% elif f.binary %}
+    <p class="hint">A binary file &mdash; there are no lines to read.</p>
+    {% endif %}
+  </details>
+  {% endfor %}
+</div>
+{% endmacro %}

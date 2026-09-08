@@ -15,7 +15,7 @@ from typing import Awaitable, Callable, Optional
 
 from app import (
     apiretry, attachments, config, crossproject, db, headroom, journalfile, limits,
-    memory, midrun, notes, orphans, people, portalmcp, promptbudget, qdedupe, runlimit,
+    memory, midrun, notes, orphans, people, portalmcp, promptbudget, proposals, qdedupe, runlimit,
     runlog, spawnauth, strays, subprojects, todos, unparsedreport, verifydepth,
     worklock,
 )
@@ -282,7 +282,11 @@ _TASK_GUIDANCE_TEMPLATES = {
         "first, roughly how long, and anything $OWNER should decide now."
     ),
     "build": (
-        "Task: BUILD. Execute the next concrete chunk of PLAN.md. Write real, "
+        "Task: BUILD. Execute the next concrete chunk of PLAN.md. If there is "
+        "no PLAN.md yet, this is the first build run: decide the first chunk "
+        "yourself from the brief, the journal and the todo list (write a short "
+        "PLAN.md if the project needs one), and build it in this same run - "
+        "never stop to have the plan confirmed. Write real, "
         "working code with tests in the workspace. Commit your work to git with "
         "a sensible commit message. Make your journal_entry_md concrete: what "
         "you did, what you verified, and what's next. Set new_stage to "
@@ -953,6 +957,17 @@ def build_prompt(
     waiting_txt = qdedupe.prompt_section(project["id"])
     if waiting_txt:
         parts.append(waiting_txt)
+
+    # Patch series another portal is offering (on the publisher's own
+    # project), or how to offer one (on a follower). Empty on an install that
+    # knows no other portal, which keeps the ordinary prompt unchanged.
+    try:
+        proposals_txt = proposals.prompt_section(project)
+    except Exception:  # noqa: BLE001 - never worth a run
+        log.exception("Could not build the proposals section for %s", project["slug"])
+        proposals_txt = ""
+    if proposals_txt:
+        parts.append(proposals_txt)
 
     # Who answered, so a reply can be pitched at the person who actually asked
     # for it rather than at whoever the agent assumed - the contract tells it to

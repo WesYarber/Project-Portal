@@ -210,6 +210,21 @@ def portal_url() -> str:
     )
 
 
+def navigate_url(path: str = "") -> str:
+    """Where a tapped notification opens: the portal's reachable address plus
+    a page on it. Wes, 2026-09-08: "tapping notifications on a smart device
+    that open the web app should take the user directly to the relevant
+    project and highlight the question" - so a caller names the page and the
+    fragment, and the root is only where nothing more specific is known."""
+    root = portal_url()
+    path = (path or "").strip()
+    if not path:
+        return root
+    if path.startswith(("http://", "https://")):
+        return path
+    return root.rstrip("/") + "/" + path.lstrip("/")
+
+
 def payload(
     title: str,
     message: str,
@@ -323,8 +338,12 @@ async def push_to(
     urgency: str = "normal",
     badges: Optional[dict] = None,
     actions: Optional[list] = None,
+    navigate: str = "",
 ) -> int:
     """Send to the given subscriptions. Never raises; returns accepted sends.
+
+    `navigate` is the page a tap on the notification body opens, relative to
+    the portal (see `navigate_url`); empty means the dashboard.
 
     `badges` maps a person's id to the number their home-screen icon should
     show. It is a map rather than one number because the count is per person -
@@ -336,7 +355,7 @@ async def push_to(
     try:
         if not subs:
             return 0
-        url = portal_url()
+        url = navigate_url(navigate)
         # One body per distinct badge value, not per device: two of Wes's
         # phones get byte-identical JSON, and the encryption below is what is
         # actually per-device anyway.
