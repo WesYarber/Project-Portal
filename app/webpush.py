@@ -218,8 +218,6 @@ def navigate_url(path: str = "") -> str:
     fragment, and the root is only where nothing more specific is known."""
     root = portal_url()
     path = (path or "").strip()
-    if not path:
-        return root
     if path.startswith(("http://", "https://")):
         return path
     return root.rstrip("/") + "/" + path.lstrip("/")

@@ -154,6 +154,16 @@ def test_parse_mbox_strips_the_patch_tag_and_ignores_junk():
     assert [line.text for line in commits[0].files[0].lines if line.kind == "add"] == ["new"]
 
 
+def test_a_mail_with_no_subject_is_not_a_commit():
+    fake = (
+        b"From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\n"
+        b"From: A <a@b>\n\nbody\n---\ndiff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n-old\n+new\n"
+        b"From 0123456789abcdef0123456789abcdef01234568 Mon Sep 17 00:00:00 2001\n"
+        b"Subject: [PATCH] Real one\n\n---\ndiff --git a/y b/y\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-o\n+n\n"
+    )
+    assert [c.subject for c in proposals.parse_mbox(fake)] == ["Real one"]
+
+
 def test_the_git_signature_is_not_part_of_the_diff():
     fake = (
         b"From 0123456789abcdef0123456789abcdef01234567 Mon Sep 17 00:00:00 2001\n"
@@ -180,6 +190,18 @@ def test_outgoing_lists_every_mailbox_under_patches_with_its_sha(tmp_path):
     assert proposals.outgoing("other") == []
     assert proposals.outgoing_bytes(sha) == data
     assert proposals.outgoing_bytes("0" * 64) is None
+
+
+def test_bytes_are_never_served_under_a_sha_they_no_longer_hash_to(tmp_path, monkeypatch):
+    """The listing was read a moment ago; the file was rewritten since. The
+    publisher checks the hash too, but a stale answer must not leave here."""
+    source = make_source(tmp_path)
+    data = make_series(tmp_path, source)
+    sha = offer("theme", "walmart.mbox", data)
+    listed = proposals.outgoing()
+    (Path(config.PROJECTS_DIR) / "theme" / "patches" / "walmart.mbox").write_bytes(data + b"\n# rewritten\n")
+    monkeypatch.setattr(proposals, "outgoing", lambda project_slug=None: listed)
+    assert proposals.outgoing_bytes(sha) is None
 
 
 def test_api_proposals_serves_the_listing_and_the_bytes(client, tmp_path):
@@ -235,6 +257,9 @@ def test_pull_files_a_series_it_has_not_seen_and_never_twice(tmp_path, far, publ
     assert proposals.mbox_path(row).read_bytes() == data
     assert proposals.pull(node) == []
     assert len(proposals.list_rows("in")) == 1
+    # Filing the same bytes directly is refused too, not only through pull.
+    assert proposals.file_series(data, node, {"sha": sha, "name": "again.mbox", "project": "theme"}) is None
+    assert len(proposals.list_rows("in")) == 1
 
 
 def test_pull_refuses_bytes_that_do_not_match_their_sha(tmp_path, far, publishes):
@@ -249,8 +274,11 @@ def test_pull_refuses_bytes_that_do_not_match_their_sha(tmp_path, far, publishes
 
 def test_pull_skips_a_listing_it_cannot_read_or_a_malformed_sha(tmp_path, far, publishes):
     node = nodes.add("office", "http://office:8500")
-    far["listing"] = {"proposals": [{"sha": "not-a-sha"}, "junk", None]}
+    far["listing"] = {"proposals": [{"sha": "not-a-sha"}, {"sha": "../../etc/passwd"}, "junk", None]}
     assert proposals.pull(node) == []
+    # Nothing but the listing was fetched: a sha that is not a sha is never
+    # put in a URL, however the far side would answer it.
+    assert far["urls"] == ["http://office:8500/api/proposals"]
     far["listing"] = "junk"
     assert proposals.pull(node) == []
 
@@ -313,9 +341,11 @@ def test_approving_applies_the_series_to_the_source(tmp_path, source, meta):
     assert decided["applied"] == outcome.applied
     assert decided["decided_by"] == "agent"
     assert decided["note"] == "tests pass, comes in"
-    # The verdict is final: a second decision is refused either way.
-    assert proposals.apply(row["id"], "wes").ok is False
-    assert proposals.reject(row["id"], "wes").ok is False
+    # The verdict is final: a second decision is refused either way, and
+    # refused for that reason rather than by git failing to re-apply it.
+    assert proposals.apply(row["id"], "wes").detail == "already approved"
+    assert proposals.reject(row["id"], "wes").detail == "already approved"
+    assert proposals.get(row["id"])["decided_by"] == "agent"
 
 
 def test_a_dirty_source_tree_refuses_and_stays_pending(tmp_path, source, meta):
@@ -384,8 +414,16 @@ def test_the_verdict_is_posted_back_to_the_offering_node(tmp_path, source, meta,
 
 def test_telling_an_unknown_or_unreachable_node_is_not_an_error(tmp_path, source, meta, monkeypatch):
     row = file_from({"id": "gone", "name": "gone"}, make_series(tmp_path, source))
-    proposals.reject(row["id"], "wes")
+    nodes.add("gone", "http://gone:8500")
+    posted: list = []
+    monkeypatch.setattr(proposals.urllib.request, "urlopen", lambda request, timeout: posted.append(request))
+    # Nothing is decided yet, so there is no verdict to send.
     assert proposals.tell_sender(proposals.get(row["id"]), "home") is False
+    assert posted == []
+    proposals.reject(row["id"], "wes")
+    nodes.remove("gone")
+    assert proposals.tell_sender(proposals.get(row["id"]), "home") is False
+    assert posted == []
     nodes.add("gone", "http://gone:8500")
 
     def down(request, timeout):
