@@ -512,12 +512,23 @@ body.theme-amber button.quick-option:hover { background: rgba(255, 176, 46, 0.22
    the page and the window sit at #001138, about half its lightness, and the
    title bar keeps the printed value. True Blue is tuned for white paper and
    reads dim as text on the navy, so the text roles carry it lifted; the
-   fills below use it as printed. */
+   fills below use it as printed.
+
+   The brand belongs in the ground and in the accents, NOT in the running
+   text. Wes, 2026-09-03: "It seems like it applied a sort of blue tint over
+   everything.. this text seems a bit blue as im typing. Buttons and
+   everything else as well." Body text was Sky Blue itself (83% saturation,
+   where the shipped terminal sits at 25%), the page glow was Everyday Blue,
+   and every button carried a True Blue wash at 0.22 - three blues stacked on
+   top of a navy page, which is what tinted the whole install. Body text is
+   now a near-white with a breath of the hue left in it, the glow is neutral,
+   and the button wash is halved: the color stays in the chrome, the
+   accents and the spark. */
 
 body.theme-walmart {
-  --terminal-fg: hsl(200, 83%, 82%);          /* Sky Blue, #a9ddf7 */
-  --terminal-dim: hsl(205, 50%, 68%);
-  --terminal-glow: rgba(77, 189, 245, 0.16);  /* Everyday Blue */
+  --terminal-fg: hsl(206, 20%, 92%);          /* near-white, a breath of Sky Blue */
+  --terminal-dim: hsl(207, 14%, 65%);
+  --terminal-glow: rgba(160, 190, 215, 0.10);
 
   --bg-color: hsl(222, 100%, 11%);            /* Bentonville Blue, darkened: #001138 */
   --window-bg: rgba(0, 14, 48, 0.86);
@@ -547,11 +558,14 @@ body.theme-walmart .heat-4 { background: var(--ansi-green); }
 
 /* The three button washes style.css spells out as CRT literals: the default
    blue, the affirmative green and the destructive red. The default wash is
-   True Blue as printed - a fill can carry the brand value where text cannot. */
+   True Blue as printed - a fill can carry the brand value where text cannot -
+   but at half the strength it started at: the shipped terminal washes its
+   buttons at 0.10 and midnight at 0.10, and 0.22 of a fully saturated blue
+   under a True Blue label read as a blue button rather than a lit one. */
 body.theme-walmart button,
-body.theme-walmart .btn { background: rgba(0, 83, 226, 0.22); }
+body.theme-walmart .btn { background: rgba(0, 83, 226, 0.11); }
 body.theme-walmart button:hover,
-body.theme-walmart .btn:hover { background: rgba(0, 83, 226, 0.36); }
+body.theme-walmart .btn:hover { background: rgba(0, 83, 226, 0.22); }
 body.theme-walmart button.go,
 body.theme-walmart .btn.go {
   background: rgba(74, 222, 160, 0.12);
@@ -563,8 +577,8 @@ body.theme-walmart button.danger,
 body.theme-walmart .btn.danger { background: rgba(255, 120, 110, 0.10); }
 body.theme-walmart button.danger:hover,
 body.theme-walmart .btn.danger:hover { background: rgba(255, 120, 110, 0.20); color: var(--ansi-red); }
-body.theme-walmart button.quick-option { background: rgba(0, 83, 226, 0.22); }
-body.theme-walmart button.quick-option:hover { background: rgba(0, 83, 226, 0.38); }
+body.theme-walmart button.quick-option { background: rgba(0, 83, 226, 0.11); }
+body.theme-walmart button.quick-option:hover { background: rgba(0, 83, 226, 0.24); }
 
 /* The spark, drawn inline so the theme is still one stylesheet and no
    request. Two placements, both inside what a theme may write (background-*
