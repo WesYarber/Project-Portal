@@ -763,15 +763,22 @@ def running_run_handles() -> list[RunningRun]:
     ]
 
 
-def set_run_session(run_id: int, session_id: Optional[str]) -> None:
+def set_run_session(run_id: int, session_id: Optional[str], force: bool = False) -> None:
     """Record the CLI session id the moment the stream announces it, rather
     than at the end with `finish_run`. A run that outlives the portal process
     never reaches its own finish, and the id is what names its transcript
-    (app/transcript.py). An id already on the row is kept."""
+    (app/transcript.py). An id already on the row is kept - unless `force`,
+    which a run resumed after a usage-window pause uses: the CLI forks a new
+    session on `--resume`, and the new id is the one that names the transcript
+    with the resumed turns in it (app/limitpause.py)."""
     if not session_id:
         return
     conn = get_conn()
     with _LOCK:
+        if force:
+            conn.execute("UPDATE runs SET session_id = ? WHERE id = ?", (session_id, run_id))
+            conn.commit()
+            return
         conn.execute(
             "UPDATE runs SET session_id = ? WHERE id = ? AND session_id IS NULL",
             (str(session_id), run_id),
@@ -4205,6 +4212,64 @@ def running_project_ids() -> set[int]:
             "SELECT DISTINCT project_id FROM runs WHERE status = 'running' AND project_id IS NOT NULL"
         ).fetchall()
     return {int(row["project_id"]) for row in rows}
+
+
+def busy_project_ids() -> set[int]:
+    """Projects no new run may start on: one in flight, or one paused for the
+    usage window (app/limitpause.py). A paused run still owns its project - it
+    resumes in the same session with the workspace as it left it, and a fresh
+    run started meanwhile would be the double-run `running_project_ids` exists
+    to prevent, just with a delay in the middle."""
+    conn = get_conn()
+    with _LOCK:
+        rows = conn.execute(
+            "SELECT DISTINCT project_id FROM runs "
+            "WHERE status IN ('running', 'paused') AND project_id IS NOT NULL"
+        ).fetchall()
+    return {int(row["project_id"]) for row in rows}
+
+
+def paused_runs() -> list[sqlite3.Row]:
+    """Every run parked for the usage window, oldest first (app/limitpause.py)."""
+    conn = get_conn()
+    with _LOCK:
+        return conn.execute(
+            "SELECT * FROM runs WHERE status = 'paused' ORDER BY id"
+        ).fetchall()
+
+
+def reopen_run(run_id: int, model: Optional[str] = None) -> bool:
+    """Put a paused run back in flight, on the same row: the run continues,
+    it does not start over. False when the row was not paused, so two ticks
+    cannot both resume one run. `model` records the one the resumed segment
+    runs on, when the caller resolved a different one."""
+    conn = get_conn()
+    with _LOCK:
+        cur = conn.execute(
+            "UPDATE runs SET status = 'running', ended_at = NULL, model = COALESCE(?, model) "
+            "WHERE id = ? AND status = 'paused'",
+            (model, run_id),
+        )
+        conn.commit()
+    return cur.rowcount == 1
+
+
+def add_run_cost(run_id: int, cost_usd: Optional[float], num_turns: Optional[int]) -> None:
+    """Fold the spend of a run's earlier segments into its row, after a
+    resumed segment has settled it with its own figures alone. NULL stays
+    NULL: a segment that reported no cost is not the same as one that cost
+    nothing, and a sum with an unknown in it is unknown."""
+    if not cost_usd and not num_turns:
+        return
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET cost_usd = CASE WHEN cost_usd IS NULL THEN NULL ELSE cost_usd + ? END, "
+            "num_turns = CASE WHEN num_turns IS NULL THEN NULL ELSE num_turns + ? END "
+            "WHERE id = ?",
+            (float(cost_usd or 0.0), int(num_turns or 0), run_id),
+        )
+        conn.commit()
 
 
 def is_project_running(project_id: int) -> bool:

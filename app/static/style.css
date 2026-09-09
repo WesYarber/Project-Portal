@@ -1767,6 +1767,10 @@ summary:hover { color: var(--ansi-blue); }
 /* Canceled is a deliberate stop, not a failure - dim rather than red. */
 .run-status-cancelled { color: var(--terminal-dim); border-color: var(--terminal-dim); }
 .run-table tr.run-cancelled td { color: var(--terminal-dim); }
+/* Paused for the usage window (app/limitpause.py) is neither done nor
+   failed: it comes back. Yellow, like a timeout, but not red. */
+.run-status-paused { color: var(--ansi-yellow); border-color: var(--ansi-yellow); }
+.run-table tr.run-paused td { color: var(--ansi-yellow); }
 
 /* The breakdown tables under "By project" and "Prompt size". These are the
    widest tables in the portal - seven columns, one of them a 16-glyph bar - and

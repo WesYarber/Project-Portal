@@ -59,6 +59,24 @@
   <p class="hint run-hold">A note handed over on the project page ("deliver mid-run") reaches this agent at its next tool call.</p>
   {% endif %}
   {% endif %}
+  {% if limit_hold %}
+  {# Paused for the usage window (app/limitpause.py): the agent is not
+     running, but the run is not over either - it resumes in the same CLI
+     session once the window reopens. Stopping it here is the only way to
+     keep that from happening. #}
+  <div class="actions" style="margin-top:0.8rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+    <form method="post" action="/run/{{ run.id }}/cancel" class="inline-form">
+      <input type="hidden" name="next" value="/run/{{ run.id }}">
+      <button type="submit" class="btn danger">stop this run</button>
+    </form>
+  </div>
+  <p class="hint run-hold" id="limit-hold">
+    Paused, not stopped: this run ran out of allowance{% if limit_hold.why %} ({{ limit_hold.why }}){% endif %}.
+    It resumes in the same session, with the workspace as it left it, after {{ limit_hold.until_text }}
+    {%- if limit_hold.resumes %} (resume {{ limit_hold.resumes + 1 }} of at most {{ limit_hold.max_resumes }}){% endif %}.
+    Stopping it ends the run for good.
+  </p>
+  {% endif %}
   <p class="hint">{{ run.started_at }}{% if run.ended_at %} &rarr; {{ run.ended_at }}{% endif %}</p>
   {% if run.summary %}
   <p style="margin-top:0.8rem;"><strong>summary</strong></p>

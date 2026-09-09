@@ -43,7 +43,7 @@ from app import (
     journalwindow,
     jumpkeys,
     launch,
-    limits,
+    limitpause, limits,
     live,
     mediamd,
     memory,
@@ -2300,6 +2300,9 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         "audit_retention_days": db.AUDIT_RETENTION_DAYS,
         "midrun": midrun.state(run_id),
         "midrun_events": db.midrun_events_for_run(run_id),
+        # A run parked for the usage window (app/limitpause.py): when it
+        # resumes and why it stopped. None for every other run.
+        "limit_hold": limitpause.describe(row),
         "active_run": active_run_snapshot(),
         "landed": landed,
         # Built from the same Landed, so the diff and the undo button can never

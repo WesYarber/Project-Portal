@@ -15,7 +15,7 @@ from typing import Optional
 
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
-    limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
+    limitpause, limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
     portalmcp, preview, pricing, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, transcript, worklock,
@@ -58,6 +58,7 @@ def _in_backoff() -> bool:
 
 async def _rate_limit_backoff(
     quota: Optional[apiretry.Retry] = None,
+    hint: Optional[datetime] = None,
 ) -> tuple[datetime, str]:
     """Set `backoff_until` after a run hit a usage limit, and say why.
 
@@ -73,12 +74,23 @@ async def _rate_limit_backoff(
     afterwards over a network call that can itself fail - and does, on exactly
     the kind of bad afternoon that produces a rate limit in the first place.
     Same ceiling, because a full weekly window would otherwise idle for days.
+
+    `hint` is the time the CLI's own refusal printed ("resets 7:30pm (UTC)",
+    see `apiretry.parse_reset_hint`), for the hard refusal that carries no
+    retry and so no headers. It ranks below the headers and above the usage
+    endpoint: it is the refusing side's own word, read off the message that
+    actually ended the run.
     """
     now = datetime.now(timezone.utc)
     if quota is not None and quota.resets_at and quota.resets_at > now:
         until = min(quota.resets_at, now + limits.MAX_BACKOFF)
         why = f"{quota.limit_type} limit reached" if quota.limit_type \
             else "usage limit reported by the API"
+        db.set_setting("backoff_until", until.isoformat(timespec="seconds"))
+        return until, why
+    if hint is not None and hint > now:
+        until = min(hint, now + limits.MAX_BACKOFF)
+        why = f"session limit reported by the CLI, resets {hint.strftime('%H:%M UTC')}"
         db.set_setting("backoff_until", until.isoformat(timespec="seconds"))
         return until, why
     try:
@@ -261,8 +273,10 @@ def _pick_project(manual_project_id: Optional[int]) -> tuple[Optional[db.sqlite3
     """Returns (project_row, is_manual). Manual runs deliberately bypass the
     per-project cap - Wes asking for a run is the whole point - but never the
     one-run-per-project rule, since two agents in one workspace would fight
-    over the same files and the same git checkout."""
-    busy = db.running_project_ids()
+    over the same files and the same git checkout. A run paused for the usage
+    window (app/limitpause.py) counts as busy: it is coming back to this
+    workspace."""
+    busy = db.busy_project_ids()
     if manual_project_id is not None:
         proj = db.get_project(manual_project_id)
         if proj is not None and proj["id"] not in busy and not workspace_leased(proj["slug"]):
@@ -302,7 +316,7 @@ def _pick_research() -> Optional[db.sqlite3.Row]:
     """
     if not pacing.spending_down():
         return None
-    busy = db.running_project_ids()
+    busy = db.busy_project_ids()
     for candidate in db.list_research_queued():
         if candidate["id"] not in busy:
             return candidate
@@ -516,6 +530,11 @@ async def _tick() -> None:
         await _maybe_compact()
         return
 
+    # Runs parked for the usage window come back before anything new starts:
+    # they are work already half done, and they hold their projects until they
+    # finish (app/limitpause.py).
+    await _resume_paused_runs()
+
     # Keep filling free slots until something says no, rather than starting at
     # most one run per minute: queued manual runs should all go at once, and a
     # scheduled one still answers to the pacing interval inside `_start_one`.
@@ -599,7 +618,7 @@ async def _start_one() -> bool:
     manual_project_id: Optional[int] = None
     if not manual_queue.empty():
         manual_project_id = await manual_queue.get()
-        if manual_project_id in db.running_project_ids():
+        if manual_project_id in db.busy_project_ids():
             # Already working on that project. Re-queue rather than drop the
             # request or put two agents in one workspace; the next tick that
             # finds it free will honor it.
@@ -1054,17 +1073,87 @@ def spawn_run(project: db.sqlite3.Row, task: str, parallel: bool = False) -> int
     return run_id
 
 
-async def _execute_run(
-    project: db.sqlite3.Row, task: str, run_id: int, model: str, parallel: bool = False
-) -> None:
+async def _resume_paused_runs() -> None:
+    """Wake every run whose usage-window pause is over, as far as the parallel
+    cap allows. See app/limitpause.py."""
     try:
-        await run_project_task(project, task, run_id=run_id, model=model, parallel=parallel)
+        ready = limitpause.due()
+    except Exception:  # noqa: BLE001 - bookkeeping must not stop the tick
+        log.exception("Could not list paused runs")
+        return
+    for row in ready:
+        if len(_inflight) >= pacing.parallel_cap(db.max_parallel_runs()):
+            return
+        try:
+            resume_run(row)
+        except Exception:  # noqa: BLE001
+            log.exception("Could not resume run %s", row["id"])
+
+
+def resume_run(row: db.sqlite3.Row) -> bool:
+    """Put a paused run back in flight on its own row. False when it could not
+    be: no project, a leased workspace (wait for the next tick), a row that
+    is no longer paused, or nothing to resume - a paused row without a
+    session, which is settled as an error rather than woken forever."""
+    run_id = int(row["id"])
+    project = db.get_project(int(row["project_id"])) if row["project_id"] else None
+    if project is None:
+        db.finish_run(run_id, "error", summary="Could not resume: the project is gone.")
+        return False
+    session = row["session_id"]
+    if not session:
+        db.finish_run(run_id, "error", summary="Could not resume: no CLI session was recorded.")
+        db.add_journal(
+            project["id"], "system", "status",
+            f"Run #{run_id} could not be resumed after its usage-window pause: no CLI "
+            "session was recorded for it. The next run starts fresh.",
+        )
+        return False
+    if workspace_leased(project["slug"]):
+        log.info("Run %s stays paused: %s is leased", run_id, project["slug"])
+        return False
+    prior = (row["cost_usd"], row["num_turns"])
+    # Resolved afresh rather than read off the row: a run paused on a model
+    # whose own weekly window is still shut resumes on its stand-in (Fable ->
+    # Opus, `limits.model_fallback`), which the CLI allows on `--resume`. The
+    # row records what actually ran.
+    model = agent_runner.resolve_model(project, str(row["task"]))
+    if not db.reopen_run(run_id, model=model):
+        return False
+    log.info("Resuming run %s on %s after its usage-window pause (%s)", run_id, project["slug"], model)
+    _inflight[run_id] = asyncio.create_task(
+        _execute_run(
+            project, str(row["task"]), run_id, model,
+            parallel=db.is_parallel_run(row), resume_session=str(session), prior=prior,
+        )
+    )
+    return True
+
+
+async def _execute_run(
+    project: db.sqlite3.Row, task: str, run_id: int, model: str, parallel: bool = False,
+    resume_session: Optional[str] = None,
+    prior: tuple[Optional[float], Optional[int]] = (None, None),
+) -> None:
+    """`resume_session` and `prior` are set only by `resume_run`: the CLI
+    session to continue, and what the run's earlier segments cost, folded
+    onto the row once this segment has settled it (app/limitpause.py)."""
+    try:
+        await run_project_task(
+            project, task, run_id=run_id, model=model, parallel=parallel,
+            resume_session=resume_session,
+        )
     except Exception:  # noqa: BLE001 - a crashed run must not leave a 'running' row
         log.exception("Run %s failed", run_id)
         row = db.get_run(run_id)
         if row is not None and row["status"] == "running":
             db.finish_run(run_id, "error", summary="Run crashed; see the service log.")
     finally:
+        if prior != (None, None):
+            try:
+                db.add_run_cost(run_id, *prior)
+            except Exception:  # pragma: no cover - defensive
+                log.exception("Could not fold the earlier cost onto run %s", run_id)
         # Whether it crashed or finished, this is the one place that sees every
         # completed run, so it is where "these keep dying on the launch pad"
         # gets noticed, and where a parallel run's branch gets folded back in.
@@ -1094,6 +1183,13 @@ def merge_parallel_work(project: db.sqlite3.Row) -> list[parallel_runs.Merged]:
     """
     slug = str(project["slug"])
     live = {int(r["id"]) for r in db.running_runs_for_project(int(project["id"]))}
+    # A branch whose run is paused for the usage window is still being written
+    # (app/limitpause.py): the run comes back to it. Merging it now would be
+    # merging a live agent's half-written history with a delay in the middle.
+    live |= {
+        int(r["id"]) for r in db.paused_runs()
+        if r["project_id"] is not None and int(r["project_id"]) == int(project["id"])
+    }
     settled = [run_id for run_id in parallel_runs.pending(slug) if run_id not in live]
     if not settled:
         return []
@@ -1156,10 +1252,15 @@ async def _announce_crash_loop(project: db.sqlite3.Row) -> None:
     )
 
 
-def _live_logger(run_id: int) -> agent_runner.EventCallback:
+def _live_logger(run_id: int, fresh: bool = True) -> agent_runner.EventCallback:
     """Stream a run's events to its log file and keep `runs.last_activity`
-    current, so both the live console and the dashboard have something to show."""
-    live = runlog.RunLog(run_id)
+    current, so both the live console and the dashboard have something to show.
+
+    `fresh=False` is a run resumed after a usage-window pause: the log keeps
+    the turns before the pause, and the session id the resumed CLI announces
+    REPLACES the one on the row - the CLI forks on `--resume`, and the new id
+    is the transcript that has everything."""
+    live = runlog.RunLog(run_id, fresh=fresh)
     state = {"events": 0, "last": ""}
 
     def on_event(event: dict, lines: list[str]) -> None:
@@ -1171,7 +1272,7 @@ def _live_logger(run_id: int) -> agent_runner.EventCallback:
         # only record of its report if this process dies before the run does.
         # Recorded now, from the first event, not at the end (app/transcript.py).
         if event.get("type") == "system" and event.get("subtype") == "init":
-            db.set_run_session(run_id, event.get("session_id"))
+            db.set_run_session(run_id, event.get("session_id"), force=not fresh)
         # The agent's words, when this event carries any (app/runlog.py
         # `said`): written only then, so they stay on the strip through the
         # tool-only turns that follow them.
@@ -1242,10 +1343,17 @@ async def run_project_task(
     run_id: Optional[int] = None,
     model: Optional[str] = None,
     parallel: bool = False,
+    resume_session: Optional[str] = None,
 ) -> None:
     """Execute one task. `run_id` is passed in by `spawn_run`, which creates the
     row up front so the slot is accounted for before the coroutine starts; call
-    without it to create the row here."""
+    without it to create the row here.
+
+    With `resume_session`, this is the same run coming back from a usage-window
+    pause (app/limitpause.py): the CLI continues that session with a short
+    prompt saying so instead of the full task prompt, the log is appended to,
+    and the workspace head the undo button works from is the one recorded when
+    the run first started."""
     model = model or agent_runner.resolve_model(project, task)
     timeout_min = int(db.get_setting("run_timeout_min") or "30")
     max_turns = run_max_turns()
@@ -1262,7 +1370,12 @@ async def run_project_task(
     # refused outright rather than falling back to the shared workspace - that
     # fallback IS the double-run this whole mechanism exists to avoid.
     if parallel:
-        worktree = parallel_runs.open_worktree(slug, run_id)
+        # A resumed parallel run goes back into the worktree it was paused in;
+        # `open_worktree` would treat that directory as a leftover and delete
+        # the paused run's own edits.
+        existing = parallel_runs.worktree_for(slug, run_id) if resume_session else None
+        worktree = existing if existing is not None and existing.exists() \
+            else parallel_runs.open_worktree(slug, run_id)
         if worktree is None:
             note = (
                 "The parallel run was refused: the portal could not open a git "
@@ -1280,16 +1393,19 @@ async def run_project_task(
     # from the file. Written first, the same race can only ever affect the newest
     # entry - which the prompt always shows whole. See app/journalfile.py.
     journalfile.write(project, workspace)
-    prompt = agent_runner.build_prompt(
-        task, project,
-        parallel_note=(
-            parallel_runs.prompt_section(
-                slug, run_id, workspace,
-                others=max(len(db.running_runs_for_project(int(project["id"]))) - 1, 1),
-            )
-            if parallel else ""
-        ),
-    )
+    if resume_session:
+        prompt = limitpause.mark_resumed(db.get_run(run_id))
+    else:
+        prompt = agent_runner.build_prompt(
+            task, project,
+            parallel_note=(
+                parallel_runs.prompt_section(
+                    slug, run_id, workspace,
+                    others=max(len(db.running_runs_for_project(int(project["id"]))) - 1, 1),
+                )
+                if parallel else ""
+            ),
+        )
     # For the meta-project, remember the source HEAD so we can detect a
     # self-update and restart the service to load the new code.
     src_head_before = _src_head() if project["slug"] == config.META_PROJECT_SLUG else None
@@ -1299,15 +1415,22 @@ async def run_project_task(
     # ordinary workspace's HEAD will not move until the merge.
     run_repo = _run_repo(slug, workspace, parallel)
     ws_head_before = proof.head_sha(run_repo)
-    # Written now as well as paired at the end: a run that outlives a portal
-    # restart never reaches the pairing, and this is what lets its settle
-    # (`_settle_adopted`) still name and undo what it committed.
-    db.set_run_start_head(run_id, ws_head_before)
+    if resume_session:
+        # The run's commits are everything since it FIRST started, not since
+        # this segment did; the undo button must cover the lot.
+        row = db.get_run(run_id)
+        ws_head_before = (db._row_get(row, "ws_head_start") if row else None) or ws_head_before  # noqa: SLF001
+    else:
+        # Written now as well as paired at the end: a run that outlives a portal
+        # restart never reaches the pairing, and this is what lets its settle
+        # (`_settle_adopted`) still name and undo what it committed.
+        db.set_run_start_head(run_id, ws_head_before)
 
     try:
         result = await agent_runner.run_claude(
             prompt, workspace, model, timeout_min, max_turns=max_turns,
-            on_event=_live_logger(run_id), run_id=run_id,
+            on_event=_live_logger(run_id, fresh=not resume_session), run_id=run_id,
+            resume_session=resume_session,
             json_schema=report_schema.schema_json(),
             settings_json=_guard_settings(run_id, project),
             mcp_config=_mcp_config(run_id, project, task),
@@ -1346,9 +1469,22 @@ async def run_project_task(
         return
 
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff(
-            result.retries.quota if result.retries else None
-        )
+        quota = result.retries.quota if result.retries else None
+        hint = apiretry.parse_reset_hint(result.result_text) \
+            or apiretry.parse_reset_hint(result.raw_stderr)
+        until, why = await _rate_limit_backoff(quota, hint=hint)
+        # Paused, not stopped (app/limitpause.py): the row keeps its session
+        # and the tick brings it back once the window reopens. Only a run that
+        # has no session to continue, or has been woken too often already,
+        # settles as the error it used to be. The run waits for the reset the
+        # failure actually named, uncapped: the six-hour ceiling on `until`
+        # exists so the scheduler can put OTHER runs on the fallback model
+        # meanwhile, and waking this one into a window still shut would only
+        # spend one of its resumes.
+        if limitpause.can_pause(result) and limitpause.pause(
+            project, run_id, task, result, limitpause.reset_moment(quota, hint, until), why
+        ):
+            return
         db.finish_run(
             run_id, "error", result.session_id, result.cost_usd, result.num_turns,
             f"Rate limited; backing off until {until.isoformat(timespec='minutes')} ({why})",
@@ -1365,6 +1501,20 @@ async def run_project_task(
         db.finish_run(run_id, "timeout", summary="Run timed out")
         db.add_journal(project["id"], "system", "status", f"Run ({task}) timed out after {timeout_min} min.")
         _note_orphaned_work(project, task, "timed out", repo=run_repo)
+        return
+
+    if resume_session and oneoff.session_lost(result, resume_session):
+        # The CLI no longer has the session (pruned, upgraded, a different
+        # HOME). The files are still in the workspace; the next scheduled run
+        # starts fresh from the journal, which is the old behavior exactly.
+        note = (
+            f"Run ({task}) could not be resumed after its usage-window pause: the CLI no "
+            "longer has the session. Whatever it finished is in the workspace and the "
+            "next run starts fresh."
+        )
+        db.finish_run(run_id, "error", result.session_id, result.cost_usd, result.num_turns, note[:500])
+        db.add_journal(project["id"], "system", "status", note)
+        _note_orphaned_work(project, task, "could not be resumed", repo=run_repo)
         return
 
     if not result.ok and result.report is None:
@@ -2712,6 +2862,16 @@ def cancel_run(run_id: int) -> str:
     run = db.get_run(run_id)
     if run is None:
         return "missing"
+    if run["status"] == limitpause.STATUS:
+        # Nothing is running: the row is waiting for the usage window. Settle
+        # it so the tick does not wake it, and free its project.
+        hookguard.end(run_id)
+        db.finish_run(
+            run_id, "cancelled",
+            summary="Canceled while paused for the usage window; it will not be resumed.",
+        )
+        log.info("Cancel requested for paused run %s; row settled", run_id)
+        return "cancelled"
     if run["status"] != "running":
         return "not_running"
     if agent_runner.cancel_run(run_id):

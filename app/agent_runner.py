@@ -1217,10 +1217,20 @@ def _configured_budget_usd() -> Optional[float]:
 
 
 def _looks_rate_limited(text: str) -> bool:
+    """Does a CLI refusal read as the allowance being spent?
+
+    "hit your", "session limit", "usage limit" and "resets" joined the list on
+    2026-09-09: the CLI's own wording for a spent window is "You've hit your
+    session limit · resets 7:30pm (UTC)", which carries none of the three
+    original words, so run 1485 died on it and was filed as an ordinary error
+    with no backoff - and the next run walked straight into the same wall."""
     t = text.lower()
     if "limit" not in t:
         return False
-    return any(word in t for word in ("reach", "exceed", "rate"))
+    return any(
+        word in t
+        for word in ("reach", "exceed", "rate", "hit your", "session limit", "usage limit", "resets")
+    )
 
 
 def _hit_a_usage_limit(

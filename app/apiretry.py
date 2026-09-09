@@ -61,7 +61,8 @@ old string match as the fallback for when no event arrived at all.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 # The categories a retry can fall into, most specific first. These are the
@@ -268,3 +269,88 @@ def _newer(candidate: Retry, current: Retry) -> bool:
     if current.resets_at is None:
         return True
     return candidate.resets_at >= current.resets_at
+
+
+# --------------------------------------------------------------------------
+# The reset time the CLI prints when it refuses outright
+#
+# A hard refusal carries no `api_retry` event and no headers (case 3 in
+# `agent_runner._hit_a_usage_limit`); the only word on when the window
+# reopens is the CLI's own prose, which on 2.1.258 reads
+#
+#     You've hit your session limit · resets 7:30pm (UTC)
+#
+# Run 1485 died on exactly that line on 2026-09-08, one tool call short of its
+# report, and the portal both misread it (no "reach"/"exceed"/"rate" in it)
+# and, once it did read it, would have had to ask the usage endpoint for a
+# second opinion on a time the message already states. Read it out instead.
+# --------------------------------------------------------------------------
+
+_RESET_HINT = re.compile(
+    r"resets?\s+(?:on\s+)?"
+    r"(?:(?P<month>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?:at\s+)?)?"
+    r"(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?"
+    r"(?:\s*\((?P<tz>[^)]{1,40})\))?",
+    re.IGNORECASE,
+)
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+
+
+def parse_reset_hint(text: str, now: Optional[datetime] = None) -> Optional[datetime]:
+    """The moment a CLI refusal says the window reopens, as an aware UTC
+    datetime - or None when the text names no time it can read.
+
+    A bare clock time means the next such time: today's if it is still ahead,
+    tomorrow's otherwise. A month and day pin the date (this year, or next if
+    that day is already well past - a weekly window read in late December). The
+    zone in parentheses is honored when the platform knows it; anything else,
+    or none at all, is read as UTC, which is what the CLI prints.
+    """
+    if not text:
+        return None
+    match = _RESET_HINT.search(text)
+    if match is None:
+        return None
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute") or 0)
+    ampm = (match.group("ampm") or "").lower()
+    if ampm:
+        if hour < 1 or hour > 12:
+            return None
+        hour = hour % 12 + (12 if ampm == "pm" else 0)
+    elif hour > 23:
+        return None
+    if minute > 59:
+        return None
+    tz = timezone.utc
+    zone = (match.group("tz") or "").strip()
+    if zone and zone.upper() not in ("UTC", "GMT", "Z"):
+        try:
+            from zoneinfo import ZoneInfo
+
+            tz = ZoneInfo(zone)
+        except Exception:  # noqa: BLE001 - an unknown zone reads as UTC
+            tz = timezone.utc
+    now = now or datetime.now(timezone.utc)
+    local_now = now.astimezone(tz)
+    month = (match.group("month") or "").lower()[:3]
+    if month:
+        day = int(match.group("day"))
+        try:
+            when = local_now.replace(
+                month=_MONTHS.index(month) + 1, day=day, hour=hour, minute=minute,
+                second=0, microsecond=0,
+            )
+        except ValueError:
+            return None
+        if when < local_now - timedelta(days=2):
+            try:
+                when = when.replace(year=when.year + 1)
+            except ValueError:
+                return None
+    else:
+        when = local_now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if when <= local_now:
+            when += timedelta(days=1)
+    return when.astimezone(timezone.utc)

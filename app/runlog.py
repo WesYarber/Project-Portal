@@ -295,14 +295,18 @@ def prune(keep: int = KEEP_LOGS) -> int:
 class RunLog:
     """Append-only writer for one run's live log."""
 
-    def __init__(self, run_id: int) -> None:
+    def __init__(self, run_id: int, fresh: bool = True) -> None:
         self.run_id = run_id
         self.path = log_path(run_id)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         prune()
         # A re-used run id (only possible if the DB was reset) must not show
-        # the previous run's transcript.
-        self.path.write_text("", encoding="utf-8")
+        # the previous run's transcript. `fresh=False` is the one exception: a
+        # run resumed after a usage-window pause (app/limitpause.py) is the
+        # same run continuing, and its console must keep the turns before the
+        # pause.
+        if fresh or not self.path.exists():
+            self.path.write_text("", encoding="utf-8")
 
     def append(self, lines: list[str]) -> None:
         if not lines:
