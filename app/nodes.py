@@ -21,7 +21,10 @@ URL and optionally an ssh target - and three things done with it:
   share is the `Source-commit:` trailer the publish stamps into every mirror
   commit: a follower reports the trailer of the commit it is on, this node
   reports the trailer of the last commit it published, and the two either
-  match or they do not.
+  match or they do not. The install that publishes is the *authority* on what
+  that head is; a follower has no local way to know it and must take it from
+  the publisher's own answer rather than from its own commit, which is the
+  number in question. See `authority()`.
 - **An update push.** A node with an ssh target can be told to run its own
   `deploy/update.py` - from a button, and automatically after every publish,
   once the node has no agent run in flight. The follower's systemd timer
@@ -116,16 +119,45 @@ def source_commit() -> str:
 
 
 def published_commit() -> str:
-    """The newest source commit any follower could be on.
+    """The newest source commit *this install* publishes, or "" if it doesn't.
 
     On the publishing machine that is the trailer of the mirror's last commit
     - not this checkout's HEAD, which may be a commit the mirror has not been
-    given yet (a dirty tree waits). Anywhere else it is our own commit: a
-    follower compares its peers against what it runs itself.
+    given yet (a dirty tree waits). Anywhere else this install publishes
+    nothing, and says so.
     """
     if mirror.configured():
         return mirror.published_head() or ""
-    return source_commit()
+    return ""
+
+
+def authority(statuses: Optional[dict[str, dict]] = None) -> str:
+    """The published source commit this install can trust, or "" for none.
+
+    This used to be `published_commit()` with a fallback to `source_commit()`,
+    and on a follower that fallback was a lie with teeth. Our own commit is
+    not the published head - it is *the very thing in question*, the number
+    that goes stale. Comparing a peer against it meant that the moment this
+    install fell behind, the publisher's row read "behind": the machine that
+    is ahead accused of being the stale one, in exactly the situation the
+    display exists to catch.
+
+    A follower does not have to guess. The publisher already hands the answer
+    over in its `/api/node` reply - `published` - and `probe()` carries it
+    through. So: our own mirror if we have one, else what the peer that
+    publishes says, else nothing, and "nothing" is an honest answer that
+    `_state()` reports as `unknown` rather than inventing a comparison.
+    """
+    mine = published_commit()
+    if mine:
+        return mine
+    if statuses is None:
+        statuses = _statuses()
+    for node in registry():
+        info = (statuses.get(node["id"]) or {}).get("node") or {}
+        if info.get("publishes") and info.get("published"):
+            return str(info["published"])
+    return ""
 
 
 def identity(fresh: bool = False) -> dict:
@@ -156,6 +188,18 @@ def identity(fresh: bool = False) -> dict:
 
 
 # --- the registry ------------------------------------------------------------
+
+# Where `deploy/update.py` records what its last run concluded. Gitignored on
+# purpose (see that script): a byte written anywhere tracked would leave this
+# checkout dirty and hard-stop every future `--ff-only` pull.
+UPDATE_STATUS_PATH = config.DATA_DIR / "update-status.json"
+
+# The follower's systemd timer fires every 30 minutes
+# (`deploy/project-portal-update.timer`). Three missed firings is not a slow
+# machine, it is a stopped one - and quiet is exactly what an updater that has
+# died looks like, so it gets said out loud rather than read as health.
+UPDATE_SILENCE_SEC = 90 * 60
+
 
 def slug(name: str) -> str:
     return _ID_RE.sub("-", (name or "").strip().lower()).strip("-")
@@ -267,6 +311,7 @@ def probe(node: dict) -> dict:
         "open_questions": int(answer.get("open_questions") or 0),
         "worker_enabled": bool(answer.get("worker_enabled")),
         "publishes": bool(answer.get("publishes")),
+        "published": str(answer.get("published") or ""),
     }
     return out
 
@@ -370,6 +415,80 @@ def _state(node: dict, status: Optional[dict], published: str) -> tuple[str, str
     return "behind", f"on {theirs[:7]}, {published[:7]} is published"
 
 
+def _breadcrumb() -> dict:
+    """What `deploy/update.py` recorded on its last run, or {} for nothing.
+
+    Nothing in here is allowed to raise: this is read on a page render, the
+    file is written by another process, and a truncated write or a hand-edited
+    file must cost a status row, not the dashboard.
+    """
+    try:
+        data = json.loads(UPDATE_STATUS_PATH.read_text())
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def this_install() -> dict:
+    """Whether the portal you are looking at is running the published code.
+
+    Everything else in this module is about *other* portals, and none of it
+    could ever answer the question Wes actually asked on 2026-09-09 - "I
+    thought you were supposed to update automatically, but it seems it isn't
+    happening?" - about the install in front of him. Answering it took ssh and
+    `journalctl`. This is that answer, from two facts that are now both local:
+    the commit we run (`source_commit()`) against the published head
+    (`authority()`, which a follower gets from the publisher itself), and the
+    breadcrumb `deploy/update.py` leaves on every run.
+
+    Two ways to be wrong, and they are different: running an old commit, and
+    running a current one because the updater stopped an hour ago and got
+    lucky. The second is a clock that stopped on a true reading, so a silent
+    updater is a warning in its own right whatever commit we are on - it is
+    precisely the failure Wes suspected and could not check.
+
+    No subprocess, no systemd call. Like every other reading here, a page
+    render waits on nothing.
+    """
+    crumb = _breadcrumb()
+    ours = source_commit()
+    published = authority()
+    at = int(crumb.get("at") or 0)
+    age = int(time.time()) - at if at else None
+    stale_timer = age is None or age > UPDATE_SILENCE_SEC
+    update_ok = bool(crumb.get("ok")) if crumb else None
+
+    if not published or not ours:
+        state = "unknown"
+        detail = f"running {ours[:7] or 'an unknown commit'}; no portal here publishes, so there is nothing to compare against"
+    elif ours != published:
+        state = "behind"
+        detail = f"on {ours[:7]}, {published[:7]} is published"
+    elif stale_timer:
+        state = "behind"
+        detail = (f"on {ours[:7]}, which was the published commit when the updater last ran - "
+                  f"but it has not run {_ago(at) if at else 'ever'}")
+    elif update_ok is False:
+        state = "behind"
+        detail = f"on {ours[:7]}; the last update run failed: {crumb.get('summary') or 'no reason recorded'}"
+    else:
+        state = "ok"
+        detail = f"up to date at {ours[:7]}"
+
+    return {
+        "state": state,
+        "detail": detail,
+        "commit": ours,
+        "published": published,
+        "ran": _ago(at),
+        "stale_timer": stale_timer,
+        "update_ok": update_ok,
+        "mode": str(crumb.get("mode") or ""),
+        "summary": str(crumb.get("summary") or ""),
+        "publishes": bool(published_commit()),
+    }
+
+
 def _ago(ts: Optional[int]) -> str:
     if not ts:
         return "never"
@@ -388,7 +507,7 @@ def view() -> list[dict]:
     if not registry():
         return []
     statuses = _statuses()
-    published = published_commit()
+    published = authority(statuses)
     out = []
     for node in registry():
         status = statuses.get(node["id"])
@@ -537,7 +656,7 @@ async def poll_loop() -> None:
         try:
             if registry():
                 statuses = await asyncio.to_thread(snapshot)
-                for node_id in due_updates(statuses, published_commit()):
+                for node_id in due_updates(statuses, authority(statuses)):
                     start_update(node_id)
                 # The other direction: anything a node is offering upstream.
                 # Filed in the thread, announced on the loop (a run is queued

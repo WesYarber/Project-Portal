@@ -53,9 +53,11 @@ than orphaned), but it is not what the person running it expected. Pass
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -79,6 +81,11 @@ RESTART_WAIT_SEC = 60
 # is, so the service has to be restarted for the update to mean anything.
 # `requirements.txt` is listed separately below because it needs pip as well.
 REQUIREMENTS = "requirements.txt"
+
+# Spelled out rather than imported from `app.mirror`, which is where the
+# publish side of it lives: this script runs on the system interpreter before
+# the venv is known to be good, and importing `app` would drag fastapi in.
+TRAILER = "Source-commit:"
 
 
 def git(*args: str, repo: Path | None = None) -> subprocess.CompletedProcess:
@@ -329,6 +336,115 @@ def configured_port() -> int:
         return 8500
 
 
+def source_commit() -> str:
+    """The `Source-commit:` trailer of the commit this checkout is on.
+
+    The published mirror's history is unrelated to the source's on purpose, so
+    HEAD here means nothing to the portal that published it. The trailer is
+    the one id both sides can compare, which makes it the number the status
+    row actually needs.
+    """
+    done = git("log", "-1", "--format=%B")
+    if done.returncode != 0:
+        return ""
+    for line in done.stdout.splitlines():
+        line = line.strip()
+        if line.startswith(TRAILER):
+            return line[len(TRAILER):].strip()
+    return ""
+
+
+def write_status(mode: str, report: Report, code: int, changed: bool, summary: str) -> int:
+    """Record what this run concluded, and hand `code` straight back.
+
+    Before this, the script printed a report and exited holding nothing. The
+    only record that the half-hour timer had fired was the systemd journal,
+    which no browser can read - so "am I up to date?" could not be answered
+    from the portal's own pages, only over ssh. This is the file those pages
+    read.
+
+    Two constraints shape it. It goes in `data/`, which is gitignored: a byte
+    written anywhere tracked would leave the tree dirty and hard-stop every
+    future `--ff-only` pull on this machine. And it is best-effort - the
+    return value is the exit status the systemd unit reports, and a status
+    file is a nicety that is not allowed to turn a good update into a failed
+    one, or a failed one into a success. Any error writing it is swallowed
+    on purpose.
+    """
+    try:
+        head = git("rev-parse", "HEAD")
+        payload = {
+            "at": int(time.time()),
+            "mode": mode,
+            "ok": code == 0,
+            "changed": changed,
+            "summary": summary,
+            "head": head.stdout.strip() if head.returncode == 0 else "",
+            "source_commit": source_commit(),
+            "failures": list(report.failures),
+            "human": list(report.human),
+        }
+        path = ROOT / "data" / "update-status.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, indent=2) + "\n")
+    except Exception:  # noqa: BLE001 - see the docstring: never change the exit status
+        pass
+    return code
+
+
+def _stopped(report: Report) -> str:
+    return f"stopped: {report.failures[-1]}" if report.failures else "stopped"
+
+
+def _update(args: argparse.Namespace, report: Report) -> tuple[int, bool, str]:
+    """The update itself. Returns (exit code, did the tree move, one line)."""
+    print("Checkout")
+    if not check_repo(report) or not fetch(report):
+        return 1, False, _stopped(report)
+
+    print("\nUpdate")
+    ok, files = fast_forward(report, args.check)
+    if not ok:
+        return 1, False, _stopped(report)
+    if not files:
+        print("\nAlready up to date. Nothing to restart.")
+        return 0, False, "already up to date with origin/main"
+
+    print("\nDependencies")
+    if not install_requirements(report, files, args.check):
+        return 1, not args.check, _stopped(report)
+
+    if args.check:
+        print(f"\n{len(report.pending)} step(s) would run. Do them with:")
+        print(f"  {sys.executable} deploy/update.py")
+        return 1, False, f"{len(report.pending)} step(s) would run - this was a --check"
+
+    print("\nVerification")
+    if not import_check(report):
+        return 1, True, _stopped(report)
+
+    if args.no_restart:
+        print("\nUpdated. The service was left alone (--no-restart), so it is still "
+              "running the old code.")
+        return 0, True, "updated; service left alone (--no-restart)"
+
+    print("\nRestart")
+    restarted = service_active()
+    if not restart(report, args.check):
+        return 1, True, _stopped(report)
+    if restarted and not serving(report, configured_port()):
+        return 1, True, _stopped(report)
+
+    if report.human:
+        print(f"\n{len(report.human)} thing(s) only a person can do:")
+        for item in report.human:
+            print(f"  - {item}")
+        return 1, True, f"updated, but {len(report.human)} thing(s) need a person"
+
+    print("\nUp to date and serving.")
+    return 0, True, "updated and serving"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Update this install to the published code.")
     ap.add_argument("--check", action="store_true", help="report only, change nothing")
@@ -337,52 +453,13 @@ def main() -> int:
 
     print(f"Project Portal update - {ROOT}\n")
     report = Report()
-
-    print("Checkout")
-    if not check_repo(report) or not fetch(report):
-        return 1
-
-    print("\nUpdate")
-    ok, files = fast_forward(report, args.check)
-    if not ok:
-        return 1
-    if not files:
-        print("\nAlready up to date. Nothing to restart.")
-        return 0
-
-    print("\nDependencies")
-    if not install_requirements(report, files, args.check):
-        return 1
-
-    if args.check:
-        print(f"\n{len(report.pending)} step(s) would run. Do them with:")
-        print(f"  {sys.executable} deploy/update.py")
-        return 1
-
-    print("\nVerification")
-    if not import_check(report):
-        return 1
-
-    if args.no_restart:
-        print("\nUpdated. The service was left alone (--no-restart), so it is still "
-              "running the old code.")
-        return 0
-
-    print("\nRestart")
-    restarted = service_active()
-    if not restart(report, args.check):
-        return 1
-    if restarted and not serving(report, configured_port()):
-        return 1
-
-    if report.human:
-        print(f"\n{len(report.human)} thing(s) only a person can do:")
-        for item in report.human:
-            print(f"  - {item}")
-        return 1
-
-    print("\nUp to date and serving.")
-    return 0
+    code, changed, summary = _update(args, report)
+    # Last, and on every path out of `_update` including the refusals: a run
+    # that stopped is exactly the run somebody needs to be able to see.
+    return write_status(
+        mode="check" if args.check else "update",
+        report=report, code=code, changed=changed, summary=summary,
+    )
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import subprocess
+import time
 
 import pytest
 from starlette.testclient import TestClient
@@ -177,6 +178,97 @@ def test_an_install_that_publishes_nothing_cannot_say_behind(far, monkeypatch):
     nodes.snapshot()
     (row,) = nodes.view()
     assert row["state"] == "unknown"
+
+
+def test_a_follower_does_not_call_the_publisher_behind_when_it_is_the_stale_one(far, monkeypatch):
+    """The bug this guards: a follower has no local knowledge of the published
+    head - `published_commit()` used to fall through to *our own* commit, so
+    the moment this install fell behind, the publisher's row read "behind" and
+    accused the machine that is ahead. The publisher hands us the real answer
+    in its /api/node reply; it is the authority, not us."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")  # we are stale
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    (row,) = nodes.view()
+    assert row["state"] == "ok", "the publisher runs what it publishes; it is not behind"
+    assert "behind" not in row["detail"]
+
+
+def test_a_follower_takes_the_published_head_from_the_peer_that_publishes(far, monkeypatch):
+    """And having taken it, it can judge a *third* node truthfully - which an
+    install that only knows its own commit can never do."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    assert nodes.authority() == "abc1234def"
+
+
+def test_a_publishing_peer_that_lags_its_own_mirror_is_behind(far, monkeypatch):
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    far["answer"] = _answer(name="home", commit="0000000111", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    (row,) = nodes.view()
+    assert row["state"] == "behind"
+    assert "0000000" in row["detail"] and "abc1234" in row["detail"]
+
+
+def test_the_probe_carries_the_peers_published_head(far):
+    far["answer"] = _answer(publishes=True, published="abc1234def")
+    nodes.add("office", "http://office:8500")
+    statuses = nodes.snapshot()
+    assert statuses["office"]["node"]["published"] == "abc1234def"
+
+
+def test_this_install_publishing_outranks_what_a_peer_claims(far, publishes, monkeypatch):
+    """On the machine that publishes, our own mirror is the authority and a
+    peer's claim cannot displace it."""
+    far["answer"] = _answer(commit="0000000111", publishes=True, published="0000000111")
+    nodes.add("office", "http://office:8500")
+    nodes.snapshot()
+    assert nodes.authority() == "abc1234def"
+
+
+def test_with_nobody_publishing_there_is_no_authority(far, monkeypatch):
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    nodes.add("office", "http://office:8500")
+    nodes.snapshot()
+    assert nodes.authority() == ""
+
+
+def test_a_peer_that_does_not_publish_is_not_taken_as_the_authority(far, monkeypatch):
+    """Only a node that says it publishes speaks for the published head. A
+    follower reports `published: ""` for itself, but a stale cached reading or
+    a future field could carry something; it is still not authoritative."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    far["answer"] = _answer(name="desk", commit="0000000111", publishes=False, published="dddddd0000")
+    nodes.add("desk", "http://desk:8500")
+    nodes.snapshot()
+    assert nodes.authority() == ""
+
+
+def test_a_publisher_with_nothing_published_yet_does_not_shadow_a_real_one(far, monkeypatch):
+    """A publishing node whose mirror has never been pushed reports an empty
+    head. It must be skipped, not accepted as "the answer is nothing" - the
+    next publisher in the registry may know."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    answers = {
+        "http://fresh:8500/api/node": _answer(name="fresh", commit="0000000111", publishes=True, published=""),
+        "http://home:8500/api/node": _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def"),
+    }
+    monkeypatch.setattr(nodes, "_fetch_json", lambda url, timeout=0: answers[url])
+    nodes.add("fresh", "http://fresh:8500")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    assert nodes.authority() == "abc1234def"
 
 
 def test_a_dead_node_shows_off_with_its_last_sighting(far, publishes):
@@ -373,8 +465,148 @@ def test_the_forget_form_removes_it(client, far):
     assert nodes.registry() == []
 
 
+def test_api_nodes_reports_the_publishers_head_on_a_follower(client, far, monkeypatch):
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    body = client.get("/api/nodes").json()
+    assert body["published"] == "abc1234def", "not 0000000111 - our own commit is not a published head"
+
+
 def test_api_nodes_reports_the_published_commit(client, far, publishes):
     nodes.add("office", "http://office:8500")
     body = client.get("/api/nodes?refresh=1").json()
     assert body["published"] == "abc1234def"
     assert body["nodes"][0]["state"] == "ok"
+
+
+# --- this install ------------------------------------------------------------
+#
+# The row that answers Wes's own question. Everything above is about *other*
+# portals; none of it could ever say whether the machine you are looking at is
+# current, which is the thing he actually asked on 2026-09-09.
+
+
+@pytest.fixture
+def breadcrumb(tmp_path, monkeypatch):
+    """Stand in for `data/update-status.json`, the file deploy/update.py drops."""
+    path = tmp_path / "update-status.json"
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", path)
+
+    def write(**fields):
+        base = {"at": int(time.time()), "mode": "check", "ok": True, "changed": False,
+                "summary": "already up to date with origin/main",
+                "head": "ffff000", "source_commit": "abc1234def", "failures": [], "human": []}
+        base.update(fields)
+        path.write_text(json.dumps(base))
+    return write
+
+
+def test_this_install_is_up_to_date_when_it_runs_the_published_head(far, monkeypatch, breadcrumb):
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    breadcrumb()
+
+    me = nodes.this_install()
+    assert me["state"] == "ok"
+    assert me["commit"] == "abc1234def"
+    assert "up to date" in me["detail"]
+
+
+def test_this_install_says_it_is_behind_rather_than_blaming_the_publisher(far, monkeypatch, breadcrumb):
+    """The whole point of the fix: when this machine is the stale one, the
+    stale one is what gets named."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    breadcrumb()
+
+    (peer,) = nodes.view()
+    me = nodes.this_install()
+    assert peer["state"] == "ok", "the publisher is ahead, not behind"
+    assert me["state"] == "behind"
+    assert "0000000" in me["detail"] and "abc1234" in me["detail"]
+
+
+def test_this_install_cannot_judge_itself_with_no_publisher_around(far, monkeypatch, breadcrumb):
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    breadcrumb()
+    me = nodes.this_install()
+    assert me["state"] == "unknown"
+
+
+def test_a_silent_updater_is_a_warning_in_its_own_right(monkeypatch, breadcrumb, publishes):
+    """The timer runs every 30 minutes. Nothing recorded in over 90 means the
+    automation itself has stopped - which is what Wes suspected was happening
+    and could not check. Up to date at a commit nobody is refreshing is not
+    'up to date', it is a clock that stopped on a true reading."""
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    breadcrumb(at=int(time.time()) - 100 * 60)
+
+    me = nodes.this_install()
+    assert me["stale_timer"] is True
+    assert me["state"] == "behind", "a stopped updater must not render green"
+    assert "not run" in me["detail"]
+
+
+def test_an_updater_inside_its_cadence_is_not_called_stale(monkeypatch, breadcrumb, publishes):
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    breadcrumb(at=int(time.time()) - 80 * 60)
+    me = nodes.this_install()
+    assert me["stale_timer"] is False
+    assert me["state"] == "ok"
+
+
+def test_a_failed_update_run_is_reported_with_its_reason(monkeypatch, breadcrumb, publishes):
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    breadcrumb(ok=False, summary="stopped: a local edit to app/nodes.py",
+               failures=["a local edit to app/nodes.py"])
+
+    me = nodes.this_install()
+    assert me["update_ok"] is False
+    assert me["state"] == "behind"
+    assert "local edit" in me["detail"]
+
+
+def test_no_breadcrumb_at_all_reads_as_never_run(monkeypatch, publishes, tmp_path):
+    """A fresh install, or one whose updater has never fired. Not an error -
+    but not silence either, because silence is what sent Wes to ask."""
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+
+    me = nodes.this_install()
+    assert me["ran"] == "never"
+    assert me["stale_timer"] is True
+    assert me["state"] == "behind"
+
+
+def test_junk_in_the_breadcrumb_does_not_take_a_page_down(monkeypatch, publishes, breadcrumb, tmp_path):
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    (tmp_path / "update-status.json").write_text("{not json at all")
+    me = nodes.this_install()
+    assert me["ran"] == "never"
+    assert me["commit"] == "abc1234def"
+
+
+def test_a_checkout_that_is_not_git_cannot_judge_itself_either(far, monkeypatch, breadcrumb):
+    """`source_commit()` returns "" for a tree that is not a git checkout at
+    all. Knowing the published head does not help when we cannot say what we
+    run - that is 'unknown', not 'behind'."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    monkeypatch.setattr(nodes, "source_commit", lambda: "")
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+    breadcrumb()
+
+    me = nodes.this_install()
+    assert me["state"] == "unknown"
+    assert "unknown commit" in me["detail"]

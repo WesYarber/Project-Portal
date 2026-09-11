@@ -17,8 +17,10 @@ fast-forward and the refusal to merge are git's real answers.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -325,3 +327,81 @@ def test_no_systemd_unit_is_a_note_to_a_person_not_a_failure(install, monkeypatc
     assert update.restart(report, check_only=False) is True
     assert report.failed is False
     assert any("restart the portal" in item for item in report.human)
+
+
+# --- the breadcrumb ----------------------------------------------------------
+#
+# The updater used to print a report and exit, persisting nothing. The only
+# record that the half-hour timer had fired, and what it concluded, was the
+# systemd journal - which a browser cannot read. That is why answering Wes's
+# "I thought you were supposed to update automatically, but it seems it isn't
+# happening?" on 2026-09-09 took an SSH session and `journalctl` rather than a
+# glance at the portal. So every run now drops a line in `data/`, which is
+# gitignored and therefore cannot dirty the tree the `--ff-only` pull needs
+# clean.
+
+
+def test_every_run_records_what_it_concluded(install):
+    report = Report()
+    code = update.write_status(mode="check", report=report, code=0, changed=False,
+                               summary="already up to date with origin/main")
+    assert code == 0
+    data = json.loads((install / "data" / "update-status.json").read_text())
+    assert data["mode"] == "check"
+    assert data["ok"] is True
+    assert data["changed"] is False
+    assert data["summary"] == "already up to date with origin/main"
+    assert data["head"] == _git(install, "rev-parse", "HEAD").stdout.strip()
+    assert data["at"] >= int(time.time()) - 5
+
+
+def test_a_failed_run_is_recorded_as_failed_with_its_reason(install):
+    report = Report()
+    report.bad("the tree has diverged from origin/main")
+    update.write_status(mode="update", report=report, code=1, changed=False,
+                        summary="stopped: the tree has diverged")
+    data = json.loads((install / "data" / "update-status.json").read_text())
+    assert data["ok"] is False
+    assert data["failures"] == ["the tree has diverged from origin/main"]
+
+
+def test_the_breadcrumb_carries_the_source_commit_trailer(install):
+    """The published mirror's history is unrelated to the source's, so HEAD
+    means nothing to the portal at home. The `Source-commit:` trailer is the
+    id both sides can compare, and it is what the status row needs."""
+    _git(install, "commit", "-q", "--allow-empty", "-m",
+         "Update from upstream\n\nSource-commit: abc1234def5678")
+    update.write_status(mode="update", report=Report(), code=0, changed=True, summary="moved")
+    data = json.loads((install / "data" / "update-status.json").read_text())
+    assert data["source_commit"] == "abc1234def5678"
+
+
+def test_a_breadcrumb_that_cannot_be_written_never_changes_the_exit_status(install, monkeypatch):
+    """The exit code is what the systemd unit reports, and a status file is a
+    nicety. A read-only `data/` must not turn a good update into a failure -
+    or, worse, a failed one into a success."""
+    def boom(*a, **k):
+        raise OSError("read-only file system")
+    monkeypatch.setattr(update.Path, "write_text", boom)
+
+    assert update.write_status(mode="update", report=Report(), code=0, changed=True, summary="x") == 0
+    assert update.write_status(mode="update", report=Report(), code=1, changed=False, summary="x") == 1
+
+
+def test_main_leaves_a_breadcrumb_on_an_install_already_up_to_date(install, monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["update.py", "--check"])
+    assert update.main() == 0
+    data = json.loads((install / "data" / "update-status.json").read_text())
+    assert data["ok"] is True and data["changed"] is False
+    assert data["mode"] == "check", "a --check that changed nothing must not be recorded as an update"
+    assert "up to date" in data["summary"]
+
+
+def test_main_records_a_refusal_it_stopped_on(install, monkeypatch):
+    (install / "app.py").write_text("print('local edit')\n")
+    monkeypatch.setattr(sys, "argv", ["update.py", "--check"])
+    assert update.main() == 1
+    data = json.loads((install / "data" / "update-status.json").read_text())
+    assert data["ok"] is False
+    assert data["failures"] and "app.py" in data["failures"][0]
+    assert "app.py" in data["summary"], "the one line has to name why it stopped, not just that it did"

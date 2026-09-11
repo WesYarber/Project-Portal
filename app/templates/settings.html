@@ -1049,14 +1049,38 @@ The suite is green, so the change is in.</pre>
      seen from there. Probed every two minutes (app/nodes.py); what is shown
      here is the cache, never a live request to another building. #}
   <div class="card" id="nodes-card">
-    <h2 id="nodes">other portals{% call info() %}Another install of this same
-      portal, on another machine. It is asked <code>/api/node</code> every two
-      minutes: whether it answers, and which source commit it runs, compared
-      against the last commit this install published. With an ssh target,
-      <strong>update now</strong> runs <code>deploy/update.py</code> there -
-      and after every publish the same push happens by itself, once that
-      portal has no run in flight.{% endcall %}</h2>
+    <h2 id="nodes">this portal and the others{% call info() %}The first row is
+      the install you are looking at: which source commit it runs, whether
+      that is the published one, and when <code>deploy/update.py</code> last
+      ran here. The rows under it are other installs of this same portal on
+      other machines, each asked <code>/api/node</code> every two minutes. The
+      published commit is whatever the install that <em>publishes</em> says it
+      is - this one if it does, otherwise the portal it follows, which hands
+      the number over in its own answer. With an ssh target, <strong>update
+      now</strong> runs <code>deploy/update.py</code> there - and after every
+      publish the same push happens by itself, once that portal has no run in
+      flight.{% endcall %}</h2>
     {% if saved == 'nodes' %}<p class="flash ok" role="status">saved.</p>{% endif %}
+
+    {# This install, above the peers. Until 2026-09-11 the portal could say
+       whether every OTHER machine was current and nothing at all about
+       itself, which is the one Wes was actually looking at when he asked. #}
+    <div class="node-row node-{{ this_install.state }} node-self">
+      <div class="node-head">
+        <span class="dot {{ 'ok' if this_install.state == 'ok' else ('warn' if this_install.state in ('behind', 'unknown') else 'err') }}"></span>
+        <strong>this install</strong>
+        <span class="badge node-state">{{ {'ok': 'up to date', 'behind': 'behind', 'unknown': 'unknown'}[this_install.state] }}</span>
+        {% if this_install.publishes %}<span class="badge">publishes</span>{% endif %}
+      </div>
+      <p class="hint node-detail">
+        {{ this_install.detail }}.
+        <code>deploy/update.py</code> last ran {{ this_install.ran }}{% if this_install.mode %} ({{ this_install.mode }}){% endif %}{% if this_install.update_ok is false %} and failed{% endif %}.
+        {% if this_install.stale_timer %}
+        The timer runs every 30 minutes, so this is longer than it should be -
+        check it with <code>systemctl --user status project-portal-update.timer</code>.
+        {% endif %}
+      </p>
+    </div>
     {% for node in nodes %}
     <div class="node-row node-{{ node.state }}">
       <div class="node-head">

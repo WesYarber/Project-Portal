@@ -4178,6 +4178,11 @@ label.diff-line:hover { background: rgba(122, 162, 247, 0.12); }
 .node-behind .node-state, .node-updating .node-state, .node-unknown .node-state { color: var(--ansi-yellow); border-color: rgba(250, 204, 21, 0.45); }
 .node-off .node-state { color: var(--ansi-red); border-color: rgba(255, 110, 110, 0.45); }
 .node-chip a { color: inherit; }
+/* This install's own row and chip, which read before the peers because "am I
+   current?" is the question asked first. Tinted rather than boxed: it belongs
+   to the same list, it is just the one that is about you. */
+.node-self { background: var(--panel-bg); border-radius: 4px; }
+.node-row.node-self { padding-left: 0.55rem; padding-right: 0.55rem; }
 
 
 /* --- the card a notification was about ---------------------------------- */

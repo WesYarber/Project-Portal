@@ -1214,6 +1214,7 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             "active_run": active_run,
             "worker_model": settings.get("worker_model") or config.DEFAULT_MODEL,
             "nodes": nodes.summary(),
+            "this_install": nodes.this_install(),
             "sorts": sorts,
             "active_sort": active_sort,
             # The timestamp each card SAYS, so it agrees with the order the
@@ -3291,6 +3292,7 @@ async def settings_page(request: Request) -> HTMLResponse:
             "tailnet": netinfo.cached(),
             "portal_port": config.PORT,
             "nodes": nodes.view(),
+            "this_install": nodes.this_install(),
             "model_catalog": modelwatch.catalog(),
             "strays": _stray_view(),
         },
@@ -4034,7 +4036,7 @@ async def api_nodes(refresh: int = 0) -> JSONResponse:
     `?refresh=1` probes them now instead of waiting for the poller."""
     if refresh:
         await asyncio.to_thread(nodes.snapshot)
-    return JSONResponse({"published": nodes.published_commit(), "nodes": nodes.view()})
+    return JSONResponse({"published": nodes.authority(), "nodes": nodes.view()})
 
 
 @app.post("/nodes/add")
