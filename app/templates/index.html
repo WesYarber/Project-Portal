@@ -116,10 +116,10 @@
   {# This install first: whether it runs the published commit, and whether the
      updater is still firing. Silent when healthy - it is one green chip -
      and loud when it is not, which is the whole reason it exists. #}
-  <span class="node-chip node-self node-{{ this_install.state }}" title="{{ this_install.detail }}. deploy/update.py last ran {{ this_install.ran }}.">
-    <span class="dot {{ 'ok' if this_install.state == 'ok' else ('warn' if this_install.state in ('behind', 'unknown') else 'err') }}"></span>
+  <span class="node-chip node-self node-{{ this_install.state }}" title="{{ this_install.detail }}.{% if not this_install.publishes %} deploy/update.py last ran {{ this_install.ran }}.{% endif %}">
+    <span class="dot {{ 'ok' if this_install.state == 'ok' else ('warn' if this_install.state in ('behind', 'ahead', 'unknown') else 'err') }}"></span>
     <a href="/settings#nodes">this install</a>
-    <span class="muted">{{ {'ok': 'up to date', 'behind': 'behind', 'unknown': 'unknown'}[this_install.state] }}</span>
+    <span class="muted">{{ {'ok': 'up to date', 'behind': 'behind', 'ahead': 'unpublished', 'unknown': 'unknown'}[this_install.state] }}</span>
   </span>
   {# The other portals this one knows about (app/nodes.py): up or down, and
      whether they run the published commit. #}

@@ -504,6 +504,17 @@ def breadcrumb(tmp_path, monkeypatch):
     return write
 
 
+@pytest.fixture
+def follower(far, monkeypatch):
+    """Make this install a follower of a publishing "home" whose head is known.
+    The timer and breadcrumb readings only mean anything on a follower: the
+    publisher's checkout is the source and nothing updates it."""
+    monkeypatch.setattr(mirror, "configured", lambda target=None: False)
+    far["answer"] = _answer(name="home", commit="abc1234def", publishes=True, published="abc1234def")
+    nodes.add("home", "http://home:8500")
+    nodes.snapshot()
+
+
 def test_this_install_is_up_to_date_when_it_runs_the_published_head(far, monkeypatch, breadcrumb):
     monkeypatch.setattr(mirror, "configured", lambda target=None: False)
     monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
@@ -543,7 +554,7 @@ def test_this_install_cannot_judge_itself_with_no_publisher_around(far, monkeypa
     assert me["state"] == "unknown"
 
 
-def test_a_silent_updater_is_a_warning_in_its_own_right(monkeypatch, breadcrumb, publishes):
+def test_a_silent_updater_is_a_warning_in_its_own_right(monkeypatch, breadcrumb, follower):
     """The timer runs every 30 minutes. Nothing recorded in over 90 means the
     automation itself has stopped - which is what Wes suspected was happening
     and could not check. Up to date at a commit nobody is refreshing is not
@@ -557,7 +568,7 @@ def test_a_silent_updater_is_a_warning_in_its_own_right(monkeypatch, breadcrumb,
     assert "not run" in me["detail"]
 
 
-def test_an_updater_inside_its_cadence_is_not_called_stale(monkeypatch, breadcrumb, publishes):
+def test_an_updater_inside_its_cadence_is_not_called_stale(monkeypatch, breadcrumb, follower):
     monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
     breadcrumb(at=int(time.time()) - 80 * 60)
     me = nodes.this_install()
@@ -565,7 +576,7 @@ def test_an_updater_inside_its_cadence_is_not_called_stale(monkeypatch, breadcru
     assert me["state"] == "ok"
 
 
-def test_a_failed_update_run_is_reported_with_its_reason(monkeypatch, breadcrumb, publishes):
+def test_a_failed_update_run_is_reported_with_its_reason(monkeypatch, breadcrumb, follower):
     monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
     breadcrumb(ok=False, summary="stopped: a local edit to app/nodes.py",
                failures=["a local edit to app/nodes.py"])
@@ -576,7 +587,7 @@ def test_a_failed_update_run_is_reported_with_its_reason(monkeypatch, breadcrumb
     assert "local edit" in me["detail"]
 
 
-def test_no_breadcrumb_at_all_reads_as_never_run(monkeypatch, publishes, tmp_path):
+def test_no_breadcrumb_at_all_reads_as_never_run(monkeypatch, follower, tmp_path):
     """A fresh install, or one whose updater has never fired. Not an error -
     but not silence either, because silence is what sent Wes to ask."""
     monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
@@ -588,7 +599,7 @@ def test_no_breadcrumb_at_all_reads_as_never_run(monkeypatch, publishes, tmp_pat
     assert me["state"] == "behind"
 
 
-def test_junk_in_the_breadcrumb_does_not_take_a_page_down(monkeypatch, publishes, breadcrumb, tmp_path):
+def test_junk_in_the_breadcrumb_does_not_take_a_page_down(monkeypatch, follower, breadcrumb, tmp_path):
     monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
     (tmp_path / "update-status.json").write_text("{not json at all")
     me = nodes.this_install()
@@ -610,3 +621,69 @@ def test_a_checkout_that_is_not_git_cannot_judge_itself_either(far, monkeypatch,
     me = nodes.this_install()
     assert me["state"] == "unknown"
     assert "unknown commit" in me["detail"]
+
+
+# --- the publisher judges itself differently ---------------------------------
+#
+# No updater runs on the install that publishes: its checkout IS the source.
+# The series that added this_install() read a missing breadcrumb as a stopped
+# timer on every install, which would have kept a yellow "behind" chip on the
+# home dashboard forever.
+
+
+def test_the_publisher_is_up_to_date_with_no_breadcrumb_at_all(monkeypatch, publishes, tmp_path):
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    me = nodes.this_install()
+    assert me["state"] == "ok"
+    assert me["publishes"] is True
+    assert me["stale_timer"] is False, "no timer is owed on the publisher, so none is missing"
+    assert "publishes" in me["detail"]
+
+
+def test_the_publisher_past_its_mirror_head_is_ahead_not_behind(monkeypatch, publishes, tmp_path):
+    """A commit the publish tick has not been given yet (a dirty tree waits).
+    That is the source running ahead of its own mirror, not a stale install."""
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    me = nodes.this_install()
+    assert me["state"] == "ahead"
+    assert "0000000" in me["detail"] and "abc1234" in me["detail"]
+    assert me["published"] == "abc1234def"
+
+
+def test_a_breadcrumb_left_on_the_publisher_does_not_count_against_it(monkeypatch, publishes, breadcrumb):
+    """Running deploy/update.py --check by hand on the source machine leaves a
+    breadcrumb too. Stale or failed, it says nothing about the publisher."""
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    breadcrumb(at=int(time.time()) - 100 * 60, ok=False, summary="stopped: not a follower")
+    me = nodes.this_install()
+    assert me["state"] == "ok"
+    assert me["stale_timer"] is False
+
+
+def test_the_settings_page_does_not_ask_the_publisher_about_its_updater(client, monkeypatch, publishes, tmp_path):
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    html = client.get("/settings").text
+    assert "not expected to run here" in html
+    assert "last ran never" not in html
+    assert "project-portal-update.timer" not in html
+
+
+def test_the_settings_page_tells_a_follower_when_its_updater_is_silent(client, monkeypatch, follower, tmp_path):
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "abc1234def")
+    html = client.get("/settings").text
+    assert "last ran never" in html
+    assert "project-portal-update.timer" in html
+    assert "not expected to run here" not in html
+
+
+def test_the_dashboard_chip_reads_unpublished_when_the_publisher_is_past_its_mirror(client, monkeypatch, publishes, tmp_path):
+    monkeypatch.setattr(nodes, "UPDATE_STATUS_PATH", tmp_path / "nothing.json")
+    monkeypatch.setattr(nodes, "source_commit", lambda: "0000000111")
+    html = client.get("/").text
+    assert "node-self node-ahead" in html
+    assert "unpublished" in html
+    assert "last ran" not in html, "the chip's tooltip does not mention an updater on the publisher"

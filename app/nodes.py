@@ -447,12 +447,21 @@ def this_install() -> dict:
     updater is a warning in its own right whatever commit we are on - it is
     precisely the failure Wes suspected and could not check.
 
+    None of that applies to the install that *publishes*. Its checkout is the
+    source: nothing updates it, `deploy/update.py` never runs there, and the
+    breadcrumb is never written - so reading its absence as a stopped updater
+    would have worn a yellow "behind" chip on the home dashboard forever. A
+    publisher can only be at its own mirror's head or past it, on a commit the
+    publish tick has not been given yet (a dirty tree waits), which is
+    "ahead", not "behind", and no fault at all.
+
     No subprocess, no systemd call. Like every other reading here, a page
     render waits on nothing.
     """
     crumb = _breadcrumb()
     ours = source_commit()
-    published = authority()
+    mine = published_commit()
+    published = mine or authority()
     at = int(crumb.get("at") or 0)
     age = int(time.time()) - at if at else None
     stale_timer = age is None or age > UPDATE_SILENCE_SEC
@@ -461,6 +470,17 @@ def this_install() -> dict:
     if not published or not ours:
         state = "unknown"
         detail = f"running {ours[:7] or 'an unknown commit'}; no portal here publishes, so there is nothing to compare against"
+    elif mine:
+        # The publisher. No updater is owed here, so the breadcrumb and its
+        # silence say nothing about this install.
+        stale_timer = False
+        if ours == mine:
+            state = "ok"
+            detail = f"up to date at {ours[:7]}, which this install publishes"
+        else:
+            state = "ahead"
+            detail = (f"on {ours[:7]}, {mine[:7]} is published - the mirror takes {ours[:7]} "
+                      "on the next publish, once the source tree is clean")
     elif ours != published:
         state = "behind"
         detail = f"on {ours[:7]}, {published[:7]} is published"
@@ -485,7 +505,7 @@ def this_install() -> dict:
         "update_ok": update_ok,
         "mode": str(crumb.get("mode") or ""),
         "summary": str(crumb.get("summary") or ""),
-        "publishes": bool(published_commit()),
+        "publishes": bool(mine),
     }
 
 

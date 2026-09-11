@@ -1067,17 +1067,22 @@ The suite is green, so the change is in.</pre>
        itself, which is the one Wes was actually looking at when he asked. #}
     <div class="node-row node-{{ this_install.state }} node-self">
       <div class="node-head">
-        <span class="dot {{ 'ok' if this_install.state == 'ok' else ('warn' if this_install.state in ('behind', 'unknown') else 'err') }}"></span>
+        <span class="dot {{ 'ok' if this_install.state == 'ok' else ('warn' if this_install.state in ('behind', 'ahead', 'unknown') else 'err') }}"></span>
         <strong>this install</strong>
-        <span class="badge node-state">{{ {'ok': 'up to date', 'behind': 'behind', 'unknown': 'unknown'}[this_install.state] }}</span>
+        <span class="badge node-state">{{ {'ok': 'up to date', 'behind': 'behind', 'ahead': 'unpublished', 'unknown': 'unknown'}[this_install.state] }}</span>
         {% if this_install.publishes %}<span class="badge">publishes</span>{% endif %}
       </div>
       <p class="hint node-detail">
         {{ this_install.detail }}.
+        {% if this_install.publishes %}
+        This checkout is the source the others follow, so nothing updates it
+        and <code>deploy/update.py</code> is not expected to run here.
+        {% else %}
         <code>deploy/update.py</code> last ran {{ this_install.ran }}{% if this_install.mode %} ({{ this_install.mode }}){% endif %}{% if this_install.update_ok is false %} and failed{% endif %}.
         {% if this_install.stale_timer %}
         The timer runs every 30 minutes, so this is longer than it should be -
         check it with <code>systemctl --user status project-portal-update.timer</code>.
+        {% endif %}
         {% endif %}
       </p>
     </div>
