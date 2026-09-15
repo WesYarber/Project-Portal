@@ -310,6 +310,19 @@ def test_the_tab_count_is_offset_not_superscript_aligned(sheet):
     assert top, rule
 
 
+@pytest.mark.parametrize("sheet", ["style.css", "terminal-theme.css"])
+def test_buttons_carry_no_user_agent_margin(sheet):
+    """Ported from the cork engraving modeler, 2026-09-15: a <button> inherits
+    the user agent's margin (about a pixel in Chrome and Safari, more on some
+    controls) while a <label class="btn"> has none, so a row mixing the two
+    was a pixel or two out of line. The shared rule zeroes it, in both the
+    portal's own sheet and the copy other projects vendor."""
+    css = (STATIC / sheet).read_text()
+    start = css.index("button, .btn {")
+    rule = css[start:css.index("}", start)]
+    assert re.search(r"(^|[^-\w])margin:\s*0;", rule), rule
+
+
 # --- icons -----------------------------------------------------------------
 
 

@@ -354,6 +354,11 @@ button, .btn {
   border: 1px solid var(--window-border);
   border-radius: 4px;
   padding: 0.45rem 1rem;
+  /* A <button> inherits the user agent's margin (Chrome and Safari put
+     about a pixel around one, more on some controls); a <label class="btn">
+     does not, so the two sat a pixel apart in the same row. Ported from
+     the cork engraving modeler, 2026-09-15. */
+  margin: 0;
   color: var(--ansi-blue);
   font-family: var(--font-mono);
   font-size: 0.85rem;
