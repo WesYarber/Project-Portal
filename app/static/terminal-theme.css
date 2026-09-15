@@ -219,7 +219,19 @@ a:hover { text-decoration: underline; }
   text-shadow: 0 0 8px rgba(56, 189, 248, 0.3);
   text-decoration: none;
 }
-.tab-btn .nav-count { color: var(--ansi-yellow); font-size: 0.75rem; vertical-align: super; }
+/* The count rides above the label like a superscript, but it is POSITIONED
+   there, not aligned there: `vertical-align: super` raises the inline box, the
+   line box grows to hold it, and the flex row stretches every other tab to
+   match - so the one tab wearing a badge had its label pushed a few pixels
+   below its siblings (Wes, 2026-09-15: "the questions button is shifted down
+   when there is a notification number"). A relative offset paints the digit
+   higher and leaves layout exactly as if it sat on the baseline. */
+.tab-btn .nav-count {
+  color: var(--ansi-yellow);
+  font-size: 0.75rem;
+  position: relative;
+  top: -0.45em;
+}
 
 /* --- Panels --------------------------------------------------------------- */
 .card, .panel {

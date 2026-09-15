@@ -293,6 +293,23 @@ def test_muted_styles_exist():
     assert ".cell-alert.quiet" in css
 
 
+@pytest.mark.parametrize("sheet", ["style.css", "terminal-theme.css"])
+def test_the_tab_count_is_offset_not_superscript_aligned(sheet):
+    """Wes, 2026-09-15: the questions tab sat lower than its siblings whenever
+    it wore a count. `vertical-align: super` on the badge raised the inline
+    box, the tab's line box grew to hold it, and the flex row stretched the
+    other tabs to match - the badged label was the only one pushed down. A
+    relative offset paints the digit high without touching layout, so the
+    rule must position the count and must not align it."""
+    css = (STATIC / sheet).read_text()
+    start = css.index(".tab-btn .nav-count {")
+    rule = css[start:css.index("}", start)]
+    assert "vertical-align" not in rule
+    assert "position: relative" in rule
+    top = re.search(r"top:\s*(-[\d.]+)(em|rem|px)", rule)
+    assert top, rule
+
+
 # --- icons -----------------------------------------------------------------
 
 
