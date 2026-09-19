@@ -238,6 +238,24 @@ async def test_the_restart_is_a_fresh_run_of_the_task_on_the_same_row(project, m
     assert any("starts from the top" in b for b in _journal(project["id"]))
 
 
+def test_the_pause_writes_down_which_kind_of_wake_it_decided_on(project):
+    """The mode is settled where the failure is still in hand and stored on
+    the row, not re-derived at wake time from whatever is left. A row paused
+    with a session says so; one paused without says so too."""
+    with_session = db.create_run(project["id"], "build", "opus")
+    limitpause.pause(project, with_session, "build", _limited(),
+                     datetime.now(timezone.utc) + timedelta(hours=1), "test")
+    without = db.create_run(project["id"], "build", "opus")
+    limitpause.pause(project, without, "build", _limited(session=None),
+                     datetime.now(timezone.utc) + timedelta(hours=1), "test")
+
+    def stored(run_id):
+        return json.loads(db._row_get(db.get_run(run_id), "hold_state"))
+
+    assert stored(with_session)["mode"] == limitpause.RESUME
+    assert stored(without)["mode"] == limitpause.RESTART
+
+
 @pytest.mark.asyncio
 async def test_a_restart_counts_against_the_same_cap_as_a_resume(project, monkeypatch):
     run_id = db.create_run(project["id"], "build", "opus")
