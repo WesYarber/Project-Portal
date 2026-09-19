@@ -75,6 +75,28 @@ def test_every_template_token_matches_the_portal():
     assert mismatched == {}, f"terminal-theme.css has drifted from style.css: {mismatched}"
 
 
+def test_a_disabled_button_is_grayed_out_in_both_sheets():
+    """Wes's rule for a control a page cannot act on: grayed out and
+    explained, never removed. That needs CSS behind the `disabled` attribute
+    - without it the dead button is pixel-identical to the live one - and it
+    needs it in BOTH sheets, since the portal loads style.css and everything
+    that vendors the look loads terminal-theme.css alone.
+
+    Found the hard way on 2026-09-19: the rule went into terminal-theme.css
+    only, and the "resume now" button on a run still inside its usage window
+    rendered at full opacity on the real page.
+    """
+    for name, css in (("style.css", portal_css()), ("terminal-theme.css", template_css())):
+        rule = re.search(r"button:disabled,\s*\.btn:disabled\s*\{([^}]*)\}", css)
+        assert rule is not None, f"{name} has no disabled-button rule"
+        body = re.sub(r"\s+", " ", rule.group(1))
+        assert "opacity" in body, f"{name} does not dim a disabled button"
+        assert "cursor: not-allowed" in body, f"{name} does not change the cursor"
+        # And the hover lift must skip it, or a dead button still lights up.
+        assert "button:hover:not(:disabled)" in css, f"{name} lifts a disabled button on hover"
+        assert "button:active:not(:disabled)" in css, f"{name} flashes a disabled button on press"
+
+
 def test_the_core_tokens_are_all_present():
     """A token quietly deleted from the template would pass the match test by
     absence - so the set that defines the look is pinned by name."""

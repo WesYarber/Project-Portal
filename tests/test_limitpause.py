@@ -1198,3 +1198,49 @@ def test_the_activity_page_has_no_hold_card_when_nothing_is_paused(project):
 
     with TestClient(app) as client:
         assert 'id="paused-runs"' not in client.get("/activity").text
+
+
+# --- and a one-off task's held run wakes by hand too --------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_held_one_off_run_can_be_woken_by_hand(task, monkeypatch):
+    """`resume_now` goes through `resume_run`, which dispatches a row with an
+    `oneoff_id` to `resume_oneoff_run` - so the button works on the kind of
+    run a person started by hand, which is the kind somebody is most likely
+    to be sitting there waiting for."""
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="here you go",
+    ))
+
+    assert worker.resume_now(run_id, by="Wes") == ""
+    await worker._inflight[run_id]
+
+    assert seen["resume_session"] == "s-1"
+    assert db.get_run(run_id)["status"] == "ok"
+    assert limitpause.resumes_so_far(run_id) == 0
+    assert [e["decision"] for e in db.midrun_events_for_run(run_id)] == \
+        [limitpause.PAUSED, limitpause.HAND_RESUMED]
+    # The notice went to the thread the person is reading, not a journal.
+    assert any("resumed by Wes" in m for m in _oneoff_messages(task["id"]))
+
+
+def test_the_task_page_offers_resume_now_once_the_window_has_reopened(task):
+    from app.main import app
+
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    with TestClient(app) as client:
+        page = client.get(f"/tasks/{task['id']}").text
+    assert f'action="/run/{run_id}/wake"' in page
+    assert 'id="oneoff-wake" disabled' not in page
+
+
+def test_the_task_page_grays_resume_now_out_while_the_window_is_shut(task):
+    from app.main import app
+
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) + timedelta(hours=2))
+    with TestClient(app) as client:
+        page = client.get(f"/tasks/{task['id']}").text
+    assert 'id="oneoff-wake" disabled' in page
+    assert f'action="/run/{run_id}/wake"' not in page

@@ -42,6 +42,18 @@
     <strong class="live-what">paused for the usage window</strong>
     {% if latest_run %}
     <a class="small" href="/run/{{ latest_run.id }}">the run &rarr;</a>
+    {# The same "resume now" the run page offers, because this is the page the
+       person who typed the message is actually looking at. Grayed out with
+       its reason while the window is still shut - never removed. #}
+    {% if hold.wake_blocked %}
+    <button type="button" class="btn secondary small" id="oneoff-wake" disabled
+            title="{{ hold.wake_blocked }}">resume now</button>
+    {% else %}
+    <form method="post" action="/run/{{ latest_run.id }}/wake" class="inline-form">
+      <input type="hidden" name="next" value="/tasks/{{ task.id }}">
+      <button type="submit" class="btn secondary small" id="oneoff-wake">resume now</button>
+    </form>
+    {% endif %}
     <form method="post" action="/run/{{ latest_run.id }}/cancel" class="inline-form">
       <input type="hidden" name="next" value="/tasks/{{ task.id }}">
       <button type="submit" class="btn danger small">stop</button>
