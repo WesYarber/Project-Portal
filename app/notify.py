@@ -247,6 +247,12 @@ async def _send_ntfy(
         # sending one when the setting is empty turns "this install has no
         # token" into "this install's token was rejected" - the same failure
         # with the wrong cause printed on it, in the one log line anybody reads.
+        #
+        # Measured here 2026-09-19 and it is worse than that: httpx refuses the
+        # value outright ("Illegal header value b'Bearer '") because of the
+        # trailing space, so the raise lands in the blanket `except` below and
+        # the notification never leaves the box at all. Hence `.strip()` on both
+        # sides - the test, and the value that goes on the wire.
         if token.strip():
             headers["Authorization"] = f"Bearer {token.strip()}"
         async with httpx.AsyncClient(timeout=10) as client:

@@ -1469,6 +1469,11 @@ summary:hover { color: var(--ansi-blue); }
 
 .grid { display: grid; gap: 1rem; }
 .grid-2 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+/* A field whose value is longer than its siblings' takes the whole row rather
+   than shrinking all three: `auto-fit` gives every column the same width, so
+   adding a third 32-character field to a two-field row truncates the other two
+   as well. Used by the ntfy publish token. */
+.grid-2 > .field-wide { grid-column: 1 / -1; }
 
 .row { display: flex; justify-content: space-between; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
 
