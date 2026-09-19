@@ -4239,10 +4239,12 @@ def paused_runs() -> list[sqlite3.Row]:
 
 
 def reopen_run(run_id: int, model: Optional[str] = None) -> bool:
-    """Put a paused run back in flight, on the same row: the run continues,
-    it does not start over. False when the row was not paused, so two ticks
-    cannot both resume one run. `model` records the one the resumed segment
-    runs on, when the caller resolved a different one."""
+    """Put a paused run back in flight, on the same row. Whether the agent
+    continues its conversation or runs the task again from the top is the
+    caller's decision (`limitpause.hold_mode`); either way it stays one run,
+    one row and one log. False when the row was not paused, so two ticks
+    cannot both wake one run. `model` records the one the woken segment runs
+    on, when the caller resolved a different one."""
     conn = get_conn()
     with _LOCK:
         cur = conn.execute(
