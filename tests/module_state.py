@@ -75,6 +75,7 @@ RESET: tuple[tuple[str, str], ...] = (
     ("app.runlimit", "_slice_ok"),
     ("app.transcribe", "_TASKS"),
     ("app.worker", "_PARALLEL_SAID"),
+    ("app.worker", "_address_checked_day"),
     ("app.worker", "_audit_pruned_day"),
     ("app.worker", "_inflight"),
     ("app.worker", "_last_stray_sweep"),

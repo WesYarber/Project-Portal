@@ -26,6 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from app import (
+    addresswatch,
     agent_runner,
     ask,
     attachments,
@@ -3353,6 +3354,7 @@ async def settings_page(request: Request) -> HTMLResponse:
             "nodes": nodes.view(),
             "this_install": nodes.this_install(),
             "model_catalog": modelwatch.catalog(),
+            "skill_addresses": addresswatch.last_result(),
             "strays": _stray_view(),
         },
     )

@@ -14,7 +14,7 @@ from string import Template
 from typing import Optional
 
 from app import (
-    agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
+    addresswatch, agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
     limitpause, limits, manualqueue, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans,
     pacing, people,
     portalmcp, preview, pricing, proof, quiet,
@@ -505,6 +505,31 @@ async def _daily_model_check() -> None:
         log.exception("Model watch failed")
 
 
+_address_checked_day: Optional[str] = None
+
+
+async def _daily_address_check() -> None:
+    """Probe the LAN addresses the shared skills name, and open a todo for any
+    that stopped answering (app/addresswatch.py).
+
+    Daily rather than weekly, and stamped BEFORE the call like the model check:
+    the sweep is four TCP connects on the same LAN, so it costs nothing, and a
+    port closed this morning is a skill lying to every run until it is fixed.
+    `data/skills/` is gitignored, so no scanner outside this process can see
+    the copy that runs are actually handed."""
+    global _address_checked_day
+    today = datetime.now(timezone.utc).date().isoformat()
+    if _address_checked_day == today:
+        return
+    _address_checked_day = today
+    try:
+        result = await addresswatch.run_check()
+        for address in result.get("filed", []):
+            log.info("Opened a todo for the stale skill address %s", address)
+    except Exception:  # noqa: BLE001 - never let the watcher stop the worker
+        log.exception("Address watch failed")
+
+
 async def _tick() -> None:
     global _pending_restart
     _reap_inflight()
@@ -517,6 +542,7 @@ async def _tick() -> None:
     await _sweep_strays()
     _daily_audit_prune()
     await _daily_model_check()
+    await _daily_address_check()
     await _publish_mirror()
     if _pending_restart is not None:
         # A self-update is waiting for the portal to go quiet. Nothing starts
