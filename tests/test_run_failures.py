@@ -35,7 +35,7 @@ import time
 
 import pytest
 
-from app import agent_runner, db, runlog, settings_form, worker
+from app import agent_runner, db, manualqueue, runlog, settings_form, worker
 
 
 @pytest.fixture
@@ -352,22 +352,21 @@ def test_the_seed_never_overwrites_an_existing_memory_file(temp_data_dir):
 
 
 @pytest.mark.asyncio
-async def test_a_manual_run_wes_queued_outranks_the_pending_restart(project, restart_state, monkeypatch):
-    """The manual queue is in-memory, so firing the restart with a queued
-    "run now" in it would silently eat Wes's click. The tick starts manual
-    runs even while a restart waits, and the restart waits for them too."""
-    started: list[bool] = []
-    release = asyncio.Event()
+async def test_a_pending_restart_starts_nothing_and_keeps_the_queued_run(
+    project, restart_state, monkeypatch
+):
+    """A restart waiting to load a self-update starts nothing at all - and
+    the "run now" somebody queued is still there afterwards.
 
-    async def hold():
-        await release.wait()
+    This used to be the other way round: manual runs were started through a
+    pending restart, because the queue was in memory and the restart would
+    erase it. The queue is persisted now (app/manualqueue.py), so the run
+    survives the restart and nothing has to be launched into a process that
+    is about to be killed."""
+    started: list[bool] = []
 
     async def start_manual():
-        # Like the real thing: takes the queued id, occupies a slot, reports
-        # that a run started.
-        await worker.manual_queue.get()
         started.append(True)
-        worker._inflight[7] = asyncio.create_task(hold())
         return True
 
     monkeypatch.setattr(worker, "_start_one", start_manual)
@@ -375,15 +374,65 @@ async def test_a_manual_run_wes_queued_outranks_the_pending_restart(project, res
     await worker.manual_queue.put(project["id"])
 
     await worker._tick()
-    assert started == [True]
-    # Not fired while the manual run it just started is in flight.
-    assert restart_state == []
+    assert started == []
+    # Nothing is in flight, so there is nothing to wait for: it fires at once.
+    assert len(restart_state) == 1
+    # And the queued run is still queued, on the row a fresh process reads.
+    assert worker.manual_queue.ids() == [project["id"]]
+    assert json.loads(db.get_setting(manualqueue.SETTING)) == [project["id"]]
 
-    # The manual run finishes; the next tick restarts.
-    release.set()
-    await worker._inflight[7]
+
+@pytest.mark.asyncio
+async def test_the_restart_waits_for_runs_in_flight(project, restart_state, monkeypatch):
+    """It still does not kill a run mid-work: the wait is on `_inflight`, and
+    only on `_inflight`."""
+    release = asyncio.Event()
+
+    async def hold():
+        await release.wait()
+
+    monkeypatch.setattr(worker, "_pending_restart", (project["id"], "abcdef1234"))
+    worker._inflight[7] = asyncio.create_task(hold())
+    try:
+        await worker._tick()
+        assert restart_state == []
+    finally:
+        release.set()
+        await worker._inflight[7]
     await worker._tick()
     assert len(restart_state) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_queued_run_for_a_paused_project_cannot_wedge_the_restart(
+    project, restart_state, monkeypatch
+):
+    """The 2026-09-19 deadlock, in four lines.
+
+    A manual run queued for a project whose only busy-ness is a run *paused*
+    for the usage window can never start: `_start_one` puts it back and
+    returns False. While the restart waited on the queue being empty, that
+    meant the restart never fired, so `_tick` returned before
+    `_resume_paused_runs` - the one thing that would have freed the project -
+    and the whole board sat there for nine and a half hours with nothing in
+    flight and the allowance untouched.
+
+    The tick must converge: the restart fires, the run stays queued, and
+    nothing spins."""
+    # A run of this project, paused for the usage window. `busy_project_ids`
+    # counts it, which is what makes the queued run unstartable.
+    run_id = db.create_run(project["id"], "build", "opus")
+    db.finish_run(run_id, "paused", "s-1", 0.0, 1, "Paused for the usage window.")
+    assert project["id"] in db.busy_project_ids()
+
+    monkeypatch.setattr(worker, "_pending_restart", (project["id"], "abcdef1234"))
+    await worker.manual_queue.put(project["id"])
+
+    await worker._tick()
+
+    assert worker._pending_restart is None
+    assert len(restart_state) == 1
+    assert worker.manual_queue.ids() == [project["id"]]
 
 
 # --- the wait is visible on every page ---------------------------------------

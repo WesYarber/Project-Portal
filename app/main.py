@@ -2216,6 +2216,21 @@ async def activity_page(
         project_row = None
     project_id = project_row["id"] if project_row else None
 
+    # Runs parked for the usage window, with what each is waiting on. Shown
+    # as their own card above the table because they are not history: they are
+    # coming back, and since 2026-09-19 they can be woken from here by hand.
+    # Re-read through `get_run_with_project`: `paused_runs` is a bare
+    # SELECT * on runs, and `_decorate_runs` wants the project columns joined
+    # on so it can label each row.
+    paused = []
+    for row in db.paused_runs():
+        if row["project_id"] is not None and row["project_id"] not in mine:
+            continue
+        joined = db.get_run_with_project(int(row["id"]))
+        if joined is None:
+            continue
+        paused.append({"run": _decorate_runs([joined])[0], "hold": limitpause.describe(row)})
+
     total = db.count_recent_runs(project_id=project_id, status=status or None)
     rows = db.list_recent_runs(
         limit=ACTIVITY_PAGE_SIZE,
@@ -2241,6 +2256,8 @@ async def activity_page(
             "status_filter": status,
             "project_filter": project_row["slug"] if project_row else "",
             "projects": [p for p in db.list_projects() if p["id"] in mine],
+            "paused": paused,
+            "paused_wakeable": sum(1 for p in paused if not p["hold"]["wake_blocked"]),
         },
     )
 
@@ -2310,6 +2327,7 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         # disagree about which commits this run is responsible for.
         "diff": rundiff.for_run(landed),
         "undo_error": None,
+        "wake_error": None,
         "comment_error": None,
         "comment_filed": False,
     }
@@ -2447,6 +2465,37 @@ async def pause_run_route(request: Request, run_id: int, next: str = Form("/")) 
 async def resume_run_route(request: Request, run_id: int, next: str = Form("/")) -> RedirectResponse:
     outcome = midrun.resume(run_id, by=_person_name(request))
     log.info("Resume run %s -> %s", run_id, outcome)
+    return RedirectResponse(url=_safe_next(next), status_code=303)
+
+
+@app.post("/run/{run_id}/wake")
+async def wake_run_route(request: Request, run_id: int, next: str = Form("/")):
+    """Resume a run the *system* paused for the usage window, now, rather than
+    waiting for the tick that would get to it on its own.
+
+    A different door from `/run/{id}/resume` above, which resumes a hold a
+    person put on a live run (app/midrun.py). This one has no live process to
+    release: it puts a settled row back in flight (app/limitpause.py).
+
+    A refusal renders the run page with the reason on it rather than
+    redirecting, because the only refusals possible are ones the person
+    wants to read - and "nothing fails quietly" is the rule.
+    """
+    problem = worker.resume_now(run_id, by=_person_name(request))
+    log.info("Wake paused run %s -> %s", run_id, problem or "resumed")
+    if problem:
+        return _render_run_page(request, run_id, wake_error=problem)
+    return RedirectResponse(url=_safe_next(next), status_code=303)
+
+
+@app.post("/runs/wake-paused")
+async def wake_paused_runs_route(request: Request, next: str = Form("/activity")) -> RedirectResponse:
+    """Wake every run whose usage window has reopened. These pause in batches -
+    ten at once on 2026-09-19 - so the board gets one button rather than ten
+    page visits. Runs still inside their window are left alone and keep saying
+    so on /activity."""
+    woken, left = worker.resume_all_paused(by=_person_name(request))
+    log.info("Wake all paused runs -> %d woken, %d left", woken, left)
     return RedirectResponse(url=_safe_next(next), status_code=303)
 
 

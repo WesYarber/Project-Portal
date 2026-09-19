@@ -15,7 +15,8 @@ from typing import Optional
 
 from app import (
     agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
-    limitpause, limits, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans, pacing, people,
+    limitpause, limits, manualqueue, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans,
+    pacing, people,
     portalmcp, preview, pricing, proof, quiet,
     quickreplies, report_schema, runlimit, runlog, selfreview, strays, subprojects,
     todos, transcript, worklock,
@@ -31,8 +32,10 @@ LOOP_INTERVAL_SEC = 60
 
 # Manual "Run now" requests: a queue of project ids. The event wakes the
 # worker loop out of its between-tick sleep, so a run Wes asked for starts
-# immediately instead of at the next minute boundary.
-manual_queue: "asyncio.Queue[int]" = asyncio.Queue()
+# immediately instead of at the next minute boundary. The queue is written
+# through to the database (app/manualqueue.py), so a self-update's restart no
+# longer erases a run somebody pressed a button for.
+manual_queue = manualqueue.ManualQueue()
 _wake = asyncio.Event()
 
 
@@ -430,6 +433,14 @@ def idle_reason() -> str:
 
 async def worker_loop() -> None:
     log.info("Worker loop started")
+    # Whatever the last process was still holding when it went down. Here and
+    # not in the app's startup handler because this is the only place that
+    # runs once per *service* start and never in a smoke test or an ad-hoc
+    # `python -c` against the live database. See app/manualqueue.py.
+    try:
+        manual_queue.restore()
+    except Exception:  # noqa: BLE001 - never let bookkeeping stop the loop
+        log.exception("Could not restore the manual run queue")
     while True:
         try:
             await _tick()
@@ -510,16 +521,29 @@ async def _tick() -> None:
     await _daily_model_check()
     await _publish_mirror()
     if _pending_restart is not None:
-        # A self-update is waiting for the portal to go quiet. Start no
-        # scheduled runs - one started now would be killed by the very restart
-        # it is holding up - and fire the restart the moment the last run is
-        # done. Manual runs are the exception: the queue is in-memory, so a
-        # "run now" Wes pressed would be erased by the restart. Start those,
-        # and let the restart wait for them like anything else.
-        while not manual_queue.empty() and len(_inflight) < pacing.parallel_cap(db.max_parallel_runs()):
-            if not await _start_one():
-                break
-        if not _inflight and manual_queue.empty():
+        # A self-update is waiting for the portal to go quiet. Nothing starts
+        # here - not a scheduled run, not a queued manual one, not the wake of
+        # a run parked for the usage window - because anything started now is
+        # started to be killed by the very restart it would then hold up. The
+        # restart fires the moment the last run in flight is done.
+        #
+        # This used to make one exception, for manual runs, on the grounds
+        # that the queue was in memory and the restart would erase it. The
+        # queue is persisted now (app/manualqueue.py) and the exception is
+        # gone, and with it the deadlock it caused on 2026-09-19: a queued run
+        # for a project whose only busy-ness was a *paused* run could never
+        # start, so `_start_one` put it back and the queue was never empty, so
+        # the restart never fired, so this return was reached before
+        # `_resume_paused_runs` - the one thing that would have freed the
+        # project. Ten projects and one update sat there for nine and a half
+        # hours with the allowance at 0% used and nothing at all in flight.
+        #
+        # The condition is now `_inflight` alone, which always clears: every
+        # run in it either finishes or is reaped. A paused run needs nothing
+        # from this process to survive a restart - it is a database row, and
+        # `db.reconcile_orphaned_runs_on_boot` only touches 'running' - so the
+        # fresh process wakes it on its first tick.
+        if not _inflight:
             project_id, new_head = _pending_restart
             _pending_restart = None
             _fire_restart(project_id, new_head)
@@ -1090,7 +1114,92 @@ async def _resume_paused_runs() -> None:
             log.exception("Could not resume run %s", row["id"])
 
 
-def resume_run(row: db.sqlite3.Row) -> bool:
+def resume_now(run_id: int, by: str = "") -> str:
+    """Wake a run parked for the usage window because somebody pressed the
+    button, rather than waiting for the tick to notice the window reopened.
+    Returns "" when it went back in flight, otherwise the reason it did not,
+    phrased for the person who pressed it.
+
+    Wes asked for this on 2026-09-19, after ten runs sat paused for nine and
+    a half hours behind a deadlocked tick (see `_tick`). The deadlock is
+    fixed, but "the tick will get to it" is not a thing anyone can see from a
+    phone, and the button is.
+
+    Three deliberate differences from the automatic wake in
+    `_resume_paused_runs`:
+
+    * It does not count against `limitpause.MAX_RESUMES`. That cap stops the
+      portal waking a run into the same shut window forever; a person is not
+      a loop. Recorded under its own decision so it cannot count.
+    * It is not held by the parallel cap. Pressing it is the same kind of act
+      as pressing "run now", which has always bypassed the caps - what it
+      cannot bypass is the one-agent-per-workspace rule, which `resume_run`
+      enforces for both kinds of run.
+    * It refuses while the window is genuinely still shut, because waking a
+      run into a spent allowance only parks it again a few cents later. The
+      button is drawn grayed out with that reason rather than removed.
+    """
+    row = db.get_run(run_id)
+    if row is None:
+        return "that run is gone"
+    blocked = limitpause.wake_blocked(row)
+    if blocked:
+        return blocked
+    if _restarting:
+        return (
+            "the service is restarting to load an update - this run comes back "
+            "on its own a few seconds after it does"
+        )
+    if not resume_run(row, by=by):
+        # `resume_run` logs which of its reasons it was and leaves the row
+        # paused (except for the two cases where nothing is coming back for
+        # it, which it settles). Either way, re-read rather than guess.
+        after = db.get_run(run_id)
+        if after is not None and after["status"] != limitpause.STATUS:
+            return "that run could not be resumed and has been settled - see its page"
+        return (
+            "its workspace is busy right now - the run stays paused and comes "
+            "back by itself once the agent in there finishes"
+        )
+    _wake.set()
+    return ""
+
+
+def resume_all_paused(by: str = "") -> tuple[int, int]:
+    """Wake every run whose usage window has reopened, by hand. Returns
+    (woken, left behind).
+
+    The batch half of `resume_now`, because these pause in batches: ten
+    projects went down together in the 06:39-06:52 window on 2026-09-19 and
+    waking them one page at a time is ten trips. Unlike the single button
+    this one does respect the parallel cap - ten CLI processes at once is
+    not what anybody means by "resume them" - and the ticks that follow take
+    the rest.
+    """
+    woken = 0
+    left = 0
+    for row in db.paused_runs():
+        if limitpause.wake_blocked(row):
+            left += 1
+            continue
+        if len(_inflight) >= pacing.parallel_cap(db.max_parallel_runs()):
+            left += 1
+            continue
+        try:
+            if resume_run(row, by=by):
+                woken += 1
+            else:
+                left += 1
+        except Exception:  # noqa: BLE001 - one bad row must not stop the rest
+            log.exception("Could not resume run %s", row["id"])
+            left += 1
+    if woken:
+        _wake.set()
+    log.info("Hand resume of paused runs by %r: %d woken, %d left", by or "-", woken, left)
+    return woken, left
+
+
+def resume_run(row: db.sqlite3.Row, by: str = "") -> bool:
     """Put a paused run back in flight on its own row. False when it could not
     be: no project, a leased workspace (wait for the next tick), or a row that
     is no longer paused.
@@ -1100,10 +1209,15 @@ def resume_run(row: db.sqlite3.Row) -> bool:
     never got going - the allowance was already spent when it asked - so it
     runs the task again from the top, with a prompt built fresh at this
     moment rather than the one it never got to use. Both stay on this row.
+
+    `by` is the person who pressed "resume now" (`resume_now`), "" when the
+    tick got here on its own. It changes nothing about how the run comes
+    back - only how the wake is recorded, and whether it counts against
+    `limitpause.MAX_RESUMES`.
     """
     run_id = int(row["id"])
     if row["oneoff_id"]:
-        return resume_oneoff_run(row)
+        return resume_oneoff_run(row, by=by)
     project = db.get_project(int(row["project_id"])) if row["project_id"] else None
     if project is None:
         db.finish_run(run_id, "error", summary="Could not resume: the project is gone.")
@@ -1124,7 +1238,7 @@ def resume_run(row: db.sqlite3.Row) -> bool:
     if mode == limitpause.RESTART:
         # Recorded here rather than inside the run, because the run about to
         # start is an ordinary one: nothing downstream can tell it apart.
-        limitpause.mark_restarted(row)
+        limitpause.mark_restarted(row, by=by)
         log.info("Restarting run %s on %s after its usage-window pause (%s)",
                  run_id, project["slug"], model)
     else:
@@ -1136,12 +1250,13 @@ def resume_run(row: db.sqlite3.Row) -> bool:
             parallel=db.is_parallel_run(row),
             resume_session=str(session) if mode == limitpause.RESUME else None,
             prior=prior,
+            wake_by=by,
         )
     )
     return True
 
 
-def resume_oneoff_run(row: db.sqlite3.Row) -> bool:
+def resume_oneoff_run(row: db.sqlite3.Row, by: str = "") -> bool:
     """Wake a one-off task's run after its usage-window pause, on its own row.
 
     The same two ways back a project run has (`limitpause.hold_mode`), told
@@ -1173,12 +1288,12 @@ def resume_oneoff_run(row: db.sqlite3.Row) -> bool:
     if not db.reopen_run(run_id, model=model):
         return False
     if mode == limitpause.RESTART:
-        limitpause.mark_restarted(row)
+        limitpause.mark_restarted(row, by=by)
         wake = None
         log.info("Restarting one-off run %s on task %s after its usage-window pause (%s)",
                  run_id, task_id, model)
     else:
-        wake = (str(row["session_id"]), limitpause.mark_resumed(row))
+        wake = (str(row["session_id"]), limitpause.mark_resumed(row, by=by))
         log.info("Resuming one-off run %s on task %s after its usage-window pause (%s)",
                  run_id, task_id, model)
     _inflight[run_id] = asyncio.create_task(
@@ -1191,14 +1306,16 @@ async def _execute_run(
     project: db.sqlite3.Row, task: str, run_id: int, model: str, parallel: bool = False,
     resume_session: Optional[str] = None,
     prior: tuple[Optional[float], Optional[int]] = (None, None),
+    wake_by: str = "",
 ) -> None:
-    """`resume_session` and `prior` are set only by `resume_run`: the CLI
-    session to continue, and what the run's earlier segments cost, folded
-    onto the row once this segment has settled it (app/limitpause.py)."""
+    """`resume_session`, `prior` and `wake_by` are set only by `resume_run`:
+    the CLI session to continue, what the run's earlier segments cost (folded
+    onto the row once this segment has settled it), and who pressed "resume
+    now" if a person did rather than the tick (app/limitpause.py)."""
     try:
         await run_project_task(
             project, task, run_id=run_id, model=model, parallel=parallel,
-            resume_session=resume_session,
+            resume_session=resume_session, wake_by=wake_by,
         )
     except Exception:  # noqa: BLE001 - a crashed run must not leave a 'running' row
         log.exception("Run %s failed", run_id)
@@ -1401,6 +1518,7 @@ async def run_project_task(
     model: Optional[str] = None,
     parallel: bool = False,
     resume_session: Optional[str] = None,
+    wake_by: str = "",
 ) -> None:
     """Execute one task. `run_id` is passed in by `spawn_run`, which creates the
     row up front so the slot is accounted for before the coroutine starts; call
@@ -1451,7 +1569,7 @@ async def run_project_task(
     # entry - which the prompt always shows whole. See app/journalfile.py.
     journalfile.write(project, workspace)
     if resume_session:
-        prompt = limitpause.mark_resumed(db.get_run(run_id))
+        prompt = limitpause.mark_resumed(db.get_run(run_id), by=wake_by)
     else:
         prompt = agent_runner.build_prompt(
             task, project,

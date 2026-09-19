@@ -968,6 +968,18 @@ button:active, .btn:active { filter: brightness(1.4); }
    destructive control is never under the thumb that meant to open the project.
    Wraps rather than shrinks on a phone - the slug is the one part that must
    stay readable, since it is what a person types into a note. */
+/* The usage-window hold list on /activity. One line per held run, wrapping
+   rather than truncating: the reason a run is held ("the window reopens at
+   07:20 UTC") is the whole point of the row, so it may not be the part that
+   falls off a phone. */
+.paused-list { list-style: none; margin: 0.6rem 0 0.8rem; padding: 0; }
+.paused-list li {
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--window-border);
+  font-size: 0.85rem;
+}
+.paused-list li:last-child { border-bottom: 0; }
+
 .linked-projects { list-style: none; margin: 0.6rem 0 0; padding: 0; }
 .linked-projects li {
   display: flex;

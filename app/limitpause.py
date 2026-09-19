@@ -82,6 +82,12 @@ PAUSED = "limit_paused"
 RESUMED = "limit_resumed"
 RESTARTED = "limit_restarted"
 GAVE_UP = "limit_gave_up"
+# The same two wakes, pressed by a person rather than reached by the tick.
+# Separate decisions precisely so `resumes_so_far` does not count them: the
+# cap exists to stop the portal waking a run into the same shut window
+# forever, and somebody pressing a button is not that.
+HAND_RESUMED = "limit_resumed_by_hand"
+HAND_RESTARTED = "limit_restarted_by_hand"
 
 # What waking a paused row means. RESUME continues the CLI session the run
 # already had; RESTART re-runs the task from the top because the refusal came
@@ -117,9 +123,15 @@ def reset_moment(quota, hint: Optional[datetime], fallback: datetime) -> datetim
 
 
 def resumes_so_far(run_id: int) -> int:
-    """Every wake counts against `MAX_RESUMES`, whichever kind it was: a run
-    woken three times into the same shut window is no more likely to get
-    through by starting over than by resuming."""
+    """Every *automatic* wake counts against `MAX_RESUMES`, whichever kind it
+    was: a run woken three times into the same shut window is no more likely
+    to get through by starting over than by resuming.
+
+    A wake somebody pressed the button for does not count, and is written
+    down under its own decision (`HAND_RESUMED`/`HAND_RESTARTED`) so it
+    cannot. The cap is a guard against the portal looping, not a ration on
+    what a person may ask for.
+    """
     return (db.count_hook_events(run_id, "midrun", RESUMED)
             + db.count_hook_events(run_id, "midrun", RESTARTED))
 
@@ -276,6 +288,39 @@ def resume_after(row) -> Optional[datetime]:
     return _parse(str(data.get("limit_until") or ""))
 
 
+def wake_blocked(row, now: Optional[datetime] = None) -> str:
+    """Why this run cannot be woken by hand right now - "" when it can be.
+
+    There is exactly one reason, and it is not a refusal to argue with: the
+    usage window it is waiting for has not reopened. Waking a run into a
+    spent allowance does not get it further; the CLI refuses on its first
+    call and the run is parked again, a few cents and one wake later. So the
+    button is drawn grayed out with this sentence under it rather than
+    removed - never removed, and never silently disabled either.
+
+    `MAX_RESUMES` is deliberately not a reason. A run that has used up its
+    wakes is not paused any more (`_park` settles it as an error instead), so
+    a paused row can never be at the cap.
+    """
+    if row is None or _row_status(row) != STATUS:
+        return "this run is not paused for the usage window"
+    until = resume_after(row)
+    now = now or datetime.now(timezone.utc)
+    if until is not None and until > now:
+        return (
+            f"the usage window is still shut - it reopens at {_fmt(until)}, and waking "
+            "the run before then would spend one of its wakes on another refusal"
+        )
+    return ""
+
+
+def _row_status(row) -> str:
+    try:
+        return str(row["status"] or "")
+    except (KeyError, IndexError, TypeError):
+        return ""
+
+
 def describe(row) -> Optional[dict]:
     """What the run page says about a paused row: when it resumes, and why it
     stopped. None for any other row."""
@@ -291,6 +336,9 @@ def describe(row) -> Optional[dict]:
         "max_resumes": MAX_RESUMES,
         "mode": mode,
         "restarts": mode == RESTART,
+        # "" when the run page's "resume now" button is live; otherwise the
+        # sentence printed under the grayed-out button. See `wake_blocked`.
+        "wake_blocked": wake_blocked(row),
         # What the run page says it will do. A run with a session picks its
         # conversation back up; one that never got a session never started,
         # so there is nothing to pick up and it runs from the top.
@@ -334,30 +382,59 @@ def _say(row, line: str) -> None:
         )
 
 
-def mark_resumed(row, now: Optional[datetime] = None) -> str:
+def mark_resumed(row, now: Optional[datetime] = None, by: str = "") -> str:
     """Record the wake on the run's timeline and journal, and return the
-    prompt the resumed session is handed."""
+    prompt the resumed session is handed.
+
+    `by` is the person who pressed "resume now" on the run page, "" when the
+    tick got here by itself. A hand wake is written under `HAND_RESUMED` and
+    so does not count against `MAX_RESUMES` - see `resumes_so_far`.
+    """
     now = now or datetime.now(timezone.utc)
     paused_at, held_text = held_for(row, now)
-    count = resumes_so_far(int(row["id"])) + 1
-    db.add_hook_event(
-        int(row["id"]), "midrun", _TOOL, RESUMED,
-        f"Resumed after {held_text} paused for the usage window (resume {count} of at most "
-        f"{MAX_RESUMES}).",
-    )
-    _say(row, f"Run #{row['id']} resumed after {held_text} paused for the usage window; it "
-              "continues in the same session from where it stopped.")
+    if by:
+        db.add_hook_event(
+            int(row["id"]), "midrun", _TOOL, HAND_RESUMED,
+            f"Resumed by {by} after {held_text} paused for the usage window, without "
+            f"waiting for the window; this does not count against the {MAX_RESUMES} "
+            "automatic wakes.",
+        )
+        _say(row, f"Run #{row['id']} was resumed by {by} after {held_text} paused for the "
+                  "usage window; it continues in the same session from where it stopped.")
+    else:
+        count = resumes_so_far(int(row["id"])) + 1
+        db.add_hook_event(
+            int(row["id"]), "midrun", _TOOL, RESUMED,
+            f"Resumed after {held_text} paused for the usage window (resume {count} of at most "
+            f"{MAX_RESUMES}).",
+        )
+        _say(row, f"Run #{row['id']} resumed after {held_text} paused for the usage window; it "
+                  "continues in the same session from where it stopped.")
     if db._row_get(row, "oneoff_id"):  # noqa: SLF001
         return oneoff_resume_prompt(paused_at, now, held_text)
     return resume_prompt(paused_at, now, held_text)
 
 
-def mark_restarted(row, now: Optional[datetime] = None) -> None:
+def mark_restarted(row, now: Optional[datetime] = None, by: str = "") -> None:
     """Record the wake of a run that never got going. No prompt is returned:
     a restart is an ordinary run of the task, built fresh at wake time, which
-    is the whole reason this case starts over rather than resuming."""
+    is the whole reason this case starts over rather than resuming.
+
+    `by` is the person who pressed "resume now", as in `mark_resumed`, and
+    the same exemption from `MAX_RESUMES` applies.
+    """
     now = now or datetime.now(timezone.utc)
     _, held_text = held_for(row, now)
+    if by:
+        db.add_hook_event(
+            int(row["id"]), "midrun", _TOOL, HAND_RESTARTED,
+            f"Started over by {by} after {held_text} waiting for the usage window; this "
+            f"does not count against the {MAX_RESUMES} automatic wakes.",
+        )
+        _say(row, f"Run #{row['id']}, which never started because the usage allowance was "
+                  f"spent, was started by {by} after {held_text} waiting. It starts from "
+                  "the top: nothing had been done to pick up.")
+        return
     count = resumes_so_far(int(row["id"])) + 1
     db.add_hook_event(
         int(row["id"]), "midrun", _TOOL, RESTARTED,

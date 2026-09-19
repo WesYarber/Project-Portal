@@ -410,7 +410,7 @@ button.go, .btn.go {
    below - one filter, so every variant brightens in its own color rather than
    each needing its own rule. */
 @media (hover: hover) {
-  button:hover, .btn:hover {
+  button:hover:not(:disabled), .btn:hover:not(:disabled) {
     background: rgba(56, 189, 248, 0.2);
     border-color: var(--ansi-blue);
     box-shadow: 0 0 10px rgba(56, 189, 248, 0.18);
@@ -420,7 +420,7 @@ button.go, .btn.go {
      --terminal-dim on almost nothing, and merely deepening that wash pushes it
      under the 4.5:1 floor. Lifting it to the body foreground is what "hover"
      should mean on a control that is quiet on purpose. */
-  button.secondary:hover, .btn.secondary:hover {
+  button.secondary:hover:not(:disabled), .btn.secondary:hover:not(:disabled) {
     background: rgba(148, 163, 184, 0.16);
     border-color: var(--terminal-dim);
     color: var(--terminal-fg);
@@ -430,13 +430,13 @@ button.go, .btn.go {
      green comfortably legible drops --ansi-red to 4.2:1 against it — under the
      floor, measured. Like .secondary, the label brightens rather than the wash
      thinning: hover should read as the control lighting UP. */
-  button.danger:hover, .btn.danger:hover {
+  button.danger:hover:not(:disabled), .btn.danger:hover:not(:disabled) {
     background: rgba(255, 110, 110, 0.2);
     border-color: var(--ansi-red);
     color: hsl(0, 90%, 78%);
     box-shadow: 0 0 10px rgba(255, 110, 110, 0.18);
   }
-  button.go:hover, .btn.go:hover {
+  button.go:hover:not(:disabled), .btn.go:hover:not(:disabled) {
     background: rgba(74, 222, 128, 0.2);
     border-color: var(--ansi-green);
     box-shadow: 0 0 10px rgba(74, 222, 128, 0.18);
@@ -445,7 +445,19 @@ button.go, .btn.go {
 /* The press. `filter` rather than a per-variant background so a danger button
    flashes red and a go button green with no rule of their own, and rather
    than a transform, which would move the hit box out from under the finger. */
-button:active, .btn:active { filter: brightness(1.4); }
+button:active:not(:disabled), .btn:active:not(:disabled) { filter: brightness(1.4); }
+
+/* Unavailable, and it has to look it. Wes's rule for a control a page cannot
+   act on right now is grayed out and explained, never removed - and until
+   this rule the `disabled` attribute changed nothing at all about how a
+   button was painted here, so a dead control was pixel-identical to a live
+   one and read as a button that swallows the press. The `:not(:disabled)` on
+   every hover and press rule above is the other half: without it a disabled
+   button still lit up under the cursor. */
+button:disabled, .btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 button.small, .btn.small { padding: 0.2rem 0.6rem; font-size: 0.75rem; height: 1.8rem; }
 
 .button-row { display: flex; gap: 0.6rem; flex-wrap: wrap; align-items: center; }

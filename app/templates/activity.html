@@ -32,6 +32,39 @@
   <a class="small stat-fact" href="/settings#budget">adjust budget</a>
 </div>
 
+{% if paused %}
+{# Runs parked for the usage window (app/limitpause.py). Above the history,
+   because these are not history: each one is coming back, holding its
+   project until it does. The tick wakes them on its own; this is the button
+   for when waiting is not what you want. #}
+<h2>Held for the usage window</h2>
+<div class="card" id="paused-runs">
+  <p class="small muted">{{ paused|length }} run{{ 's' if paused|length != 1 }} paused, not stopped &mdash;
+    each keeps its workspace and comes back on its own row.</p>
+  <ul class="paused-list">
+    {% for item in paused %}
+    <li class="paused-run">
+      <a href="/run/{{ item.run.id }}">#{{ item.run.id }} {{ item.run.task }}</a>
+      on {{ item.run.project_title }}
+      <span class="muted small">&mdash;
+        {% if item.hold.wake_blocked %}{{ item.hold.wake_blocked }}{% else %}its window has reopened; waiting for the next check{% endif %}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% if paused_wakeable %}
+  <form method="post" action="/runs/wake-paused" class="inline-form">
+    <input type="hidden" name="next" value="/activity">
+    <button type="submit" class="btn secondary" id="wake-all">resume {{ paused_wakeable }} now</button>
+  </form>
+  {% else %}
+  <button type="button" class="btn secondary" id="wake-all" disabled
+          title="every paused run is still inside its usage window">resume them now</button>
+  <p class="hint">Nothing to resume yet: every one of these is still inside the window it is
+    waiting on, and waking a run into a spent allowance only parks it again.</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <h2>Last {{ days }} days</h2>
 <div class="card">
   <div class="window-picker">

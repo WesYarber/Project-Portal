@@ -917,3 +917,241 @@ def test_the_task_page_of_an_ordinary_task_has_no_hold(task):
     db.finish_run(run_id, "ok", "s", 1.0, 2, "fine")
     with TestClient(app) as client:
         assert 'id="oneoff-hold"' not in client.get(f"/tasks/{task['id']}").text
+
+
+# --- resuming a system pause by hand -----------------------------------------
+# Wes, 2026-09-19 (dictated): "Please resume all of the currently paused tasks
+# and tell the project portal to add a feature that enables resuming runs that
+# were paused by the system rather than me as well." A run HE paused has had a
+# resume button since app/midrun.py; a run the usage window paused had only
+# "stop this run" and a sentence about when it would come back on its own.
+
+
+def test_a_run_inside_its_window_cannot_be_woken_and_says_why(project):
+    """Waking a run into a spent allowance parks it again a few cents later,
+    so the button is off - with the reason, and with the hour on it."""
+    until = datetime.now(timezone.utc) + timedelta(hours=2)
+    run_id = _pause_now(project, until)
+    blocked = limitpause.wake_blocked(db.get_run(run_id))
+    assert "still shut" in blocked
+    assert limitpause._fmt(until) in blocked
+    # And nothing happens if the route is posted anyway.
+    assert "still shut" in worker.resume_now(run_id, by="Wes")
+    assert db.get_run(run_id)["status"] == limitpause.STATUS
+
+
+def test_a_run_whose_window_has_reopened_can_be_woken(project):
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    assert limitpause.wake_blocked(db.get_run(run_id)) == ""
+
+
+def test_a_run_that_is_not_paused_cannot_be_woken(project):
+    run_id = db.create_run(project["id"], "build", "opus")
+    db.finish_run(run_id, "ok", "s-1", 1.0, 2, "done")
+    assert "not paused" in limitpause.wake_blocked(db.get_run(run_id))
+    assert "not paused" in worker.resume_now(run_id, by="Wes")
+    assert "gone" in worker.resume_now(9999, by="Wes")
+
+
+@pytest.mark.asyncio
+async def test_resume_now_puts_the_run_back_in_flight(project, monkeypatch):
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=2.0, num_turns=9, result_text="done",
+    ))
+
+    assert worker.resume_now(run_id, by="Wes") == ""
+    assert db.get_run(run_id)["status"] == "running"
+    await worker._inflight[run_id]
+
+    assert seen["resume_session"] == "s-1"
+    assert db.get_run(run_id)["status"] == "ok"
+
+
+@pytest.mark.asyncio
+async def test_a_hand_resume_does_not_count_against_the_cap(project, monkeypatch):
+    """The cap stops the PORTAL waking a run into the same shut window
+    forever. A person pressing a button is not a loop, so the wake is written
+    under its own decision and `resumes_so_far` does not see it."""
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="done",
+    ))
+
+    assert worker.resume_now(run_id, by="Wes") == ""
+    await worker._inflight[run_id]
+
+    assert limitpause.resumes_so_far(run_id) == 0
+    decisions = [e["decision"] for e in db.midrun_events_for_run(run_id)]
+    assert decisions == [limitpause.PAUSED, limitpause.HAND_RESUMED]
+    assert any("resumed by Wes" in b for b in _journal(project["id"]))
+
+
+@pytest.mark.asyncio
+async def test_an_automatic_resume_still_counts(project, monkeypatch):
+    """The other half of the same rule: the tick's own wake is unchanged."""
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="done",
+    ))
+
+    assert worker.resume_run(db.get_run(run_id)) is True
+    await worker._inflight[run_id]
+
+    assert limitpause.resumes_so_far(run_id) == 1
+    assert limitpause.RESUMED in [e["decision"] for e in db.midrun_events_for_run(run_id)]
+
+
+@pytest.mark.asyncio
+async def test_a_hand_restart_does_not_count_either(project, monkeypatch):
+    """A run that never got going is started over by hand the same way."""
+    run_id = db.create_run(project["id"], "build", "opus")
+    limitpause.pause(project, run_id, "build", _limited(session=None),
+                     datetime.now(timezone.utc) - timedelta(minutes=1), "test")
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-9", cost_usd=1.0, num_turns=2, result_text="done",
+    ))
+
+    assert worker.resume_now(run_id, by="Karli") == ""
+    await worker._inflight[run_id]
+
+    assert seen.get("resume_session") is None
+    assert limitpause.resumes_so_far(run_id) == 0
+    assert [e["decision"] for e in db.midrun_events_for_run(run_id)] == \
+        [limitpause.PAUSED, limitpause.HAND_RESTARTED]
+    assert any("started by Karli" in b for b in _journal(project["id"]))
+
+
+@pytest.mark.asyncio
+async def test_resume_now_refuses_while_the_service_is_restarting(project, monkeypatch):
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    monkeypatch.setattr(worker, "_restarting", True)
+    assert "restarting" in worker.resume_now(run_id, by="Wes")
+    assert db.get_run(run_id)["status"] == limitpause.STATUS
+
+
+@pytest.mark.asyncio
+async def test_resume_now_leaves_a_run_paused_when_the_workspace_is_busy(project, monkeypatch):
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    monkeypatch.setattr(worker, "workspace_leased", lambda slug: True)
+    assert "workspace is busy" in worker.resume_now(run_id, by="Wes")
+    assert db.get_run(run_id)["status"] == limitpause.STATUS
+
+
+@pytest.mark.asyncio
+async def test_resume_all_wakes_the_due_ones_and_leaves_the_rest(monkeypatch):
+    """They pause in batches - ten at once on 2026-09-19 - so the board gets
+    one button. A run still inside its window is left where it is."""
+    due_projects = [
+        db.create_project(f"P{i}", description="x", stage="active",
+                          build_approved=True, slug=f"p{i}")
+        for i in range(3)
+    ]
+    due_ids = [
+        _pause_now(p, datetime.now(timezone.utc) - timedelta(minutes=1))
+        for p in due_projects[:2]
+    ]
+    not_due = _pause_now(due_projects[2], datetime.now(timezone.utc) + timedelta(hours=1))
+    _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="done",
+    ))
+
+    woken, left = worker.resume_all_paused(by="Wes")
+    assert (woken, left) == (2, 1)
+    for run_id in due_ids:
+        await worker._inflight[run_id]
+        assert db.get_run(run_id)["status"] == "ok"
+    assert db.get_run(not_due)["status"] == limitpause.STATUS
+
+
+@pytest.mark.asyncio
+async def test_resume_all_respects_the_parallel_cap(monkeypatch):
+    """Ten CLI processes at once is not what anybody means by "resume them";
+    the ticks that follow take the rest."""
+    projects = [
+        db.create_project(f"Q{i}", description="x", stage="active",
+                          build_approved=True, slug=f"q{i}")
+        for i in range(3)
+    ]
+    for p in projects:
+        _pause_now(p, datetime.now(timezone.utc) - timedelta(minutes=1))
+    monkeypatch.setattr(worker.pacing, "parallel_cap", lambda n: 1)
+    _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="done",
+    ))
+
+    woken, left = worker.resume_all_paused(by="Wes")
+    assert (woken, left) == (1, 2)
+    for handle in list(worker._inflight.values()):
+        await handle
+
+
+def test_the_run_page_offers_resume_now_once_the_window_has_reopened(project):
+    from app.main import app
+
+    run_id = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    with TestClient(app) as client:
+        page = client.get(f"/run/{run_id}").text
+    assert f'action="/run/{run_id}/wake"' in page
+    assert 'id="wake-ready"' in page
+    assert 'id="wake-blocked"' not in page
+
+
+def test_the_run_page_grays_resume_now_out_with_the_reason(project):
+    """Never removed, never silently dead: the disabled button is on the page
+    and the sentence under it says what it is waiting for."""
+    from app.main import app
+
+    until = datetime.now(timezone.utc) + timedelta(hours=2)
+    run_id = _pause_now(project, until)
+    with TestClient(app) as client:
+        page = client.get(f"/run/{run_id}").text
+    assert 'id="wake-run" disabled' in page
+    assert f'action="/run/{run_id}/wake"' not in page
+    assert limitpause._fmt(until) in page
+    assert 'id="wake-blocked"' in page
+
+
+def test_posting_the_wake_route_too_early_says_so_on_the_page(project):
+    from app.main import app
+
+    run_id = _pause_now(project, datetime.now(timezone.utc) + timedelta(hours=2))
+    with TestClient(app) as client:
+        page = client.post(f"/run/{run_id}/wake", data={"next": f"/run/{run_id}"})
+    assert page.status_code == 200
+    assert 'id="wake-error"' in page.text
+    assert "still shut" in page.text
+    assert db.get_run(run_id)["status"] == limitpause.STATUS
+
+
+def test_the_activity_page_lists_held_runs_and_offers_one_button(project, monkeypatch):
+    from app.main import app
+
+    ready = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    other = db.create_project("Other", description="x", stage="active",
+                              build_approved=True, slug="other")
+    waiting = _pause_now(other, datetime.now(timezone.utc) + timedelta(hours=2))
+    with TestClient(app) as client:
+        page = client.get("/activity").text
+    assert 'id="paused-runs"' in page
+    assert f'href="/run/{ready}"' in page
+    assert f'href="/run/{waiting}"' in page
+    assert 'action="/runs/wake-paused"' in page
+    assert "resume 1 now" in page
+
+
+def test_the_activity_button_is_grayed_when_nothing_is_due(project):
+    from app.main import app
+
+    _pause_now(project, datetime.now(timezone.utc) + timedelta(hours=2))
+    with TestClient(app) as client:
+        page = client.get("/activity").text
+    assert 'id="wake-all" disabled' in page
+    assert 'action="/runs/wake-paused"' not in page
+
+
+def test_the_activity_page_has_no_hold_card_when_nothing_is_paused(project):
+    from app.main import app
+
+    with TestClient(app) as client:
+        assert 'id="paused-runs"' not in client.get("/activity").text

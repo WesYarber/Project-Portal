@@ -65,6 +65,18 @@
      session once the window reopens. Stopping it here is the only way to
      keep that from happening. #}
   <div class="actions" style="margin-top:0.8rem; display:flex; gap:0.5rem; flex-wrap:wrap;">
+    {# "resume now" skips the wait for the tick. Grayed out, never removed,
+       while the window it is waiting on is genuinely still shut: waking a
+       run into a spent allowance only parks it again. #}
+    {% if limit_hold.wake_blocked %}
+    <button type="button" class="btn secondary" id="wake-run" disabled
+            title="{{ limit_hold.wake_blocked }}">resume now</button>
+    {% else %}
+    <form method="post" action="/run/{{ run.id }}/wake" class="inline-form">
+      <input type="hidden" name="next" value="/run/{{ run.id }}">
+      <button type="submit" class="btn secondary" id="wake-run">resume now</button>
+    </form>
+    {% endif %}
     <form method="post" action="/run/{{ run.id }}/cancel" class="inline-form">
       <input type="hidden" name="next" value="/run/{{ run.id }}">
       <button type="submit" class="btn danger">stop this run</button>
@@ -76,6 +88,12 @@
     {{ limit_hold.what_next }} after {{ limit_hold.until_text }}
     {%- if limit_hold.resumes %} (wake {{ limit_hold.resumes + 1 }} of at most {{ limit_hold.max_resumes }}){% endif %}.
     Stopping it ends the run for good.
+    {% if limit_hold.wake_blocked %}
+    <br><span id="wake-blocked">&ldquo;resume now&rdquo; is off because {{ limit_hold.wake_blocked }}.</span>
+    {% else %}
+    <br><span id="wake-ready">&ldquo;resume now&rdquo; puts it back in flight without waiting for the next check,
+    and does not count against its {{ limit_hold.max_resumes }} automatic wakes.</span>
+    {% endif %}
   </p>
   {% endif %}
   <p class="hint">{{ run.started_at }}{% if run.ended_at %} &rarr; {{ run.ended_at }}{% endif %}</p>
@@ -84,6 +102,15 @@
   <div class="content">{{ run.summary }}</div>
   {% endif %}
 </div>
+
+{% if wake_error %}
+{# "resume now" refused. Rendered rather than redirected away, so the reason
+   is on the page the button was pressed on. See main.wake_run_route. #}
+<div class="card" id="wake-error" style="border-color:var(--ansi-yellow);">
+  <p><strong style="color:var(--ansi-yellow);">This run was not resumed</strong></p>
+  <p class="small">{{ wake_error }}.</p>
+</div>
+{% endif %}
 
 {% if undo_error %}
 {# A refusal renders here rather than on FastAPI's default error page, which is
