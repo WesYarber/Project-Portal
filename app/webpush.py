@@ -24,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import tempfile
 import time
 from pathlib import Path
 from typing import Optional
@@ -93,22 +94,68 @@ def _load_or_create() -> ec.EllipticCurvePrivateKey:
     try:
         raw = json.loads(path.read_text())
         secret = int.from_bytes(_b64u_decode(raw["private"]), "big")
-        return ec.derive_private_key(secret, ec.SECP256R1())
+        key = ec.derive_private_key(secret, ec.SECP256R1())
     except Exception:  # noqa: BLE001 - missing or corrupt file → new key
-        pass
-    key = ec.generate_private_key(ec.SECP256R1())
-    secret = key.private_numbers().private_value
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "private": _b64u(secret.to_bytes(32, "big")),
-                "public": _b64u(_public_bytes(key)),
-            },
-            indent=2,
-        )
-    )
+        key = ec.generate_private_key(ec.SECP256R1())
+        _write_keys(path, key)
+    _keep_private(path)
     return key
+
+
+_PRIVATE_MODE = 0o600
+
+
+def _write_keys(path: Path, key: ec.EllipticCurvePrivateKey) -> None:
+    """Write the keypair owner-only from the first byte.
+
+    The file holds the private half of the key every enrolled device trusts,
+    so its mode is not left to the umask (which made the first one 0664,
+    readable by any account on the box). Written to a 0600 temp file and
+    renamed over the path: `os.open(path, ..., 0o600)` would only set the mode
+    when it CREATES the file, so a corrupt file being replaced would keep
+    whatever mode it had, and the rename also means a crash mid-write cannot
+    leave a half-written key behind.
+    """
+    secret = key.private_numbers().private_value
+    body = json.dumps(
+        {
+            "private": _b64u(secret.to_bytes(32, "big")),
+            "public": _b64u(_public_bytes(key)),
+        },
+        indent=2,
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".vapid-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(body)
+        os.chmod(tmp, _PRIVATE_MODE)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _keep_private(path: Path) -> bool:
+    """Tighten a keys file some earlier umask left group- or world-readable.
+
+    Runs on every load, so an install that generated its file before this
+    guard existed (the office follower has one too) heals itself the next time
+    the key is used. Returns whether the mode was changed; a file that cannot
+    be stat'ed or chmod'ed is left alone, since the key itself still loads.
+    """
+    try:
+        mode = os.stat(path).st_mode & 0o777
+        if mode & 0o077:
+            os.chmod(path, _PRIVATE_MODE)
+            log.info("Tightened %s from %04o to %04o", path.name, mode, _PRIVATE_MODE)
+            return True
+    except OSError:
+        pass
+    return False
 
 
 def _public_bytes(key: ec.EllipticCurvePrivateKey) -> bytes:

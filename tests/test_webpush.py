@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import os
 import time
 
 import pytest
@@ -67,6 +69,66 @@ def test_a_corrupt_keys_file_regenerates_instead_of_crashing(temp_data_dir):
     # And the fresh key was persisted over the corpse.
     saved = json.loads((temp_data_dir / "vapid.json").read_text())
     assert saved["public"] == key
+
+
+def _mode(path):
+    return os.stat(path).st_mode & 0o777
+
+
+@pytest.mark.parametrize(
+    "corpse", [None, "not json{", "x" * 4000], ids=["no-file", "short-corpse", "long-corpse"]
+)
+def test_the_writer_alone_leaves_the_file_owner_only(temp_data_dir, monkeypatch, corpse):
+    # Three ways in: no file, a short corpse, a corpse longer than the new body.
+    # The load-time tightener is switched off so this proves the WRITER's mode,
+    # not the repair - and the umask is the one that made the live file 0664,
+    # so a writer trusting the umask to trim 0666 fails here.
+    monkeypatch.setattr(webpush, "_keep_private", lambda path: False)
+    path = temp_data_dir / "vapid.json"
+    if corpse is not None:
+        path.write_text(corpse)
+        os.chmod(path, 0o664)
+    old = os.umask(0o002)
+    try:
+        key = webpush.public_key_b64()
+    finally:
+        os.umask(old)
+    assert _mode(path) == 0o600
+    # And the whole file is the new body: a long corpse must not leave a tail.
+    assert json.loads(path.read_text())["public"] == key
+
+
+@pytest.mark.parametrize("loose", [0o664, 0o640, 0o604], ids=["0664", "0640", "0604"])
+def test_a_loose_existing_keys_file_is_tightened_on_load(temp_data_dir, caplog, loose):
+    # Group-readable, world-readable, and world-but-not-group: any bit outside
+    # the owner's is enough.
+    path = temp_data_dir / "vapid.json"
+    first = webpush.public_key_b64()
+    os.chmod(path, loose)
+    with caplog.at_level(logging.INFO, logger="portal.webpush"):
+        assert webpush.public_key_b64() == first  # same key, not regenerated
+    assert _mode(path) == 0o600
+    assert f"Tightened vapid.json from {loose:04o} to 0600" in caplog.text
+
+
+def test_an_already_private_keys_file_is_left_alone(temp_data_dir):
+    path = temp_data_dir / "vapid.json"
+    webpush.public_key_b64()
+    assert _mode(path) == 0o600
+    assert webpush._keep_private(path) is False
+    assert _mode(path) == 0o600
+
+
+def test_a_missing_keys_file_does_not_trip_the_tightener(temp_data_dir):
+    assert webpush._keep_private(temp_data_dir / "absent.json") is False
+
+
+def test_a_corrupt_world_readable_file_is_replaced_owner_only(temp_data_dir):
+    path = temp_data_dir / "vapid.json"
+    path.write_text("not json{")
+    os.chmod(path, 0o664)
+    webpush.public_key_b64()
+    assert _mode(path) == 0o600
 
 
 # --- VAPID auth (RFC 8292) --------------------------------------------------
