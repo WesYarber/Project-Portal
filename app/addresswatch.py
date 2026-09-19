@@ -103,9 +103,11 @@ URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*://([A-Za-z0-9_.\-]+):(\d{1,5})")
 # port forwards, dict literals, JSON) are what a bare host:port regex trips on.
 CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 
-# A bare host:port inside a code span, at token boundaries so that the middle
-# of an `ssh -L 9334:127.0.0.1:9222` forward cannot be read as a host.
-BARE_RE = re.compile(r"(?<![A-Za-z0-9_.\-:])([A-Za-z0-9_.\-]+):(\d{1,5})(?![\d:])")
+# A bare host:port inside a code span. Deliberately loose: what a candidate is
+# rejected FOR is decided once, by `is_watchable_host` and the port floor in
+# `addresses_in`, rather than twice and differently. A boundary assertion here
+# rejected nothing those two did not already reject.
+BARE_RE = re.compile(r"([A-Za-z0-9_.\-]+):(\d{1,5})")
 
 IGNORE_RE = re.compile(r"address-watch-ignore:\s*([^\r\n>]*)", re.IGNORECASE)
 
@@ -140,9 +142,13 @@ def is_watchable_host(host: str) -> bool:
     try:
         ip = ipaddress.ip_address(host)
     except ValueError:
-        # A name. Dotless means LAN or tailnet; a dot means a public hostname
-        # behind Cloudflare, where a TCP connect proves nothing.
-        if "." in host or host in site.LOOPBACK_HOSTS:
+        # A name, and the regex is the whole rule: a dotless token starting
+        # with a letter is a hostname on the local network or the tailnet. A
+        # dot means a public hostname, where a single-page app behind a CDN
+        # answers 200 to every path and a TCP connect proves nothing; a leading
+        # digit means it is not a hostname at all, which is what keeps the
+        # `9334` of an `ssh -L 9334:127.0.0.1:9222` forward from being probed.
+        if host in site.LOOPBACK_HOSTS:
             return False
         return bool(re.fullmatch(r"[a-z][a-z0-9\-]*", host))
     if ip.is_loopback:

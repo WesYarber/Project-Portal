@@ -140,6 +140,11 @@ def test_a_port_out_of_range_is_not_an_address():
         ("homeserver", True),
         ("desktop-box", True),
         ("shop.example.com", False),
+        # The port half of an `ssh -L 9334:127.0.0.1:9222` forward. Dotless,
+        # not loopback, and not an IP address - only "starts with a letter"
+        # keeps it out.
+        ("9334", False),
+        ("8500", False),
         ("", False),
     ],
 )
@@ -406,6 +411,24 @@ def test_a_failing_check_waits_for_tomorrow_rather_than_retrying_every_tick(monk
     asyncio.run(worker._daily_address_check())  # noqa: SLF001
     asyncio.run(worker._daily_address_check())  # noqa: SLF001
     assert calls == [1]
+
+
+@pytest.mark.asyncio
+async def test_the_worker_tick_actually_calls_the_check(monkeypatch):
+    """Without this, deleting the one line from `_tick` costs nothing: every
+    other test here drives `_daily_address_check` directly."""
+    called: list[bool] = []
+
+    async def fake_check():
+        called.append(True)
+
+    async def no_start():
+        return False
+
+    monkeypatch.setattr(worker, "_daily_address_check", fake_check)
+    monkeypatch.setattr(worker, "_start_one", no_start)
+    await worker._tick()  # noqa: SLF001
+    assert called == [True]
 
 
 def test_the_setting_round_trips_through_the_settings_form():
