@@ -259,6 +259,13 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # are ordinary settings rows and the UI owns them.
     "ntfy_url": SITE.ntfy_url,
     "ntfy_topic": SITE.ntfy_topic,
+    # A publish credential for that server, blank unless the install's ntfy
+    # requires one. Deliberately NOT on SITE like the two above: portal.toml is
+    # a Jinja global on every page, and this is a secret. Blank means "send no
+    # Authorization header at all" - a bare "Bearer " reads to ntfy as a failed
+    # login and comes back 401, which prints "our credential was refused" over
+    # what is really "we have no credential". See notify._send_ntfy.
+    "ntfy_token": "",
     "backoff_until": "",
     "last_reflect_date": "",
     # learnings.md is injected into every run's prompt, so it must not grow

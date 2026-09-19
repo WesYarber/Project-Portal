@@ -870,7 +870,7 @@ The suite is green, so the change is in.</pre>
 
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="notifications">
-    <input type="hidden" name="_fields" value="telegram_enabled,telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic">
+    <input type="hidden" name="_fields" value="telegram_enabled,telegram_natural_language,telegram_model,glados_mode,telegram_token,telegram_chat_id,ntfy_url,ntfy_topic,ntfy_token">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="telegram_enabled" name="telegram_enabled" {{ 'checked' if settings.telegram_enabled == '1' else '' }}>
@@ -923,6 +923,15 @@ The suite is green, so the change is in.</pre>
           <div class="field">
             <label for="ntfy_topic">Topic</label>
             <input type="text" id="ntfy_topic" name="ntfy_topic" value="{{ settings.ntfy_topic }}" data-no-draft>
+          </div>
+          <div class="field">
+            <label for="ntfy_token">Publish token{% call info() %}Leave this empty unless your ntfy
+              server requires a login to publish. When it is set the portal sends it as
+              <code>Authorization: Bearer &hellip;</code> on every notification; when it is empty the
+              portal sends no such header at all, which is what an open server expects. A
+              publish-only token is the right kind to paste here - if it leaks, the worst it can do
+              is forge a notification, and it can read nothing back.{% endcall %}</label>
+            <input type="text" id="ntfy_token" name="ntfy_token" value="{{ settings.ntfy_token }}" placeholder="only if publishing needs a login" data-no-draft>
           </div>
         </div>
       </details>

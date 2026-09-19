@@ -145,7 +145,9 @@ async def test_no_q_number_in_the_notification_without_telegram(project, monkeyp
     # preview to address something that cannot be addressed. The project name
     # stays - that is which board is asking, and it is useful either way.
     sent: list[str] = []
-    monkeypatch.setattr(notify, "_send_ntfy", lambda url, topic, title, text: _record(sent, text))
+    monkeypatch.setattr(
+        notify, "_send_ntfy", lambda url, topic, title, text, token="": _record(sent, text)
+    )
     monkeypatch.setattr(notify.webpush, "push_all", lambda *a, **k: _noop())
     db.set_setting("telegram_enabled", "0")
 

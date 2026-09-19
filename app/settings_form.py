@@ -234,6 +234,7 @@ def _build_registry() -> dict[str, Field]:
         Field("glados_mode", _text, checkbox=True),
         Field("ntfy_url", _text),
         Field("ntfy_topic", _text),
+        Field("ntfy_token", _text),
         # Where the blocks of a project page sit, for this person. Not a
         # `_choice`: the value is a permutation rather than one of a fixed set,
         # so `sections.clean` is both the validator and the normalizer - it

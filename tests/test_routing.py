@@ -246,7 +246,7 @@ def wire(monkeypatch):
     """Record what would have gone out, per channel."""
     sent = {"ntfy": [], "telegram": [], "push": []}
 
-    async def fake_ntfy(url, topic, title, message):
+    async def fake_ntfy(url, topic, title, message, token=""):
         sent["ntfy"].append(topic)
 
     async def fake_telegram(token, chat_id, text, question_id, record_msg_id=True):

@@ -79,8 +79,9 @@ async def notify(
             )
 
     ntfy_url = settings.get("ntfy_url", "")
+    ntfy_token = settings.get("ntfy_token", "")
     for topic in routing.ntfy_topics(people_rows, settings.get("ntfy_topic", ""), covered):
-        await _send_ntfy(ntfy_url, topic, title, text)
+        await _send_ntfy(ntfy_url, topic, title, text, ntfy_token)
 
     # Enrolled phones. A question deserves the lock screen now; everything
     # else can wait for the OS's normal batching.
@@ -231,7 +232,9 @@ async def telegram_call(method: str, payload: dict) -> None:
         log.warning("Telegram %s failed: %s", method, exc)
 
 
-async def _send_ntfy(ntfy_url: str, topic: str, title: str, message: str) -> None:
+async def _send_ntfy(
+    ntfy_url: str, topic: str, title: str, message: str, token: str = ""
+) -> None:
     if not ntfy_url or not topic:
         return
     try:
@@ -239,6 +242,13 @@ async def _send_ntfy(ntfy_url: str, topic: str, title: str, message: str) -> Non
         headers = {}
         if title:
             headers["Title"] = title.encode("ascii", errors="ignore").decode() or "Project Portal"
+        # No credential means NO header, never a bare "Bearer ". ntfy parses a
+        # malformed Authorization header as a failed login and answers 401, so
+        # sending one when the setting is empty turns "this install has no
+        # token" into "this install's token was rejected" - the same failure
+        # with the wrong cause printed on it, in the one log line anybody reads.
+        if token.strip():
+            headers["Authorization"] = f"Bearer {token.strip()}"
         async with httpx.AsyncClient(timeout=10) as client:
             resp = await client.post(url, content=message.encode("utf-8"), headers=headers)
             resp.raise_for_status()
