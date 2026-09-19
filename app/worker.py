@@ -1092,23 +1092,22 @@ async def _resume_paused_runs() -> None:
 
 def resume_run(row: db.sqlite3.Row) -> bool:
     """Put a paused run back in flight on its own row. False when it could not
-    be: no project, a leased workspace (wait for the next tick), a row that
-    is no longer paused, or nothing to resume - a paused row without a
-    session, which is settled as an error rather than woken forever."""
+    be: no project, a leased workspace (wait for the next tick), or a row that
+    is no longer paused.
+
+    Two ways back, decided when the run was paused (`limitpause.hold_mode`).
+    A row with a CLI session continues that conversation. A row without one
+    never got going - the allowance was already spent when it asked - so it
+    runs the task again from the top, with a prompt built fresh at this
+    moment rather than the one it never got to use. Both stay on this row.
+    """
     run_id = int(row["id"])
     project = db.get_project(int(row["project_id"])) if row["project_id"] else None
     if project is None:
         db.finish_run(run_id, "error", summary="Could not resume: the project is gone.")
         return False
+    mode = limitpause.hold_mode(row)
     session = row["session_id"]
-    if not session:
-        db.finish_run(run_id, "error", summary="Could not resume: no CLI session was recorded.")
-        db.add_journal(
-            project["id"], "system", "status",
-            f"Run #{run_id} could not be resumed after its usage-window pause: no CLI "
-            "session was recorded for it. The next run starts fresh.",
-        )
-        return False
     if workspace_leased(project["slug"]):
         log.info("Run %s stays paused: %s is leased", run_id, project["slug"])
         return False
@@ -1120,11 +1119,21 @@ def resume_run(row: db.sqlite3.Row) -> bool:
     model = agent_runner.resolve_model(project, str(row["task"]))
     if not db.reopen_run(run_id, model=model):
         return False
-    log.info("Resuming run %s on %s after its usage-window pause (%s)", run_id, project["slug"], model)
+    if mode == limitpause.RESTART:
+        # Recorded here rather than inside the run, because the run about to
+        # start is an ordinary one: nothing downstream can tell it apart.
+        limitpause.mark_restarted(row)
+        log.info("Restarting run %s on %s after its usage-window pause (%s)",
+                 run_id, project["slug"], model)
+    else:
+        log.info("Resuming run %s on %s after its usage-window pause (%s)",
+                 run_id, project["slug"], model)
     _inflight[run_id] = asyncio.create_task(
         _execute_run(
             project, str(row["task"]), run_id, model,
-            parallel=db.is_parallel_run(row), resume_session=str(session), prior=prior,
+            parallel=db.is_parallel_run(row),
+            resume_session=str(session) if mode == limitpause.RESUME else None,
+            prior=prior,
         )
     )
     return True
@@ -1473,10 +1482,11 @@ async def run_project_task(
         hint = apiretry.parse_reset_hint(result.result_text) \
             or apiretry.parse_reset_hint(result.raw_stderr)
         until, why = await _rate_limit_backoff(quota, hint=hint)
-        # Paused, not stopped (app/limitpause.py): the row keeps its session
-        # and the tick brings it back once the window reopens. Only a run that
-        # has no session to continue, or has been woken too often already,
-        # settles as the error it used to be. The run waits for the reset the
+        # Paused, not stopped (app/limitpause.py): the tick brings the row
+        # back once the window reopens - continuing its CLI session if it got
+        # one, starting over from the top if the refusal came before it did.
+        # Only a run woken too often already settles as the error it used to
+        # be. The run waits for the reset the
         # failure actually named, uncapped: the six-hour ceiling on `until`
         # exists so the scheduler can put OTHER runs on the fallback model
         # meanwhile, and waking this one into a window still shut would only

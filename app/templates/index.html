@@ -291,12 +291,15 @@
     <div class="field">
       <label for="idea">What's the idea?</label>
       <textarea id="idea" name="idea" rows="4" required enterkeyhint="enter"
-                placeholder="Describe it. Add it to the backlog for later, or hand it straight to an agent to plan."></textarea>
+                placeholder="Describe it. Add it to the backlog for later, or hand it straight to an agent to build."></textarea>
     </div>
     {# Two doors (Wes's ask): plain add parks it in the backlog and no model
-       sees it until he says so; the second one puts an agent on it now. #}
+       sees it until he says so; the second one puts an agent on it now. The
+       green one read "add + start planning" until Wes's 2026-09-19 note; the
+       first run plans inside itself and nobody confirms a plan, so what the
+       button actually starts is the build. #}
     <button type="submit" name="then" value="" class="secondary">add to backlog</button>
-    <button type="submit" name="then" value="plan" class="go">add + start planning</button>
+    <button type="submit" name="then" value="plan" class="go">start building</button>
   </form>
 </div>
 

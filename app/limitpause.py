@@ -27,10 +27,17 @@ moment, so nothing else spawns into the wall either.
 
 The bounds, and why each exists:
 
-* A run is paused only when it has a session to resume. A refusal on the very
-  first call (run 1486, one turn, $0) has nothing to continue; it stays an
-  error, and the project's next scheduled run - with a fresher prompt - is the
-  better continuation.
+* A run that never got going comes back too, by starting over rather than
+  resuming. Wes, 2026-09-19: "whether a run gets cut off mid-run or never
+  starts because it is waiting for usage limit to refresh, have them start
+  working again after the 5h window rolls over." A refusal on the very first
+  call (run 1486, one turn, $0) has no session to continue and no work to
+  lose, so its row is paused in `RESTART` mode and re-run from the top - with
+  a prompt built fresh at wake time - when the window reopens. That used to be
+  an error on the floor, which was survivable for a *scheduled* run (the next
+  tick would have picked the project up anyway) and a dead end for a manual
+  one: Wes pressed the button, the run died on the launch pad, and nothing
+  ever brought it back.
 * At most `MAX_RESUMES` resumes per run. A weekly window that is spent stays
   spent for days; the backoff is capped at six hours, so a run could otherwise
   be woken into the same wall every six hours indefinitely. Each wake costs
@@ -63,7 +70,15 @@ MAX_RESUMES = 3
 _TOOL = "limit"
 PAUSED = "limit_paused"
 RESUMED = "limit_resumed"
+RESTARTED = "limit_restarted"
 GAVE_UP = "limit_gave_up"
+
+# What waking a paused row means. RESUME continues the CLI session the run
+# already had; RESTART re-runs the task from the top because the refusal came
+# before the CLI had a session to continue. Stored on the row's hold record so
+# the decision is made once, where the failure is still in hand.
+RESUME = "resume"
+RESTART = "restart"
 
 
 def _parse(value: str) -> Optional[datetime]:
@@ -92,13 +107,24 @@ def reset_moment(quota, hint: Optional[datetime], fallback: datetime) -> datetim
 
 
 def resumes_so_far(run_id: int) -> int:
-    return db.count_hook_events(run_id, "midrun", RESUMED)
+    """Every wake counts against `MAX_RESUMES`, whichever kind it was: a run
+    woken three times into the same shut window is no more likely to get
+    through by starting over than by resuming."""
+    return (db.count_hook_events(run_id, "midrun", RESUMED)
+            + db.count_hook_events(run_id, "midrun", RESTARTED))
 
 
 def can_pause(result) -> bool:
-    """Whether this failure is one the run can come back from: it hit the
-    usage limit, and the CLI got far enough to have a session to resume."""
-    return bool(result.is_rate_limited and result.session_id)
+    """Whether this failure is one the run can come back from. Every usage
+    limit is: with a session it resumes, without one it starts over."""
+    return bool(result.is_rate_limited)
+
+
+def mode_for(result) -> str:
+    """Resume the CLI session when the stream announced one, else start over.
+    No session means the refusal landed before the model did any work, so
+    there is nothing to continue and nothing to duplicate by re-running."""
+    return RESUME if result.session_id else RESTART
 
 
 def pause(project, run_id: int, task: str, result, until: datetime, why: str) -> bool:
@@ -113,41 +139,74 @@ def pause(project, run_id: int, task: str, result, until: datetime, why: str) ->
             f"{ordinal(resumed + 1)} time.",
         )
         return False
+    mode = mode_for(result)
     stamp = until.astimezone(timezone.utc).isoformat(timespec="seconds")
+    carry_on = "resumes in the same session" if mode == RESUME else "starts over"
     db.finish_run(
         run_id, STATUS, result.session_id, result.cost_usd, result.num_turns,
-        f"Paused for the usage window ({why}); resumes in the same session after {_fmt(until)}.",
+        f"Paused for the usage window ({why}); {carry_on} after {_fmt(until)}.",
     )
-    db.set_run_scope_record(run_id, "hold_state", json.dumps({"limit_until": stamp, "why": why}))
+    db.set_run_scope_record(
+        run_id, "hold_state",
+        json.dumps({"limit_until": stamp, "why": why, "mode": mode}),
+    )
     db.add_hook_event(
         run_id, "midrun", _TOOL, PAUSED,
-        f"Ran out of allowance ({why}). Paused, not stopped: the run resumes in the "
-        f"same session once the window reopens.",
+        f"Ran out of allowance ({why}). Paused, not stopped: the run {carry_on} "
+        f"once the window reopens.",
         stamp,
     )
+    if mode == RESUME:
+        line = (
+            f"Run ({task}) ran out of allowance mid-run ({why}) and is **paused, not stopped**: "
+            f"it picks up in the same session, with the workspace as it left it, once the "
+            f"window reopens at {_fmt(until)}."
+        )
+    else:
+        line = (
+            f"Run ({task}) could not start - the usage allowance was already spent ({why}) - "
+            f"and is **paused, not dropped**: nothing had been done yet, so it starts over "
+            f"on this same row once the window reopens at {_fmt(until)}."
+        )
     db.add_journal(
         project["id"], "system", "status",
-        f"Run ({task}) ran out of allowance mid-run ({why}) and is **paused, not stopped**: "
-        f"it picks up in the same session, with the workspace as it left it, once the "
-        f"window reopens at {_fmt(until)}."
-        + (f" This is resume {resumed + 1} of at most {MAX_RESUMES}." if resumed else ""),
+        line + (f" This is wake {resumed + 1} of at most {MAX_RESUMES}." if resumed else ""),
     )
-    log.info("Run %s paused for the usage window until %s (%s)", run_id, stamp, why)
+    log.info("Run %s paused for the usage window until %s (%s, %s)", run_id, stamp, why, mode)
     return True
+
+
+def _hold(row) -> dict:
+    """The row's persisted hold record, or {} when there is none to read."""
+    raw = db._row_get(row, "hold_state")  # noqa: SLF001
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def hold_mode(row) -> str:
+    """Whether waking this row resumes its session or starts it over.
+
+    Read off the hold record, but never trusted over the row itself: a row
+    with no session cannot be resumed whatever it says, and a row paused
+    before this field existed is judged the way it was judged then.
+    """
+    if not db._row_get(row, "session_id"):  # noqa: SLF001
+        return RESTART
+    mode = str(_hold(row).get("mode") or "")
+    return RESTART if mode == RESTART else RESUME
 
 
 def resume_after(row) -> Optional[datetime]:
     """When a paused row may be woken, off its persisted hold record - or None
     for a paused row with no readable record, which is woken at once rather
     than left forever."""
-    raw = db._row_get(row, "hold_state")  # noqa: SLF001
-    if not raw:
-        return None
-    try:
-        data = json.loads(raw)
-    except ValueError:
-        return None
-    if not isinstance(data, dict):
+    data = _hold(row)
+    if not data:
         return None
     return _parse(str(data.get("limit_until") or ""))
 
@@ -158,18 +217,23 @@ def describe(row) -> Optional[dict]:
     if row is None or row["status"] != STATUS:
         return None
     until = resume_after(row)
-    raw = db._row_get(row, "hold_state")  # noqa: SLF001
-    why = ""
-    try:
-        why = str((json.loads(raw) if raw else {}).get("why") or "")
-    except ValueError:
-        pass
+    mode = hold_mode(row)
     return {
         "until": until,
         "until_text": _fmt(until) if until else "the window reopens",
-        "why": why,
+        "why": str(_hold(row).get("why") or ""),
         "resumes": resumes_so_far(int(row["id"])),
         "max_resumes": MAX_RESUMES,
+        "mode": mode,
+        "restarts": mode == RESTART,
+        # What the run page says it will do. A run with a session picks its
+        # conversation back up; one that never got a session never started,
+        # so there is nothing to pick up and it runs from the top.
+        "what_next": (
+            "It resumes in the same session, with the workspace as it left it,"
+            if mode == RESUME else
+            "Nothing had been done yet, so it starts over on this same row,"
+        ),
     }
 
 
@@ -184,14 +248,19 @@ def due(now: Optional[datetime] = None) -> list:
     return ready
 
 
+def held_for(row, now: Optional[datetime] = None) -> tuple[datetime, str]:
+    """When the row was parked, and how long ago that reads as."""
+    now = now or datetime.now(timezone.utc)
+    paused_at = _parse(str(row["ended_at"] or "")) or now
+    minutes = max(0, int((now - paused_at).total_seconds() // 60))
+    return paused_at, (f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m")
+
+
 def mark_resumed(row, now: Optional[datetime] = None) -> str:
     """Record the wake on the run's timeline and journal, and return the
     prompt the resumed session is handed."""
     now = now or datetime.now(timezone.utc)
-    paused_at = _parse(str(row["ended_at"] or "")) or now
-    held = now - paused_at
-    minutes = max(0, int(held.total_seconds() // 60))
-    held_text = f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m"
+    paused_at, held_text = held_for(row, now)
     count = resumes_so_far(int(row["id"])) + 1
     db.add_hook_event(
         int(row["id"]), "midrun", _TOOL, RESUMED,
@@ -205,6 +274,27 @@ def mark_resumed(row, now: Optional[datetime] = None) -> str:
             "continues in the same session from where it stopped.",
         )
     return resume_prompt(paused_at, now, held_text)
+
+
+def mark_restarted(row, now: Optional[datetime] = None) -> None:
+    """Record the wake of a run that never got going. No prompt is returned:
+    a restart is an ordinary run of the task, built fresh at wake time, which
+    is the whole reason this case starts over rather than resuming."""
+    now = now or datetime.now(timezone.utc)
+    _, held_text = held_for(row, now)
+    count = resumes_so_far(int(row["id"])) + 1
+    db.add_hook_event(
+        int(row["id"]), "midrun", _TOOL, RESTARTED,
+        f"Started over after {held_text} waiting for the usage window (wake {count} of at "
+        f"most {MAX_RESUMES}).",
+    )
+    if row["project_id"]:
+        db.add_journal(
+            int(row["project_id"]), "system", "status",
+            f"Run #{row['id']}, which never started because the usage allowance was spent, "
+            f"is running now that the window has reopened ({held_text} later). It starts "
+            "from the top: nothing had been done to pick up.",
+        )
 
 
 def resume_prompt(paused_at: datetime, now: datetime, held_text: str) -> str:

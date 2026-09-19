@@ -71,9 +71,10 @@
     </form>
   </div>
   <p class="hint run-hold" id="limit-hold">
-    Paused, not stopped: this run ran out of allowance{% if limit_hold.why %} ({{ limit_hold.why }}){% endif %}.
-    It resumes in the same session, with the workspace as it left it, after {{ limit_hold.until_text }}
-    {%- if limit_hold.resumes %} (resume {{ limit_hold.resumes + 1 }} of at most {{ limit_hold.max_resumes }}){% endif %}.
+    Paused, not stopped: this run {% if limit_hold.restarts %}could not start - the allowance was
+    already spent{% else %}ran out of allowance{% endif %}{% if limit_hold.why %} ({{ limit_hold.why }}){% endif %}.
+    {{ limit_hold.what_next }} after {{ limit_hold.until_text }}
+    {%- if limit_hold.resumes %} (wake {{ limit_hold.resumes + 1 }} of at most {{ limit_hold.max_resumes }}){% endif %}.
     Stopping it ends the run for good.
   </p>
   {% endif %}

@@ -2908,11 +2908,85 @@ function postBody(action, body, headers, onDone) {
 // after a live refresh brings in new cards, and a card enhanced by a later
 // call must set the same variable the zones (enhanced by an earlier one) read.
 var dragged = null;
+var dragPalette = null;
+
+// Where the card can be dropped, offered beside the card itself.
+//
+// Wes, 2026-09-19: "when dragging project cards on the dashboard to change
+// their status, have a sort of pop-up menu show up next to the project card
+// for you to drag the project card onto to set that status rather than having
+// to scroll through the page while dragging that project card to find the
+// correct project status area to drop it into."
+//
+// So the sections stay droppable - nothing is taken away - and a palette of
+// every status appears at the card the moment the drag starts, anchored to
+// the card and clamped into the viewport, so the whole gesture fits on one
+// screen however far down the page the card sits. Its entries are read off
+// the zones themselves (label included), never a second copy of the mapping
+// in this file, so a palette can never offer a status the page has no home
+// for.
+function buildDragPalette(cell, zones) {
+  var here = cell.getAttribute("data-status");
+  var el = document.createElement("ul");
+  el.className = "drag-palette";
+  el.setAttribute("aria-hidden", "true"); // pointer-only; the menu is the a11y path
+
+  var head = document.createElement("li");
+  head.className = "drag-palette-head";
+  head.textContent = "drop to move to";
+  el.appendChild(head);
+
+  zones.forEach(function (zone) {
+    var status = zone.getAttribute("data-status-zone");
+    var chip = document.createElement("li");
+    chip.className = "drag-chip status-" + status;
+    chip.setAttribute("data-palette-status", status);
+    chip.textContent = zone.getAttribute("data-zone-label") || status;
+    // Where it already is stays on the palette, grayed out: dropping a card
+    // back where it came from is already a no-op, and a palette that changes
+    // shape per card would move the other targets out from under the cursor.
+    if (status === here) {
+      chip.className += " is-current";
+      chip.textContent += " (here now)";
+    }
+    el.appendChild(chip);
+  });
+  return el;
+}
+
+function placeDragPalette(el, cell) {
+  var r = cell.getBoundingClientRect();
+  var box = el.getBoundingClientRect();
+  var gap = 10;
+  // Beside the card if it fits on either side, and over its right edge only
+  // when neither does - a palette half off-screen is the bug being fixed.
+  var x = r.right + gap;
+  if (x + box.width > window.innerWidth - 8) x = r.left - gap - box.width;
+  if (x < 8) x = Math.max(8, Math.min(r.right - box.width, window.innerWidth - box.width - 8));
+  var y = r.top + (r.height - box.height) / 2;
+  y = Math.max(8, Math.min(y, window.innerHeight - box.height - 8));
+  el.style.left = Math.round(x) + "px";
+  el.style.top = Math.round(y) + "px";
+}
+
+function closeDragPalette() {
+  if (dragPalette) { dragPalette.remove(); dragPalette = null; }
+}
 
 function initProjectDrag() {
   var zones = Array.prototype.slice.call(document.querySelectorAll("[data-status-zone]"));
   var cells = Array.prototype.slice.call(document.querySelectorAll(".project-cell[data-slug]"));
   if (!zones.length || !cells.length) return;
+
+  function moveTo(status) {
+    if (!dragged) return;
+    var slug = dragged.getAttribute("data-slug");
+    // Dropping a card back where it came from is a no-op, not a POST: the
+    // status route journals every change, and "building -> building" lines
+    // would turn the journal into a record of shaky mouse work.
+    if (!slug || !status || dragged.getAttribute("data-status") === status) return;
+    postForm("/project/" + slug + "/status", { status: status });
+  }
 
   cells.forEach(function (cell) {
     if (cell._enhanced) return;
@@ -2926,12 +3000,38 @@ function initProjectDrag() {
       }
       cell.classList.add("drag-source");
       document.body.classList.add("dragging-project");
+      closeDragPalette();
+      dragPalette = buildDragPalette(cell, zones);
+      document.body.appendChild(dragPalette);
+      placeDragPalette(dragPalette, cell);
+      Array.prototype.slice.call(
+        dragPalette.querySelectorAll("[data-palette-status]")
+      ).forEach(function (chip) {
+        chip.addEventListener("dragover", function (e) {
+          if (!dragged || chip.className.indexOf("is-current") >= 0) return;
+          e.preventDefault();
+          if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+          chip.classList.add("drop-ready");
+        });
+        chip.addEventListener("dragleave", function () { chip.classList.remove("drop-ready"); });
+        chip.addEventListener("drop", function (e) {
+          e.preventDefault();
+          chip.classList.remove("drop-ready");
+          var status = chip.getAttribute("data-palette-status");
+          moveTo(status);
+          // The browser fires dragend on the source after this, which is what
+          // normally takes the palette down - but a drop that navigates or
+          // re-renders may not get there, so close it here too.
+          closeDragPalette();
+        });
+      });
     });
     cell.addEventListener("dragend", function () {
       dragged = null;
       cell.classList.remove("drag-source");
       document.body.classList.remove("dragging-project");
       zones.forEach(function (z) { z.classList.remove("drop-ready"); });
+      closeDragPalette();
     });
   });
 
@@ -2952,14 +3052,7 @@ function initProjectDrag() {
     zone.addEventListener("drop", function (ev) {
       ev.preventDefault();
       zone.classList.remove("drop-ready");
-      if (!dragged) return;
-      var slug = dragged.getAttribute("data-slug");
-      var status = zone.getAttribute("data-status-zone");
-      // Dropping a card back where it came from is a no-op, not a POST: the
-      // status route journals every change, and "building -> building" lines
-      // would turn the journal into a record of shaky mouse work.
-      if (!slug || !status || dragged.getAttribute("data-status") === status) return;
-      postForm("/project/" + slug + "/status", { status: status });
+      moveTo(zone.getAttribute("data-status-zone"));
     });
   });
 }

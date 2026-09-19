@@ -3164,6 +3164,50 @@ a.btn:hover { text-decoration: none; }
 /* An empty section is still a landing pad: give it enough height to hit. */
 .project-grid .zone-empty { margin: 0; padding: 1.1rem; grid-column: 1 / -1; }
 
+/* The drop palette that opens beside the card being dragged (Wes, 2026-09-19:
+   "have a sort of pop-up menu show up next to the project card ... rather than
+   having to scroll through the page while dragging"). Fixed, so it holds
+   still while the page under it does not, and above the right-click menu's
+   layer so a palette never opens behind anything. */
+.drag-palette {
+  position: fixed;
+  z-index: 70;
+  min-width: 9rem;
+  list-style: none;
+  margin: 0;
+  padding: 0.3rem;
+  background: var(--bg-color);
+  border: 1px solid var(--ansi-blue);
+  border-radius: 6px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  font-size: 0.85rem;
+}
+.drag-palette-head {
+  padding: 0.3rem 0.55rem 0.35rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--terminal-dim);
+  border-bottom: 1px solid var(--window-border);
+  margin-bottom: 0.25rem;
+  white-space: nowrap;
+}
+/* Roomy on purpose: this is a drop target hit while a card is in flight, not
+   a menu entry clicked with a settled cursor. */
+.drag-chip {
+  padding: 0.45rem 0.7rem;
+  border: 1px dashed transparent;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.drag-chip.drop-ready {
+  border-color: currentColor;
+  background: rgba(56, 189, 248, 0.14);
+}
+/* Where the card already is: still listed, so the other targets never shift
+   under the cursor from one card to the next, but visibly not a target. */
+.drag-chip.is-current { opacity: 0.4; }
+
 .ctx-menu {
   position: fixed;
   z-index: 60;

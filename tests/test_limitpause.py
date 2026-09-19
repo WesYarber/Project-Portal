@@ -196,13 +196,58 @@ async def test_a_limited_run_with_a_session_is_paused(project, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_limited_run_without_a_session_stays_an_error(project, monkeypatch):
+async def test_a_limited_run_without_a_session_is_paused_to_start_over(project, monkeypatch):
+    """Wes, 2026-09-19: a run that "never starts because it is waiting for
+    usage limit to refresh" must come back too. It has no session to continue
+    and no work to lose, so the row is paused in RESTART mode rather than
+    dropped on the floor as it used to be."""
     _fake_run(monkeypatch, _limited(session=None, cost=0.0, turns=1))
     await worker.run_project_task(project, "build")
     run = db.list_runs(project["id"])[0]
-    assert run["status"] == "error"
-    assert "Rate limited" in run["summary"]
+    assert run["status"] == "paused"
+    assert limitpause.hold_mode(run) == limitpause.RESTART
+    assert "starts over" in run["summary"]
     assert db.get_setting("backoff_until")
+    assert any("starts over on this same row" in b for b in _journal(project["id"]))
+
+
+@pytest.mark.asyncio
+async def test_the_restart_is_a_fresh_run_of_the_task_on_the_same_row(project, monkeypatch):
+    _fake_run(monkeypatch, _limited(session=None, cost=0.0, turns=1))
+    await worker.run_project_task(project, "build")
+    run_id = db.list_runs(project["id"])[0]["id"]
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({
+        "limit_until": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        "why": "test", "mode": limitpause.RESTART,
+    }))
+
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-9", cost_usd=2.0, num_turns=9, result_text="done",
+    ))
+    assert worker.resume_run(db.get_run(run_id)) is True
+    await worker._inflight[run_id]
+
+    # No --resume, and the prompt is the ordinary task prompt built now - not
+    # the "pick up where you stopped" one, which would be a lie here.
+    assert seen.get("resume_session") is None
+    assert "Resumed after the usage window" not in seen["prompt"]
+    run = db.get_run(run_id)
+    assert run["status"] == "ok"
+    assert run["id"] == run_id
+    assert limitpause.resumes_so_far(run_id) == 1
+    assert any("starts from the top" in b for b in _journal(project["id"]))
+
+
+@pytest.mark.asyncio
+async def test_a_restart_counts_against_the_same_cap_as_a_resume(project, monkeypatch):
+    run_id = db.create_run(project["id"], "build", "opus")
+    for _ in range(limitpause.MAX_RESUMES):
+        db.add_hook_event(run_id, "midrun", "limit", limitpause.RESTARTED, "woke")
+    assert limitpause.resumes_so_far(run_id) == limitpause.MAX_RESUMES
+    assert limitpause.pause(
+        project, run_id, "build", _limited(session=None),
+        datetime.now(timezone.utc) + timedelta(hours=1), "test",
+    ) is False
 
 
 @pytest.mark.asyncio
@@ -355,12 +400,32 @@ def test_a_leased_workspace_keeps_the_run_paused(project, monkeypatch):
     assert db.get_run(run_id)["status"] == "paused"
 
 
-def test_a_paused_row_without_a_session_settles_as_an_error(project):
+@pytest.mark.asyncio
+async def test_a_paused_row_without_a_session_starts_over_rather_than_erroring(project, monkeypatch):
+    """A row paused before the mode field existed, or by anything that never
+    recorded a session: judged on the row itself, it can only start over."""
     run_id = db.create_run(project["id"], "build", "opus")
     db.finish_run(run_id, "paused", None, 1.0, 3, "paused")
-    assert worker.resume_run(db.get_run(run_id)) is False
-    assert db.get_run(run_id)["status"] == "error"
-    assert any("could not be resumed" in b for b in _journal(project["id"]))
+    row = db.get_run(run_id)
+    assert limitpause.hold_mode(row) == limitpause.RESTART
+    _fake_run(monkeypatch, agent_runner.RunResult(ok=True, session_id="s-2"))
+    assert worker.resume_run(row) is True
+    assert db.get_run(run_id)["status"] == "running"
+    await worker._inflight[run_id]
+    assert db.get_run(run_id)["status"] == "ok"
+
+
+def test_a_session_on_the_row_beats_a_restart_mode_written_beside_it(project):
+    """And the other way round is not symmetrical: a row that says RESTART
+    starts over even though it has a session, because that is what the
+    failure decided - but a row with no session can never claim RESUME."""
+    run_id = db.create_run(project["id"], "build", "opus")
+    db.set_run_session(run_id, "s-1")
+    db.finish_run(run_id, "paused", "s-1", 1.0, 3, "paused")
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({"mode": limitpause.RESTART}))
+    assert limitpause.hold_mode(db.get_run(run_id)) == limitpause.RESTART
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({"mode": "nonsense"}))
+    assert limitpause.hold_mode(db.get_run(run_id)) == limitpause.RESUME
 
 
 def test_reopen_is_one_shot(project):
