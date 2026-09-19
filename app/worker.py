@@ -1174,20 +1174,15 @@ def resume_oneoff_run(row: db.sqlite3.Row) -> bool:
         return False
     if mode == limitpause.RESTART:
         limitpause.mark_restarted(row)
-        prompt = None
+        wake = None
         log.info("Restarting one-off run %s on task %s after its usage-window pause (%s)",
                  run_id, task_id, model)
     else:
-        prompt = limitpause.mark_resumed(row)
+        wake = (str(row["session_id"]), limitpause.mark_resumed(row))
         log.info("Resuming one-off run %s on task %s after its usage-window pause (%s)",
                  run_id, task_id, model)
     _inflight[run_id] = asyncio.create_task(
-        _execute_oneoff(
-            task_id, run_id, model,
-            resume_session=str(row["session_id"]) if mode == limitpause.RESUME else None,
-            resume_prompt=prompt,
-            prior=prior,
-        )
+        _execute_oneoff(task_id, run_id, model, wake=wake, prior=prior)
     )
     return True
 
@@ -3001,18 +2996,15 @@ def spawn_oneoff(task_id: int) -> Optional[int]:
 
 async def _execute_oneoff(
     task_id: int, run_id: int, model: str,
-    resume_session: Optional[str] = None,
-    resume_prompt: Optional[str] = None,
+    wake: Optional[tuple[str, str]] = None,
     prior: tuple[Optional[float], Optional[int]] = (None, None),
 ) -> None:
-    """`resume_session`, `resume_prompt` and `prior` are set only by
-    `resume_oneoff_run`: the CLI session to continue, what the woken agent
-    reads, and what the run's earlier segments cost (app/limitpause.py)."""
+    """`wake` and `prior` are set only by `resume_oneoff_run`: the CLI session
+    to continue with the prompt that says why it woke, and what the run's
+    earlier segments cost (app/limitpause.py). The session and the prompt are
+    one argument because either without the other is meaningless."""
     try:
-        await run_oneoff_task(
-            task_id, run_id, model,
-            resume_session=resume_session, resume_prompt=resume_prompt,
-        )
+        await run_oneoff_task(task_id, run_id, model, wake=wake)
     except Exception:  # noqa: BLE001 - a crashed run must not leave a 'running' row
         log.exception("One-off run %s failed", run_id)
         row = db.get_run(run_id)
@@ -3031,8 +3023,7 @@ async def _execute_oneoff(
 
 async def run_oneoff_task(
     task_id: int, run_id: int, model: str,
-    resume_session: Optional[str] = None,
-    resume_prompt: Optional[str] = None,
+    wake: Optional[tuple[str, str]] = None,
 ) -> None:
     task = db.get_oneoff(task_id)
     if task is None:
@@ -3058,14 +3049,13 @@ async def run_oneoff_task(
         db.finish_run(run_id, "error", summary=note)
         return
 
-    if resume_prompt is not None:
+    if wake is not None:
         # Woken after a usage-window pause with its conversation intact: the
         # session already holds the person's message, so the queue is left
         # alone. Anything typed during the hold stays pending and starts the
         # next run when this one settles (`_continue_if_messages_waiting`).
         delivered: list[int] = []
-        prompt = resume_prompt
-        resume = resume_session
+        resume, prompt = wake
     else:
         pending = db.pending_oneoff_messages(task_id)
         prompt = oneoff.build_prompt(task, pending)
@@ -3081,7 +3071,7 @@ async def run_oneoff_task(
     try:
         result = await agent_runner.run_claude(
             prompt, ws, model, timeout_min, max_turns=max_turns,
-            on_event=_live_logger(run_id, fresh=resume_prompt is None),
+            on_event=_live_logger(run_id, fresh=wake is None),
             run_id=run_id, resume_session=resume,
             settings_json=_guard_settings(run_id, None),
             # One agent per task workspace. `db.oneoff_running` is a SELECT on
