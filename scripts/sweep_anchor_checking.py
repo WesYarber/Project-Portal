@@ -69,31 +69,45 @@ MUTATIONS = [
      "    return loose",
      "reporting stops at the first loose anchor, hiding the rest of the rot"),
 
-    # --- the harness over the eight real sweeps ------------------------------
+    # --- assert_anchors_hold: the assertion that fires -----------------------
     (TA,
-     "    assert len(SWEEPS) >= 8",
-     "    assert len(SWEEPS) >= 0",
-     "an empty glob passes, so every parametrized check below vacuously passes"),
+     "    loose = loose_anchors(anchors)\n    if loose:",
+     "    loose = loose_anchors(anchors)\n    if False:",
+     "the rot is computed and then never raised on"),
 
+    # --- assert_sweep_declares_anchors: the three ways a sweep goes unchecked -
     (TA,
-     'SWEEPS = sorted((ROOT / "scripts").glob("sweep_*.py"))',
-     'SWEEPS = sorted((ROOT / "scripts").glob("sweep_nothing_*.py"))',
-     "the glob stops finding the sweeps at all"),
-
-    (TA,
-     "    assert len(found) == len(module.MUTATIONS), (",
-     "    assert len(found) <= len(module.MUTATIONS), (",
-     "an anchors() that returns only some of its mutations is accepted"),
-
-    (TA,
-     '    assert hasattr(module, "anchors"), (',
-     '    assert hasattr(module, "MUTATIONS"), (',
+     '    if not hasattr(module, "anchors"):',
+     '    if not hasattr(module, "MUTATIONS"):',
      "a sweep with no anchors() at all goes unchecked"),
 
     (TA,
-     "    loose = loose_anchors(_load(sweep).anchors())\n    assert not loose, (",
-     "    loose = loose_anchors(_load(sweep).anchors())\n    assert loose is not None, (",
-     "the per-sweep check computes the rot and then never asserts on it"),
+     "    if not found:\n",
+     "    if False:\n",
+     "a sweep whose anchors() returns nothing is accepted"),
+
+    (TA,
+     "    if len(found) != len(module.MUTATIONS):",
+     "    if len(found) > len(module.MUTATIONS):",
+     "an anchors() covering only some of its mutations is accepted"),
+
+    # --- the harness finding the sweeps at all -------------------------------
+    #
+    # The floor's own assertion is the one thing here caught only by this check
+    # tripping over its own anchors: nothing else in the repo asserts how many
+    # sweeps there are, and a second test saying so would be the same assertion
+    # twice, which is why the two that did were merged into one. What it does
+    # have is two independent walks of scripts/ - glob and iterdir - so the
+    # mutation that matters, the glob going blind, has a real owner.
+    (TA,
+     'SWEEPS = sorted((ROOT / "scripts").glob("sweep_*.py"))',
+     'SWEEPS = sorted((ROOT / "scripts").glob("sweep_nothing_*.py"))',
+     "the glob stops finding the sweeps, so every per-sweep check vanishes"),
+
+    (TA,
+     "    assert len(SWEEPS) == len(on_disk) >= 8",
+     "    assert len(SWEEPS) <= len(on_disk)",
+     "the glob may miss sweeps that are on disk (self-referential catch, see above)"),
 ]
 
 

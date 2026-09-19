@@ -321,18 +321,18 @@ survivors, not like three mutations that never ran. Nobody re-reads a SKIP line
 months after the sweep that printed it.
 
 The failure mode is **self-inflicted by successful work**: a sweep proving a fix
-is rotted by the cleanup that fix made possible. Three of this repo's eight
-sweeps had rotted this way when the check below was first run, ten anchors in
-all: `sweep_project_run_cap.py` had seven, because the daily-cap decision it
+is rotted by the cleanup that fix made possible. Three of this repo's sweeps
+had rotted this way when the check below was first run, ten anchors in all:
+`sweep_project_run_cap.py` had seven, because the daily-cap decision it
 proves was later extracted into `worker.effective_project_cap`;
 `sweep_quiet_and_recency.py` had two, because the rail's `max()` moved into
 `db.worked_on_at`; `sweep_note_runs_now.py` had one, because the button's title
 grew a third branch.
 
 **Every sweep therefore exposes an `anchors()`** returning `[(file, exact
-string)]` in its own tuple order (the eight here use four different orders), and
-`tests/test_sweep_anchors.py` asks all of them on every test run: each anchor
-must occur **exactly once** in the file it names. Once, not at-least-once — a
+string)]` in its own tuple order (the ones here use four different orders
+between them), and `tests/test_sweep_anchors.py` asks all of them on every test
+run: each anchor must occur **exactly once** in the file it names. Once, not at-least-once — a
 duplicated anchor mutates the first match, so the sweep reaches a confident
 verdict about a line it did not mean (§6 is the same trap arriving by a
 different road).

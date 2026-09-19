@@ -57,6 +57,40 @@ def loose_anchors(anchors: Iterable[tuple[Path | str, str]]) -> list[str]:
     return loose
 
 
+def assert_anchors_hold(name: str, anchors: Iterable[tuple[Path | str, str]]) -> None:
+    """Raise unless every anchor still names exactly one place in its file.
+
+    A function rather than an inline assert so the tests below can prove the
+    assertion fires. Inline, it could only ever be exercised against the sweeps
+    in this repo, all of which pass -- so nothing could tell it from a `loose`
+    that is computed and then never looked at.
+    """
+    loose = loose_anchors(anchors)
+    if loose:
+        raise AssertionError(
+            f"{name} has {len(loose)} anchor(s) that no longer hold; it would "
+            "print SKIP and count them as survivors:\n  " + "\n  ".join(loose)
+        )
+
+
+def assert_sweep_declares_anchors(name: str, module) -> None:
+    """Raise unless the sweep offers one anchor per mutation.
+
+    A sweep with no `anchors()` is not a sweep that passes; it is a sweep
+    nothing can check. Same for one that returns a subset.
+    """
+    if not hasattr(module, "anchors"):
+        raise AssertionError(f"{name} has no anchors(); it cannot be checked for rot")
+    found = module.anchors()
+    if not found:
+        raise AssertionError(f"{name} declares no anchors")
+    if len(found) != len(module.MUTATIONS):
+        raise AssertionError(
+            f"{name}: anchors() returned {len(found)} entries for "
+            f"{len(module.MUTATIONS)} mutations, so some are unchecked"
+        )
+
+
 def _load(path: Path):
     """Import a sweep script by file path.
 
@@ -112,29 +146,86 @@ def test_every_loose_anchor_is_reported_not_just_the_first(tmp_path):
 # --- the sweeps in this repo ------------------------------------------------
 
 
-def test_there_are_sweeps_to_check():
-    """A glob that matched nothing would pass every parametrized test below."""
-    assert len(SWEEPS) >= 8
+def test_the_glob_finds_every_sweep_script_on_disk():
+    """A glob that matched nothing would pass every parametrized test below by
+    matching nothing to check, so the count is pinned against `scripts/` walked
+    a second way rather than against a number written here."""
+    on_disk = [p for p in (ROOT / "scripts").iterdir()
+               if p.is_file() and p.name.startswith("sweep_") and p.suffix == ".py"]
+    assert len(SWEEPS) == len(on_disk) >= 8
 
 
 @pytest.mark.parametrize("sweep", SWEEPS, ids=lambda p: p.stem)
 def test_a_sweep_exposes_an_anchor_for_every_mutation(sweep: Path):
-    module = _load(sweep)
-    assert hasattr(module, "anchors"), (
-        f"{sweep.name} has no anchors(); it cannot be checked for rot"
-    )
-    found = module.anchors()
-    assert found, f"{sweep.name} declares no anchors"
-    assert len(found) == len(module.MUTATIONS), (
-        f"{sweep.name}: anchors() returned {len(found)} entries for "
-        f"{len(module.MUTATIONS)} mutations, so some are unchecked"
-    )
+    assert_sweep_declares_anchors(sweep.name, _load(sweep))
 
 
 @pytest.mark.parametrize("sweep", SWEEPS, ids=lambda p: p.stem)
 def test_every_anchor_occurs_exactly_once_in_the_file_it_mutates(sweep: Path):
-    loose = loose_anchors(_load(sweep).anchors())
-    assert not loose, (
-        f"{sweep.name} has {len(loose)} anchor(s) that no longer hold; it would "
-        "print SKIP and count them as survivors:\n  " + "\n  ".join(loose)
+    assert_anchors_hold(sweep.name, _load(sweep).anchors())
+
+
+# --- the harness, against sweeps built for the purpose -----------------------
+#
+# The eight real sweeps all pass, which is the point of them but makes them
+# useless for proving the harness reacts. These build a sweep on disk instead,
+# so each guard has an owner that does not depend on the repo being broken.
+
+
+def _fake_sweep(tmp_path: Path, anchors_body: str, mutations: int = 2) -> Path:
+    target = tmp_path / "code.py"
+    target.write_text("line one\nline two\n", encoding="utf-8")
+    script = tmp_path / "sweep_made_up.py"
+    script.write_text(
+        "from pathlib import Path\n"
+        f"TARGET = Path({str(target)!r})\n"
+        f"MUTATIONS = [(TARGET, 'x', 'y', 'z')] * {mutations}\n"
+        f"{anchors_body}\n",
+        encoding="utf-8",
     )
+    return script
+
+
+def test_a_sweep_whose_anchor_rotted_raises(tmp_path):
+    script = _fake_sweep(
+        tmp_path, "def anchors():\n    return [(TARGET, 'line one'), (TARGET, 'gone')]"
+    )
+    with pytest.raises(AssertionError, match="1 anchor"):
+        assert_anchors_hold(script.name, _load(script).anchors())
+
+
+def test_a_sweep_whose_anchors_all_hold_raises_nothing(tmp_path):
+    script = _fake_sweep(
+        tmp_path, "def anchors():\n    return [(TARGET, 'line one'), (TARGET, 'line two')]"
+    )
+    assert_anchors_hold(script.name, _load(script).anchors()) is None
+
+
+def test_a_sweep_whose_anchors_returns_nothing_raises(tmp_path):
+    """An empty sweep is not a passing sweep. With no mutations either, the
+    per-mutation count below agrees with it, so only this guard is left."""
+    script = _fake_sweep(tmp_path, "def anchors():\n    return []", mutations=0)
+    with pytest.raises(AssertionError, match="declares no anchors"):
+        assert_sweep_declares_anchors(script.name, _load(script))
+
+
+def test_a_sweep_with_no_anchors_function_raises(tmp_path):
+    script = _fake_sweep(tmp_path, "# no anchors() here")
+    with pytest.raises(AssertionError, match="no anchors"):
+        assert_sweep_declares_anchors(script.name, _load(script))
+
+
+def test_a_sweep_whose_anchors_cover_only_some_mutations_raises(tmp_path):
+    script = _fake_sweep(
+        tmp_path, "def anchors():\n    return [(TARGET, 'line one')]", mutations=2
+    )
+    with pytest.raises(AssertionError, match="some are unchecked"):
+        assert_sweep_declares_anchors(script.name, _load(script))
+
+
+def test_a_sweep_declaring_an_anchor_per_mutation_raises_nothing(tmp_path):
+    script = _fake_sweep(
+        tmp_path,
+        "def anchors():\n    return [(TARGET, 'line one'), (TARGET, 'line two')]",
+    )
+    assert assert_sweep_declares_anchors(script.name, _load(script)) is None
