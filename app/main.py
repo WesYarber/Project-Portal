@@ -2476,6 +2476,10 @@ def _safe_next(target: str) -> str:
 @app.get("/tasks", response_class=HTMLResponse)
 async def tasks_page(request: Request) -> HTMLResponse:
     running_ids = {r["oneoff_id"] for r in db.active_runs() if r["oneoff_id"]}
+    # A task whose run is waiting for the usage window still has an agent on
+    # it (app/limitpause.py); without its own badge the row would read as the
+    # agent's turn being over, which it is not.
+    held_ids = {r["oneoff_id"] for r in db.paused_runs() if r["oneoff_id"]}
     return templates.TemplateResponse(
         request,
         "tasks.html",
@@ -2483,6 +2487,7 @@ async def tasks_page(request: Request) -> HTMLResponse:
             "open_tasks": db.list_oneoffs("open"),
             "archived_tasks": db.list_oneoffs("archived"),
             "running_ids": running_ids,
+            "held_ids": held_ids,
             "active_run": active_run_snapshot(),
         },
     )
@@ -2505,6 +2510,10 @@ async def oneoff_page(request: Request, task_id: int) -> HTMLResponse:
         raise HTTPException(status_code=404, detail="Task not found")
     running = db.oneoff_running(task_id)
     latest = db.latest_oneoff_run(task_id)
+    # A run held for the usage window is neither running nor finished: it is
+    # coming back to this task on its own (app/limitpause.py), and the page has
+    # to say so or the exchange looks abandoned.
+    hold = limitpause.describe(latest)
     return templates.TemplateResponse(
         request,
         "oneoff.html",
@@ -2512,8 +2521,9 @@ async def oneoff_page(request: Request, task_id: int) -> HTMLResponse:
             "task": task,
             "messages": db.list_oneoff_messages(task_id),
             "running": running,
+            "hold": hold,
             "latest_run": latest,
-            "queued": len(db.pending_oneoff_messages(task_id)) if running else 0,
+            "queued": len(db.pending_oneoff_messages(task_id)) if running or hold else 0,
             "workspace": str(oneoff.workspace(task_id)),
             "active_run": active_run_snapshot(),
         },

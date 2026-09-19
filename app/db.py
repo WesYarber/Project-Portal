@@ -4530,11 +4530,47 @@ def mark_oneoff_delivered(message_ids: Sequence[int]) -> None:
         conn.commit()
 
 
+def undeliver_oneoff_messages(message_ids: Sequence[int]) -> None:
+    """Put messages back in the queue for the next run to read.
+
+    The one exception to "delivered is one-way" (app/limitpause.py): a run
+    refused for the usage window before the CLI ever announced a session
+    provably never read them, and it is going to start over. Without this the
+    restart would build its prompt from an empty queue and the person's words
+    would be lost with no sign of it. Only ever called with the ids one run
+    took out of the queue on its way in.
+    """
+    if not message_ids:
+        return
+    conn = get_conn()
+    with _LOCK:
+        conn.executemany(
+            "UPDATE oneoff_messages SET delivered_at = NULL WHERE id = ?",
+            [(int(mid),) for mid in message_ids],
+        )
+        conn.commit()
+
+
 def oneoff_running(task_id: int) -> bool:
     conn = get_conn()
     with _LOCK:
         row = conn.execute(
             "SELECT 1 FROM runs WHERE oneoff_id = ? AND status = 'running' LIMIT 1",
+            (task_id,),
+        ).fetchone()
+    return row is not None
+
+
+def oneoff_busy(task_id: int) -> bool:
+    """Whether an agent owns this task's workspace and CLI session: one in
+    flight, or one paused for the usage window (app/limitpause.py). The paused
+    one is coming back to both, so starting a second agent meanwhile would put
+    two of them in one directory and fork one conversation in two - the same
+    reason `busy_project_ids` counts a paused project run."""
+    conn = get_conn()
+    with _LOCK:
+        row = conn.execute(
+            "SELECT 1 FROM runs WHERE oneoff_id = ? AND status IN ('running', 'paused') LIMIT 1",
             (task_id,),
         ).fetchone()
     return row is not None

@@ -1102,6 +1102,8 @@ def resume_run(row: db.sqlite3.Row) -> bool:
     moment rather than the one it never got to use. Both stay on this row.
     """
     run_id = int(row["id"])
+    if row["oneoff_id"]:
+        return resume_oneoff_run(row)
     project = db.get_project(int(row["project_id"])) if row["project_id"] else None
     if project is None:
         db.finish_run(run_id, "error", summary="Could not resume: the project is gone.")
@@ -1133,6 +1135,57 @@ def resume_run(row: db.sqlite3.Row) -> bool:
             project, str(row["task"]), run_id, model,
             parallel=db.is_parallel_run(row),
             resume_session=str(session) if mode == limitpause.RESUME else None,
+            prior=prior,
+        )
+    )
+    return True
+
+
+def resume_oneoff_run(row: db.sqlite3.Row) -> bool:
+    """Wake a one-off task's run after its usage-window pause, on its own row.
+
+    The same two ways back a project run has (`limitpause.hold_mode`), told
+    apart the same way. A row with a CLI session continues that conversation
+    with the short "you were paused" prompt. A row without one never got
+    going: its message went back in the queue when it was paused, so running
+    the task again from the top reads it for the first time.
+
+    False when it cannot go yet - the task is gone or archived, another agent
+    is in its workspace, or the row is no longer paused - which leaves the row
+    paused for the next tick to try again. Only a task that has disappeared
+    settles the row, because nothing is ever coming back for it.
+    """
+    run_id = int(row["id"])
+    task_id = int(row["oneoff_id"])
+    task = db.get_oneoff(task_id)
+    if task is None or task["status"] != "open":
+        db.finish_run(
+            run_id, "error",
+            summary="Could not resume: the one-off task is gone or archived.",
+        )
+        return False
+    if db.oneoff_running(task_id) or worklock.is_busy(oneoff.workspace(task_id)) is True:
+        log.info("One-off run %s stays paused: task %s is busy", run_id, task_id)
+        return False
+    mode = limitpause.hold_mode(row)
+    prior = (row["cost_usd"], row["num_turns"])
+    model = agent_runner.resolve_model(None)
+    if not db.reopen_run(run_id, model=model):
+        return False
+    if mode == limitpause.RESTART:
+        limitpause.mark_restarted(row)
+        prompt = None
+        log.info("Restarting one-off run %s on task %s after its usage-window pause (%s)",
+                 run_id, task_id, model)
+    else:
+        prompt = limitpause.mark_resumed(row)
+        log.info("Resuming one-off run %s on task %s after its usage-window pause (%s)",
+                 run_id, task_id, model)
+    _inflight[run_id] = asyncio.create_task(
+        _execute_oneoff(
+            task_id, run_id, model,
+            resume_session=str(row["session_id"]) if mode == limitpause.RESUME else None,
+            resume_prompt=prompt,
             prior=prior,
         )
     )
@@ -2880,6 +2933,15 @@ def cancel_run(run_id: int) -> str:
             run_id, "cancelled",
             summary="Canceled while paused for the usage window; it will not be resumed.",
         )
+        if run["oneoff_id"]:
+            # The thread is the only place this task's person is looking, and
+            # no in-flight function is left to say it for us.
+            db.add_oneoff_message(
+                int(run["oneoff_id"]), "system",
+                "Stopped from the portal while it waited for the usage window, so it will "
+                "not come back. Send your message again whenever you want another run.",
+                run_id=run_id,
+            )
         log.info("Cancel requested for paused run %s; row settled", run_id)
         return "cancelled"
     if run["status"] != "running":
@@ -2924,7 +2986,11 @@ def spawn_oneoff(task_id: int) -> Optional[int]:
     task = db.get_oneoff(task_id)
     if task is None or task["status"] != "open":
         return None
-    if db.oneoff_running(task_id):
+    if db.oneoff_busy(task_id):
+        # Including a run paused for the usage window: it is coming back to
+        # this workspace and this CLI session (app/limitpause.py), and a
+        # message typed meanwhile waits for it exactly as it waits for a run
+        # that is mid-turn.
         return None
     model = agent_runner.resolve_model(None)
     run_id = db.create_run(None, "oneoff", model, oneoff_id=task_id)
@@ -2933,9 +2999,20 @@ def spawn_oneoff(task_id: int) -> Optional[int]:
     return run_id
 
 
-async def _execute_oneoff(task_id: int, run_id: int, model: str) -> None:
+async def _execute_oneoff(
+    task_id: int, run_id: int, model: str,
+    resume_session: Optional[str] = None,
+    resume_prompt: Optional[str] = None,
+    prior: tuple[Optional[float], Optional[int]] = (None, None),
+) -> None:
+    """`resume_session`, `resume_prompt` and `prior` are set only by
+    `resume_oneoff_run`: the CLI session to continue, what the woken agent
+    reads, and what the run's earlier segments cost (app/limitpause.py)."""
     try:
-        await run_oneoff_task(task_id, run_id, model)
+        await run_oneoff_task(
+            task_id, run_id, model,
+            resume_session=resume_session, resume_prompt=resume_prompt,
+        )
     except Exception:  # noqa: BLE001 - a crashed run must not leave a 'running' row
         log.exception("One-off run %s failed", run_id)
         row = db.get_run(run_id)
@@ -2944,9 +3021,19 @@ async def _execute_oneoff(task_id: int, run_id: int, model: str) -> None:
             db.add_oneoff_message(
                 task_id, "system", "The run crashed; see the service log.", run_id=run_id
             )
+    finally:
+        if prior != (None, None):
+            try:
+                db.add_run_cost(run_id, *prior)
+            except Exception:  # pragma: no cover - defensive
+                log.exception("Could not fold the earlier cost onto run %s", run_id)
 
 
-async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
+async def run_oneoff_task(
+    task_id: int, run_id: int, model: str,
+    resume_session: Optional[str] = None,
+    resume_prompt: Optional[str] = None,
+) -> None:
     task = db.get_oneoff(task_id)
     if task is None:
         db.finish_run(run_id, "error", summary="One-off task no longer exists.")
@@ -2971,17 +3058,31 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
         db.finish_run(run_id, "error", summary=note)
         return
 
-    pending = db.pending_oneoff_messages(task_id)
-    prompt = oneoff.build_prompt(task, pending)
-    # Spent the moment they are in a prompt, exactly like project notes: from
-    # here an agent has them, so they must not go into a second prompt too.
-    db.mark_oneoff_delivered([m["id"] for m in pending])
-    resume = task["cli_session_id"]
+    if resume_prompt is not None:
+        # Woken after a usage-window pause with its conversation intact: the
+        # session already holds the person's message, so the queue is left
+        # alone. Anything typed during the hold stays pending and starts the
+        # next run when this one settles (`_continue_if_messages_waiting`).
+        delivered: list[int] = []
+        prompt = resume_prompt
+        resume = resume_session
+    else:
+        pending = db.pending_oneoff_messages(task_id)
+        prompt = oneoff.build_prompt(task, pending)
+        # Spent the moment they are in a prompt, exactly like project notes:
+        # from here an agent has them, so they must not go into a second
+        # prompt too. The one way back is a usage refusal that came before the
+        # CLI announced a session, which proves nobody read them
+        # (`limitpause.pause_oneoff`).
+        delivered = [m["id"] for m in pending]
+        db.mark_oneoff_delivered(delivered)
+        resume = task["cli_session_id"]
 
     try:
         result = await agent_runner.run_claude(
             prompt, ws, model, timeout_min, max_turns=max_turns,
-            on_event=_live_logger(run_id), run_id=run_id, resume_session=resume,
+            on_event=_live_logger(run_id, fresh=resume_prompt is None),
+            run_id=run_id, resume_session=resume,
             settings_json=_guard_settings(run_id, None),
             # One agent per task workspace. `db.oneoff_running` is a SELECT on
             # runs.status, which is the derived answer this module exists to
@@ -3015,17 +3116,30 @@ async def run_oneoff_task(task_id: int, run_id: int, model: str) -> None:
         return
 
     if result.is_rate_limited:
-        until, why = await _rate_limit_backoff(
-            result.retries.quota if result.retries else None
-        )
+        quota = result.retries.quota if result.retries else None
+        hint = apiretry.parse_reset_hint(result.result_text) \
+            or apiretry.parse_reset_hint(result.raw_stderr)
+        until, why = await _rate_limit_backoff(quota, hint=hint)
+        # Paused, not stopped - the same hold a project run gets, on the same
+        # row (app/limitpause.py). Wes, 2026-09-19: a run that "never starts
+        # because it is waiting for usage limit to refresh" must come back
+        # too, and a one-off is the kind he starts by hand, so nothing else
+        # would ever pick it up. Only a run woken too often settles as the
+        # error this whole branch used to be.
+        if limitpause.can_pause(result) and limitpause.pause_oneoff(
+            task_id, run_id, result, limitpause.reset_moment(quota, hint, until), why,
+            delivered_ids=delivered,
+        ):
+            return
         db.finish_run(
             run_id, "error", result.session_id, result.cost_usd, result.num_turns,
             f"Rate limited; backing off until {until.isoformat(timespec='minutes')} ({why})",
         )
         db.add_oneoff_message(
             task_id, "system",
-            f"The run hit a usage limit ({why}). Send your message again once the "
-            f"window resets ({until.isoformat(timespec='minutes')}).",
+            f"The run hit a usage limit ({why}) and has been woken as often as it is "
+            f"going to be. Send your message again once the window resets "
+            f"({until.isoformat(timespec='minutes')}).",
             run_id=run_id,
         )
         return

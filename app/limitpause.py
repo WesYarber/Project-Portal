@@ -45,14 +45,24 @@ The bounds, and why each exists:
   still not through is not going to be, and its row should say so.
 * A paused run still owns its project. `db.busy_project_ids` counts it, so the
   scheduler will not put a fresh agent into the workspace the paused one is
-  going to come back to.
+  going to come back to. The same holds for a one-off task
+  (`db.oneoff_busy`), where the thing being held is the task's workspace and
+  its CLI session.
+
+One-off tasks (app/oneoff.py) get the same hold, which matters more there than
+anywhere: a one-off is started by hand and nothing else ever picks one up, so
+before this the person's message simply died on a spent allowance with "send
+your message again" under it. The only difference is where the notice goes -
+the chat thread rather than a project journal - and one extra rule: a restart
+puts the messages that run took out of the queue back into it, because a run
+refused before the CLI announced a session provably never read them.
 """
 from __future__ import annotations
 
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Optional, Sequence
 
 from app import db
 
@@ -127,10 +137,16 @@ def mode_for(result) -> str:
     return RESUME if result.session_id else RESTART
 
 
-def pause(project, run_id: int, task: str, result, until: datetime, why: str) -> bool:
-    """Park the run until `until`. Returns False - and records why - when the
-    run has already been resumed `MAX_RESUMES` times, in which case the caller
-    settles it as the error it has become."""
+def _park(run_id: int, result, until: datetime, why: str) -> Optional[dict]:
+    """Settle the row as paused and write down how it is to come back.
+
+    The half of a pause that is the same wherever the run came from. None -
+    and a GAVE_UP event - when the run has already been woken `MAX_RESUMES`
+    times, in which case the caller settles it as the error it has become.
+    The caller announces the pause afterwards, because where that notice goes
+    is the one thing a project run and a one-off task do not share: a project
+    has a journal, a one-off has the chat thread the person is reading.
+    """
     resumed = resumes_so_far(run_id)
     if resumed >= MAX_RESUMES:
         db.add_hook_event(
@@ -138,7 +154,7 @@ def pause(project, run_id: int, task: str, result, until: datetime, why: str) ->
             f"Hit the usage limit again after {resumed} resumes; not resuming a "
             f"{ordinal(resumed + 1)} time.",
         )
-        return False
+        return None
     mode = mode_for(result)
     stamp = until.astimezone(timezone.utc).isoformat(timespec="seconds")
     carry_on = "resumes in the same session" if mode == RESUME else "starts over"
@@ -156,7 +172,23 @@ def pause(project, run_id: int, task: str, result, until: datetime, why: str) ->
         f"once the window reopens.",
         stamp,
     )
-    if mode == RESUME:
+    log.info("Run %s paused for the usage window until %s (%s, %s)", run_id, stamp, why, mode)
+    return {"mode": mode, "resumed": resumed, "stamp": stamp}
+
+
+def _wake_suffix(held: dict) -> str:
+    if not held["resumed"]:
+        return ""
+    return f" This is wake {held['resumed'] + 1} of at most {MAX_RESUMES}."
+
+
+def pause(project, run_id: int, task: str, result, until: datetime, why: str) -> bool:
+    """Park a project run until `until`. Returns False - and records why - when
+    the run has already been resumed `MAX_RESUMES` times."""
+    held = _park(run_id, result, until, why)
+    if held is None:
+        return False
+    if held["mode"] == RESUME:
         line = (
             f"Run ({task}) ran out of allowance mid-run ({why}) and is **paused, not stopped**: "
             f"it picks up in the same session, with the workspace as it left it, once the "
@@ -168,11 +200,44 @@ def pause(project, run_id: int, task: str, result, until: datetime, why: str) ->
             f"and is **paused, not dropped**: nothing had been done yet, so it starts over "
             f"on this same row once the window reopens at {_fmt(until)}."
         )
-    db.add_journal(
-        project["id"], "system", "status",
-        line + (f" This is wake {resumed + 1} of at most {MAX_RESUMES}." if resumed else ""),
-    )
-    log.info("Run %s paused for the usage window until %s (%s, %s)", run_id, stamp, why, mode)
+    db.add_journal(project["id"], "system", "status", line + _wake_suffix(held))
+    return True
+
+
+def pause_oneoff(
+    task_id: int, run_id: int, result, until: datetime, why: str,
+    delivered_ids: Sequence[int] = (),
+) -> bool:
+    """Park a one-off task's run until `until` (app/oneoff.py).
+
+    Same hold as a project run, said in the chat thread instead of a journal,
+    because that page is what the person who typed the message is looking at.
+
+    `delivered_ids` are the messages this run took out of the queue on its way
+    in. On a restart they go back: no session was ever announced, so the model
+    never read them, and a run that starts over with an empty queue would
+    answer a prompt with nobody's words in it. On a resume they stay spent -
+    the conversation being resumed already has them in it, and delivering them
+    twice would have the agent answer the same message again.
+    """
+    held = _park(run_id, result, until, why)
+    if held is None:
+        return False
+    if held["mode"] == RESTART:
+        db.undeliver_oneoff_messages(list(delivered_ids))
+        line = (
+            f"The usage allowance was already spent when this run asked ({why}), so nothing "
+            f"was done and your message has not been read yet. It is **queued, not lost**: "
+            f"the run starts over on its own once the window reopens at {_fmt(until)}. "
+            f"Nothing to send again."
+        )
+    else:
+        line = (
+            f"This run ran out of allowance mid-run ({why}) and is **paused, not stopped**: "
+            f"it picks up in the same session, with this task's workspace as it left it, "
+            f"once the window reopens at {_fmt(until)}. Nothing to send again."
+        )
+    db.add_oneoff_message(task_id, "system", line + _wake_suffix(held), run_id=run_id)
     return True
 
 
@@ -256,6 +321,19 @@ def held_for(row, now: Optional[datetime] = None) -> tuple[datetime, str]:
     return paused_at, (f"{minutes // 60}h {minutes % 60:02d}m" if minutes >= 60 else f"{minutes}m")
 
 
+def _say(row, line: str) -> None:
+    """Tell whoever is watching this run that it woke. A project run's audience
+    reads the journal; a one-off task's reads the chat thread it was typed in.
+    A run with neither (there is no third kind today) is left to its own
+    timeline, which every run gets."""
+    if row["project_id"]:
+        db.add_journal(int(row["project_id"]), "system", "status", line)
+    elif db._row_get(row, "oneoff_id"):  # noqa: SLF001
+        db.add_oneoff_message(
+            int(row["oneoff_id"]), "system", line, run_id=int(row["id"])
+        )
+
+
 def mark_resumed(row, now: Optional[datetime] = None) -> str:
     """Record the wake on the run's timeline and journal, and return the
     prompt the resumed session is handed."""
@@ -267,12 +345,10 @@ def mark_resumed(row, now: Optional[datetime] = None) -> str:
         f"Resumed after {held_text} paused for the usage window (resume {count} of at most "
         f"{MAX_RESUMES}).",
     )
-    if row["project_id"]:
-        db.add_journal(
-            int(row["project_id"]), "system", "status",
-            f"Run #{row['id']} resumed after {held_text} paused for the usage window; it "
-            "continues in the same session from where it stopped.",
-        )
+    _say(row, f"Run #{row['id']} resumed after {held_text} paused for the usage window; it "
+              "continues in the same session from where it stopped.")
+    if db._row_get(row, "oneoff_id"):  # noqa: SLF001
+        return oneoff_resume_prompt(paused_at, now, held_text)
     return resume_prompt(paused_at, now, held_text)
 
 
@@ -288,13 +364,9 @@ def mark_restarted(row, now: Optional[datetime] = None) -> None:
         f"Started over after {held_text} waiting for the usage window (wake {count} of at "
         f"most {MAX_RESUMES}).",
     )
-    if row["project_id"]:
-        db.add_journal(
-            int(row["project_id"]), "system", "status",
-            f"Run #{row['id']}, which never started because the usage allowance was spent, "
-            f"is running now that the window has reopened ({held_text} later). It starts "
-            "from the top: nothing had been done to pick up.",
-        )
+    _say(row, f"Run #{row['id']}, which never started because the usage allowance was spent, "
+              f"is running now that the window has reopened ({held_text} later). It starts "
+              "from the top: nothing had been done to pick up.")
 
 
 def resume_prompt(paused_at: datetime, now: datetime, held_text: str) -> str:
@@ -310,6 +382,24 @@ def resume_prompt(paused_at: datetime, now: datetime, held_text: str) -> str:
         "do not start over, and do not repeat work that is already committed. You "
         "still owe the StructuredOutput report at the end; if you had already "
         "gathered its contents, file it now."
+    )
+
+
+def oneoff_resume_prompt(paused_at: datetime, now: datetime, held_text: str) -> str:
+    """The same wake, for a one-off task (app/oneoff.py). Different in the two
+    places a one-off differs: there is no report file to file, and the last
+    thing the agent prints IS the reply the person reads, so a resumed run
+    that says nothing leaves them looking at a page with no answer on it."""
+    return (
+        "## Resumed after the usage window reopened\n\n"
+        f"This run was paused at {_fmt(paused_at)} because the account's usage "
+        f"allowance ran out mid-run, and resumed now, {held_text} later, in the same "
+        "session. Nothing else happened in between: nobody touched the workspace, and "
+        "every file is exactly as you left it. Pick up where you stopped and finish "
+        "the task - do not start over. Whatever you print at the end is still your "
+        "reply on the task page, so finish with one: what you did, what you found, "
+        "and anything you need. Say plainly that the run was held for the usage "
+        "window if that changed what you managed to get done."
     )
 
 

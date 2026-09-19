@@ -27,6 +27,8 @@
         <a href="/tasks/{{ t.id }}">{{ t.title }}</a>
         {% if t.id in running_ids %}
         <span class="badge author-agent"><span class="dot running"></span> agent working</span>
+        {% elif t.id in held_ids %}
+        <span class="badge">held for the usage window</span>
         {% elif t.last_role == 'agent' %}
         <span class="badge author-agent">replied - your turn</span>
         {% elif t.last_role == 'system' %}

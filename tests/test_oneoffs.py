@@ -261,7 +261,11 @@ async def test_a_timeout_says_the_workspace_survived(task, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_rate_limited_run_backs_off_and_tells_wes(task, monkeypatch):
+async def test_a_rate_limited_run_is_held_rather_than_told_to_resend(task, monkeypatch):
+    """It used to settle as an error under "send your message again". It is a
+    pause now, on the same row - see tests/test_limitpause.py for the whole
+    hold; this pins that the /tasks path takes it and still backs the worker
+    off."""
     async def no_network(*args, **kwargs):
         raise RuntimeError("offline")
 
@@ -271,7 +275,10 @@ async def test_a_rate_limited_run_backs_off_and_tells_wes(task, monkeypatch):
     ))
     run_id = db.create_run(None, "oneoff", "opus", oneoff_id=task["id"])
     await worker.run_oneoff_task(task["id"], run_id, "opus")
-    assert "usage limit" in db.list_oneoff_messages(task["id"])[-1]["content_md"]
+    assert db.get_run(run_id)["status"] == "paused"
+    last = db.list_oneoff_messages(task["id"])[-1]["content_md"]
+    assert "queued, not lost" in last
+    assert "Nothing to send again" in last
     assert db.get_setting("backoff_until")
 
 

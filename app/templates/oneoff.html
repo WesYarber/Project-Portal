@@ -35,6 +35,31 @@
 </div>
 {% endif %}
 
+{% if hold %}
+<div class="card" id="oneoff-hold">
+  <div class="live-head">
+    <span class="badge">held</span>
+    <strong class="live-what">paused for the usage window</strong>
+    {% if latest_run %}
+    <a class="small" href="/run/{{ latest_run.id }}">the run &rarr;</a>
+    <form method="post" action="/run/{{ latest_run.id }}/cancel" class="inline-form">
+      <input type="hidden" name="next" value="/tasks/{{ task.id }}">
+      <button type="submit" class="btn danger small">stop</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="hint run-hold">
+    Paused, not stopped: this run {% if hold.restarts %}could not start - the allowance was
+    already spent{% else %}ran out of allowance{% endif %}{% if hold.why %} ({{ hold.why }}){% endif %}.
+    {{ hold.what_next }} after {{ hold.until_text }}
+    {%- if hold.resumes %} (wake {{ hold.resumes + 1 }} of at most {{ hold.max_resumes }}){% endif %}.
+    {% if hold.restarts %}Your message is back in the queue and has not been read yet -
+    nothing to send again.{% else %}Nothing to send again.{% endif %}
+    Stopping it ends the run for good.
+  </p>
+</div>
+{% endif %}
+
 <div class="card oneoff-thread scroll-cap scroll-cap-journal">
   {% for m in messages %}
   {% set who = 'user' if m.role == 'wes' else m.role %}
@@ -60,6 +85,9 @@
     <span class="hint">an agent is mid-run - your message queues, and a fresh run
       picks it up (with the agent's memory of this session intact) the moment
       the current one finishes</span>
+    {% elif hold %}
+    <span class="hint">this task's run is waiting for the usage window - your message
+      queues, and is picked up once that run has come back and finished</span>
     {% endif %}
   </form>
 </div>

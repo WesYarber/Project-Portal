@@ -677,3 +677,243 @@ async def test_a_resumed_parallel_run_goes_back_into_its_own_worktree(project, m
     await worker._inflight[run_id]
     assert seen["cwd"] == tree
     assert db.get_run(run_id)["status"] == "ok"
+
+
+# --- a one-off task gets the same hold ---------------------------------------
+#
+# Wes, 2026-09-19, of a run that "never starts because it is waiting for usage
+# limit to refresh": have it start working again once the window rolls over.
+# A one-off is the case that needed this most - he starts one by hand and
+# nothing else ever picks one up - and it is the one the first pass left out,
+# because `resume_run` wanted a project_id.
+
+
+@pytest.fixture
+def task():
+    return db.create_oneoff("Fix the cron mail on testhost\n\nIt stopped on Sunday.")
+
+
+def _oneoff_messages(task_id: int) -> list[str]:
+    return [m["content_md"] for m in db.list_oneoff_messages(task_id)]
+
+
+def _pending(task_id: int) -> list[str]:
+    return [m["content_md"] for m in db.pending_oneoff_messages(task_id)]
+
+
+async def _run_oneoff(task_id: int, result, monkeypatch) -> tuple[int, dict]:
+    seen = _fake_run(monkeypatch, result)
+    run_id = db.create_run(None, "oneoff", "opus", oneoff_id=task_id)
+    await worker.run_oneoff_task(task_id, run_id, "opus")
+    return run_id, seen
+
+
+@pytest.mark.asyncio
+async def test_a_one_off_refused_before_it_started_is_paused_and_keeps_the_message(
+    task, monkeypatch
+):
+    run_id, _ = await _run_oneoff(task["id"], _limited(session=None, cost=0.0, turns=1), monkeypatch)
+    run = db.get_run(run_id)
+    assert run["status"] == "paused"
+    assert limitpause.hold_mode(run) == limitpause.RESTART
+    # The message went back in the queue: nobody read it, and the restart is
+    # what will.
+    assert _pending(task["id"]) == ["Fix the cron mail on testhost\n\nIt stopped on Sunday."]
+    assert "queued, not lost" in _oneoff_messages(task["id"])[-1]
+
+
+@pytest.mark.asyncio
+async def test_a_one_off_refused_mid_run_keeps_its_session_and_its_delivered_message(
+    task, monkeypatch
+):
+    run_id, _ = await _run_oneoff(task["id"], _limited(), monkeypatch)
+    run = db.get_run(run_id)
+    assert run["status"] == "paused"
+    assert limitpause.hold_mode(run) == limitpause.RESUME
+    assert run["session_id"] == "s-1"
+    # The agent read it, so it stays spent - delivering it again would have
+    # the resumed session answer the same message twice.
+    assert _pending(task["id"]) == []
+    assert "paused, not stopped" in _oneoff_messages(task["id"])[-1]
+
+
+@pytest.mark.asyncio
+async def test_the_restart_of_a_one_off_reads_the_message_for_the_first_time(task, monkeypatch):
+    run_id, _ = await _run_oneoff(task["id"], _limited(session=None, cost=0.0, turns=1), monkeypatch)
+    db.set_run_scope_record(run_id, "hold_state", json.dumps({
+        "limit_until": (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+        "why": "test", "mode": limitpause.RESTART,
+    }))
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-9", cost_usd=2.0, num_turns=9, result_text="mail is flowing",
+    ))
+
+    assert worker.resume_run(db.get_run(run_id)) is True
+    await worker._inflight[run_id]
+
+    assert seen.get("resume_session") is None
+    assert "It stopped on Sunday." in seen["prompt"]
+    assert "Resumed after the usage window" not in seen["prompt"]
+    run = db.get_run(run_id)
+    assert run["status"] == "ok" and run["id"] == run_id
+    assert _pending(task["id"]) == []
+    assert _oneoff_messages(task["id"])[-1] == "mail is flowing"
+    assert any("window has reopened" in m for m in _oneoff_messages(task["id"]))
+    assert limitpause.resumes_so_far(run_id) == 1
+
+
+def _pause_oneoff_now(task_id: int, until: datetime, session: str | None = "s-1") -> int:
+    """A run that took the queue on its way in, as every real one does, and
+    was then refused for the usage window."""
+    run_id = db.create_run(None, "oneoff", "opus", oneoff_id=task_id)
+    delivered = [m["id"] for m in db.pending_oneoff_messages(task_id)]
+    db.mark_oneoff_delivered(delivered)
+    if session:
+        db.set_run_session(run_id, session)
+    limitpause.pause_oneoff(task_id, run_id, _limited(session=session), until, "test",
+                            delivered_ids=delivered)
+    return run_id
+
+
+@pytest.mark.asyncio
+async def test_the_resumed_one_off_continues_its_session_on_the_same_row(task, monkeypatch):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    runlog.RunLog(run_id).append(["> Bash(before the pause)"])
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(
+        ok=True, session_id="s-2", cost_usd=2.0, num_turns=9, result_text="done, and here is why",
+    ))
+
+    assert worker.resume_run(db.get_run(run_id)) is True
+    await worker._inflight[run_id]
+
+    assert seen["resume_session"] == "s-1"
+    assert "Resumed after the usage window" in seen["prompt"]
+    # The one-off wake, not the project one: there is no report file here, and
+    # what it prints is the reply.
+    assert "StructuredOutput" not in seen["prompt"]
+    assert "your reply on the task page" in seen["prompt"]
+    run = db.get_run(run_id)
+    assert run["status"] == "ok"
+    assert run["cost_usd"] == pytest.approx(11.3 + 2.0)
+    assert run["num_turns"] == 71 + 9
+    assert _oneoff_messages(task["id"])[-1] == "done, and here is why"
+    # The thread, not a journal, is where this task's person is told it woke.
+    assert any("resumed after" in m for m in _oneoff_messages(task["id"]))
+    # One row, one log: the turns from before the pause are still in it.
+    text, _ = runlog.read_log(run_id)
+    assert "before the pause" in text
+    assert [e["decision"] for e in db.midrun_events_for_run(run_id)] == \
+        [limitpause.PAUSED, limitpause.RESUMED]
+    # The forked session is the task's session now, so the next message lands
+    # in the conversation that actually has the work in it.
+    assert db.get_oneoff(task["id"])["cli_session_id"] == "s-2"
+
+
+def test_a_paused_one_off_holds_its_task(task, monkeypatch):
+    _pause_oneoff_now(task["id"], datetime.now(timezone.utc) + timedelta(hours=1))
+    assert db.oneoff_busy(task["id"]) is True
+    assert db.oneoff_running(task["id"]) is False
+    # A message typed during the hold does not start a second agent in the
+    # same workspace: it waits, exactly as it waits for a run that is mid-turn.
+    db.add_oneoff_message(task["id"], "wes", "one more thing")
+    assert worker.spawn_oneoff(task["id"]) is None
+    assert _pending(task["id"]) == ["one more thing"]
+
+
+@pytest.mark.asyncio
+async def test_a_message_typed_during_the_hold_runs_once_the_woken_run_settles(task, monkeypatch):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    db.add_oneoff_message(task["id"], "wes", "one more thing")
+    spawned: list[int] = []
+    monkeypatch.setattr(worker, "spawn_oneoff", lambda tid: spawned.append(tid))
+    seen = _fake_run(monkeypatch, agent_runner.RunResult(ok=True, session_id="s-2", result_text="ok"))
+
+    worker.resume_run(db.get_run(run_id))
+    await worker._inflight[run_id]
+
+    # The resumed session is handed the wake, not the new message - that one
+    # is still queued, and starts the next run now that this one has settled.
+    assert "one more thing" not in seen["prompt"]
+    assert _pending(task["id"]) == ["one more thing"]
+    assert spawned == [task["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_one_off_woken_too_often_settles_as_the_error_it_used_to_be(task, monkeypatch):
+    run_id = db.create_run(None, "oneoff", "opus", oneoff_id=task["id"])
+    for _ in range(limitpause.MAX_RESUMES):
+        db.add_hook_event(run_id, "midrun", "limit", limitpause.RESUMED, "woken")
+    _fake_run(monkeypatch, _limited())
+    await worker.run_oneoff_task(task["id"], run_id, "opus")
+    run = db.get_run(run_id)
+    assert run["status"] == "error"
+    assert "Rate limited" in run["summary"]
+    assert "Send your message again" in _oneoff_messages(task["id"])[-1]
+
+
+def test_a_paused_one_off_whose_task_is_gone_settles_rather_than_waiting_forever(task):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    db.set_oneoff_status(task["id"], "archived")
+    assert worker.resume_run(db.get_run(run_id)) is False
+    run = db.get_run(run_id)
+    assert run["status"] == "error"
+    assert "archived" in run["summary"]
+
+
+def test_a_busy_task_workspace_keeps_the_one_off_paused(task, monkeypatch):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    monkeypatch.setattr(worker.worklock, "is_busy", lambda ws: True)
+    assert worker.resume_oneoff_run(db.get_run(run_id)) is False
+    assert db.get_run(run_id)["status"] == "paused"
+
+
+@pytest.mark.asyncio
+async def test_the_tick_wakes_a_due_one_off(task, monkeypatch):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) - timedelta(minutes=1))
+    _fake_run(monkeypatch, agent_runner.RunResult(ok=True, session_id="s-2", result_text="ok"))
+    await worker._resume_paused_runs()
+    assert db.get_run(run_id)["status"] == "running"
+    await worker._inflight[run_id]
+    assert db.get_run(run_id)["status"] == "ok"
+
+
+def test_stopping_a_paused_one_off_says_so_in_the_thread(task):
+    run_id = _pause_oneoff_now(task["id"], datetime.now(timezone.utc) + timedelta(hours=1))
+    assert worker.cancel_run(run_id) == "cancelled"
+    assert db.get_run(run_id)["status"] == "cancelled"
+    assert "will not come back" in _oneoff_messages(task["id"])[-1]
+    assert db.oneoff_busy(task["id"]) is False
+
+
+def test_undelivering_touches_only_the_ids_it_is_given(task):
+    db.add_oneoff_message(task["id"], "wes", "second")
+    ids = [m["id"] for m in db.pending_oneoff_messages(task["id"])]
+    db.mark_oneoff_delivered(ids)
+    assert _pending(task["id"]) == []
+    db.undeliver_oneoff_messages([])
+    assert _pending(task["id"]) == []
+    db.undeliver_oneoff_messages(ids[:1])
+    assert _pending(task["id"]) == ["Fix the cron mail on testhost\n\nIt stopped on Sunday."]
+
+
+def test_the_task_page_says_it_is_held_and_offers_stop(task):
+    from app.main import app
+
+    run_id = _pause_oneoff_now(task["id"], datetime(2026, 9, 8, 19, 30, tzinfo=timezone.utc))
+    with TestClient(app) as client:
+        page = client.get(f"/tasks/{task['id']}").text
+        listing = client.get("/tasks").text
+    assert 'id="oneoff-hold"' in page
+    assert "Paused, not stopped" in page
+    assert "19:30 UTC" in page
+    assert f'action="/run/{run_id}/cancel"' in page
+    assert "held for the usage window" in listing
+
+
+def test_the_task_page_of_an_ordinary_task_has_no_hold(task):
+    from app.main import app
+
+    run_id = db.create_run(None, "oneoff", "opus", oneoff_id=task["id"])
+    db.finish_run(run_id, "ok", "s", 1.0, 2, "fine")
+    with TestClient(app) as client:
+        assert 'id="oneoff-hold"' not in client.get(f"/tasks/{task['id']}").text
