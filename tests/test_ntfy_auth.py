@@ -210,7 +210,10 @@ def test_the_notifications_section_declares_the_token(temp_data_dir):
         html = client.get("/settings").text
     declared = [line for line in html.splitlines() if 'name="_fields"' in line]
     assert any("ntfy_token" in line for line in declared)
-    assert 'id="ntfy_token"' in html
+    # And the control has to POST under that exact name. A field that is
+    # declared but rendered under a different `name` is the silent-303 failure
+    # this whole mechanism exists to stop, one layer further down.
+    assert 'id="ntfy_token" name="ntfy_token"' in html
 
 
 def test_the_token_round_trips_through_the_settings_page(temp_data_dir):

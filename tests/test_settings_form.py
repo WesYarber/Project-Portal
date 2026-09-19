@@ -405,3 +405,27 @@ def test_access_definitions_sit_behind_info_dots(client, monkeypatch):
     assert "hides the microphone" in _bubble_for(html, "plain http")
     assert "voice memos record here" in _bubble_for(html, ">https<")
     assert "packet filter" in _bubble_for(html, "which machines can reach it")
+
+
+def test_every_declared_field_is_rendered_under_its_own_name(client):
+    """A section's hidden `_fields` list is the whole of what it may write, and
+    `apply` reads a value by that exact key. So a control rendered under any
+    other `name` is written by nobody and the page still answers 303 - the same
+    silent-save failure this module's docstring describes, moved one layer down
+    from the handler into the markup.
+
+    Found by mutating the ntfy publish-token input's `name` to `ntfy_tokens`:
+    every test of that field still passed, because they all posted the form by
+    hand rather than reading it off the page.
+    """
+    import re
+
+    html = client.get("/settings").text
+    rendered = set(re.findall(r'name="([a-z0-9_]+)"', html))
+    missing = {
+        key
+        for declaration in re.findall(r'name="_fields" value="([^"]+)"', html)
+        for key in declaration.split(",")
+        if key not in rendered
+    }
+    assert not missing
