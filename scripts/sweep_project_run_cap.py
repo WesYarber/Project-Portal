@@ -78,61 +78,56 @@ MUTATIONS = [
      "a fresh install seeds the cap off"),
 
     # --- whose number wins ---------------------------------------------------
+    # These four decisions moved out of project_at_daily_cap and into
+    # effective_project_cap when the three-state cap landed (0 = uncapped, a
+    # number = binding, NULL = inherit). Same decisions, so the mutations follow
+    # them rather than keep proving a shape of the code that is gone.
     (WK,
-     "    if not cap:\n"
-     "        if pacing.spending_down():\n"
-     "            return False\n"
-     "        cap = db.default_project_max_runs()",
-     "    cap = db.default_project_max_runs()",
+     "    if cap is not None:\n"
+     "        return max(0, int(cap))\n",
+     "",
      "the project's own cap is ignored and the default always used"),
 
     (WK,
-     "    if not cap:\n"
-     "        if pacing.spending_down():\n"
-     "            return False\n"
-     "        cap = db.default_project_max_runs()",
-     "    if not cap:\n"
-     "        if pacing.spending_down():\n"
-     "            return False\n"
-     "        cap = db.default_project_max_runs()\n"
-     "    cap = min(int(cap), db.default_project_max_runs() or 10**6)",
+     "        return max(0, int(cap))",
+     "        return min(max(0, int(cap)), db.default_project_max_runs() or 10**6)",
      "a project's own HIGHER cap is clamped by the default, losing the escape hatch"),
 
     # --- the spend-down carve-out -------------------------------------------
     (WK,
-     "    if not cap:\n"
-     "        if pacing.spending_down():\n"
-     "            return False\n"
-     "        cap = db.default_project_max_runs()",
+     "    if cap is not None:\n"
+     "        return max(0, int(cap))\n"
      "    if pacing.spending_down():\n"
-     "        return False\n"
-     "    if not cap:\n"
-     "        cap = db.default_project_max_runs()",
+     "        return 0",
+     "    if pacing.spending_down():\n"
+     "        return 0\n"
+     "    if cap is not None:\n"
+     "        return max(0, int(cap))",
      "a spend-down lifts a cap Wes set by hand, not just the default"),
 
     (WK,
-     "    if not cap:\n"
-     "        if pacing.spending_down():\n"
-     "            return False\n"
-     "        cap = db.default_project_max_runs()",
-     "    if not cap:\n"
-     "        cap = db.default_project_max_runs()",
+     "    if pacing.spending_down():\n"
+     "        return 0\n"
+     "    return db.default_project_max_runs()",
+     "    return db.default_project_max_runs()",
      "a spend-down stops lifting the default, so an expiring window goes unspent"),
 
     # --- the comparison ------------------------------------------------------
     (WK,
-     '    return db.count_runs_today(project["id"]) >= int(cap)',
-     '    return db.count_runs_today(project["id"]) > int(cap)',
+     '    return db.count_runs_today(project["id"]) >= cap',
+     '    return db.count_runs_today(project["id"]) > cap',
      "off by one: a project gets one run more than its cap"),
 
     (WK,
-     '    return db.count_runs_today(project["id"]) >= int(cap)',
+     '    return db.count_runs_today(project["id"]) >= cap',
      "    return False",
      "the cap is computed and then never applied"),
 
     (WK,
-     "    if not cap:  # 0 either way means no cap at all\n        return False",
-     "    pass",
+     "    cap = effective_project_cap(project)\n"
+     "    if not cap:\n"
+     "        return False",
+     "    cap = effective_project_cap(project)",
      "0 stops meaning off, so it becomes a cap of zero runs"),
 
     # --- what the scheduler does with it -------------------------------------
@@ -160,6 +155,17 @@ MUTATIONS = [
      "",
      "the field vanishes from the settings form, so the number cannot be changed"),
 ]
+
+
+def anchors() -> list[tuple[Path, str]]:
+    """Every (file, exact string) this sweep mutates, for tests/test_sweep_anchors.py.
+
+    An anchor is a literal copied out of the file under test, so ordinary
+    refactoring of that file rots it. The sweep itself only notices when it is
+    run, months apart, and then prints SKIP - which the score line reads back
+    as an ordinary survivor.
+    """
+    return [(path, find) for path, find, _repl, _label in MUTATIONS]
 
 # The test files that own these lines. Running these instead of the whole suite
 # is a deliberate trade, and the same one commits b1dcd35 and 87dfafc made: a
@@ -211,10 +217,19 @@ def main() -> int:
     print("baseline green\n", flush=True)
 
     caught = 0
+    # A skipped mutation never ran, so it is a broken sweep and not a lower
+    # score. Counted, named at the end and carried out in the exit code, because
+    # "39/42 caught" reads as three survivors either way.
+    skipped: list[str] = []
     for i, (path, find, replace, label) in enumerate(MUTATIONS, 1):
         text = ORIGINAL[path]
         if find not in text:
             print(f"{i:2}. SKIP (pattern missing) - {label}", flush=True)
+            skipped.append(label)
+            continue
+        if text.count(find) != 1:
+            print(f"{i:2}. SKIP (pattern appears {text.count(find)}x) - {label}", flush=True)
+            skipped.append(label)
             continue
         path.write_text(text.replace(find, replace, 1), encoding="utf-8")
         rc, failures = run_suite()
@@ -226,9 +241,11 @@ def main() -> int:
             print(f"{i:2}. caught   - {label}", flush=True)
             print(f"      by {', '.join(sorted(set(failures))[:3])}", flush=True)
 
-    print(f"\n{caught}/{len(MUTATIONS)} caught", flush=True)
+    print(f"\n{caught}/{len(MUTATIONS)} caught, {len(skipped)} skipped", flush=True)
+    for label in skipped:
+        print(f"  skipped (anchor no longer holds): {label}", flush=True)
     print("SWEEP COMPLETE", flush=True)
-    return 0
+    return 1 if skipped or caught < len(MUTATIONS) else 0
 
 
 if __name__ == "__main__":

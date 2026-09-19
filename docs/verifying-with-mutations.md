@@ -302,3 +302,45 @@ just somewhere else. A `WRONG OWNER` verdict is therefore worth reading as
 "where did this actually land?" before it is read as "which test is weak?" —
 anchor a pattern on something structural (a closing quote and semicolon, a line
 ending) rather than on a substring that could sit inside a longer literal.
+
+## 10. An anchor comes loose, and the score line still reads as a number
+
+A sweep anchors each mutation on an exact string copied out of the code under
+test. Every sweep here mutates with `text.replace(find, repl, 1)` and skips what
+it cannot find:
+
+```python
+if find not in text:
+    print(f"{i:2}. SKIP (pattern missing) - {label}", flush=True)
+    continue
+```
+
+So when that code is later refactored, the mutation is silently dropped from the
+numerator and the sweep prints `39/42 caught` — which reads like three
+survivors, not like three mutations that never ran. Nobody re-reads a SKIP line
+months after the sweep that printed it.
+
+The failure mode is **self-inflicted by successful work**: a sweep proving a fix
+is rotted by the cleanup that fix made possible. Three of this repo's eight
+sweeps had rotted this way when the check below was first run, ten anchors in
+all: `sweep_project_run_cap.py` had seven, because the daily-cap decision it
+proves was later extracted into `worker.effective_project_cap`;
+`sweep_quiet_and_recency.py` had two, because the rail's `max()` moved into
+`db.worked_on_at`; `sweep_note_runs_now.py` had one, because the button's title
+grew a third branch.
+
+**Every sweep therefore exposes an `anchors()`** returning `[(file, exact
+string)]` in its own tuple order (the eight here use four different orders), and
+`tests/test_sweep_anchors.py` asks all of them on every test run: each anchor
+must occur **exactly once** in the file it names. Once, not at-least-once — a
+duplicated anchor mutates the first match, so the sweep reaches a confident
+verdict about a line it did not mean (§6 is the same trap arriving by a
+different road).
+
+Two consequences for writing a sweep here:
+
+- **Keep the executing body behind `main()`.** The test imports each sweep to
+  ask it for its anchors, and a sweep that still ran at module level would start
+  a real sweep inside the test run and leave a mutation in the tree.
+- **A sweep that skips exits non-zero.** A skip is now a broken sweep rather
+  than a slightly lower score, and the tally says so before the exit code does.

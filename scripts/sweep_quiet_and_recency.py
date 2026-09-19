@@ -171,22 +171,37 @@ MUTATIONS = [
      "            ) WHERE ts IS NOT NULL GROUP BY project_id",
      "MAX becomes a filter (EQUIVALENT - expected to escape)"),
 
-    (SB,
-     '            "since": max(\n'
-     '                str(activity.get(pid) or ""),\n'
-     '                str(db._row_get(project, "updated_at", "") or ""),  # noqa: SLF001\n'
-     "            ),",
-     '            "since": str(db._row_get(project, "updated_at", "") or ""),  # noqa: SLF001',
+    # The max itself moved out of sidebar.py into db.worked_on_at on 2026-08-30,
+    # so that the rail, the board and /everyone cannot rank the same projects
+    # differently. Same decision, one definition - so these two mutations follow
+    # it rather than keep proving a line that is gone.
+    (DB,
+     '    return max(\n'
+     '        str(activity.get(int(project["id"])) or ""),\n'
+     '        str(_row_get(project, "updated_at", "") or ""),\n'
+     "    )",
+     '    return str(_row_get(project, "updated_at", "") or "")',
      "the rail goes back to sorting on updated_at (the reported bug)"),
 
-    (SB,
-     '            "since": max(\n'
-     '                str(activity.get(pid) or ""),\n'
-     '                str(db._row_get(project, "updated_at", "") or ""),  # noqa: SLF001\n'
-     "            ),",
-     '            "since": str(activity.get(pid) or ""),',
+    (DB,
+     '    return max(\n'
+     '        str(activity.get(int(project["id"])) or ""),\n'
+     '        str(_row_get(project, "updated_at", "") or ""),\n'
+     "    )",
+     '    return str(activity.get(int(project["id"])) or "")',
      "a project with no runs and no journal loses its floor"),
 ]
+
+
+def anchors() -> list[tuple[Path, str]]:
+    """Every (file, exact string) this sweep mutates, for tests/test_sweep_anchors.py.
+
+    An anchor is a literal copied out of the file under test, so ordinary
+    refactoring of that file rots it. The sweep itself only notices when it is
+    run, months apart, and then prints SKIP - which the score line reads back
+    as an ordinary survivor.
+    """
+    return [(path, find) for path, find, _repl, _label in MUTATIONS]
 
 # The test files that own these lines. Running these instead of the whole suite
 # is a deliberate trade, and the same one commit b1dcd35 made: 21 mutations
@@ -238,10 +253,19 @@ def main() -> int:
     print("baseline green\n", flush=True)
 
     caught = 0
+    # A skipped mutation never ran, so it is a broken sweep and not a lower
+    # score. Counted, named at the end and carried out in the exit code, because
+    # "39/42 caught" reads as three survivors either way.
+    skipped: list[str] = []
     for i, (path, find, replace, label) in enumerate(MUTATIONS, 1):
         text = ORIGINAL[path]
         if find not in text:
             print(f"{i:2}. SKIP (pattern missing) - {label}", flush=True)
+            skipped.append(label)
+            continue
+        if text.count(find) != 1:
+            print(f"{i:2}. SKIP (pattern appears {text.count(find)}x) - {label}", flush=True)
+            skipped.append(label)
             continue
         path.write_text(text.replace(find, replace, 1), encoding="utf-8")
         rc, failures = run_suite()
@@ -253,9 +277,11 @@ def main() -> int:
             print(f"{i:2}. caught   - {label}", flush=True)
             print(f"      by {', '.join(sorted(set(failures))[:3])}", flush=True)
 
-    print(f"\n{caught}/{len(MUTATIONS)} caught", flush=True)
+    print(f"\n{caught}/{len(MUTATIONS)} caught, {len(skipped)} skipped", flush=True)
+    for label in skipped:
+        print(f"  skipped (anchor no longer holds): {label}", flush=True)
     print("SWEEP COMPLETE", flush=True)
-    return 0
+    return 1 if skipped or caught < len(MUTATIONS) else 0
 
 
 if __name__ == "__main__":

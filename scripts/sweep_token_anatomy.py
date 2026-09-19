@@ -20,17 +20,12 @@ ROOT = Path(__file__).resolve().parent.parent
 USAGE = ROOT / "app" / "usage.py"
 TESTS = "tests/test_breakdown.py"
 
-if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode != 0:
-    sys.exit("REFUSING: tree is dirty. A sweep must start from a committed tree.")
 
 ORIGINAL = USAGE.read_text(encoding="utf-8")
 
 def restore():
     USAGE.write_text(ORIGINAL, encoding="utf-8")
 
-atexit.register(restore)
-for sig in (signal.SIGTERM, signal.SIGINT):
-    signal.signal(sig, lambda *_: sys.exit(f"killed by signal"))
 
 # (label, find, replace). Each is one decision the code makes.
 MUTATIONS = [
@@ -72,22 +67,49 @@ MUTATIONS = [
      "if False:\n        return 0"),
 ]
 
-caught = escaped = skipped = 0
-for label, find, repl in MUTATIONS:
-    if find not in ORIGINAL:
-        print(f"SKIP (pattern missing): {label}", flush=True)
-        skipped += 1
-        continue
-    USAGE.write_text(ORIGINAL.replace(find, repl, 1), encoding="utf-8")
-    r = subprocess.run([sys.executable, "-m", "pytest", TESTS, "-qx", "--no-header", "-p", "no:randomly"],
-                       cwd=ROOT, capture_output=True, text=True)
-    if r.returncode == 0:
-        print(f"ESCAPED: {label}", flush=True)
-        escaped += 1
-    else:
-        print(f"caught:  {label}", flush=True)
-        caught += 1
-    restore()
 
-print(f"\n{caught} caught, {escaped} escaped, {skipped} skipped, of {len(MUTATIONS)}")
-print("SWEEP COMPLETE", flush=True)
+def anchors() -> list[tuple[Path, str]]:
+    """Every (file, exact string) this sweep mutates, for tests/test_sweep_anchors.py.
+
+    An anchor is a literal copied out of the file under test, so ordinary
+    refactoring of that file rots it. The sweep itself only notices when it is
+    run, months apart, and then prints SKIP - which the score line reads back
+    as an ordinary survivor.
+    """
+    return [(USAGE, find) for _label, find, _repl in MUTATIONS]
+
+
+def main() -> int:
+    if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode != 0:
+        sys.exit("REFUSING: tree is dirty. A sweep must start from a committed tree.")
+    atexit.register(restore)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: sys.exit("killed by signal"))
+
+    caught = escaped = skipped = 0
+    for label, find, repl in MUTATIONS:
+        if ORIGINAL.count(find) != 1:
+            # A skipped mutation never ran. Twice is as broken as never: the
+            # replace below takes the first match, so the sweep would reach a
+            # confident verdict about a line it did not mean.
+            print(f"SKIP (anchor occurs {ORIGINAL.count(find)}x): {label}", flush=True)
+            skipped += 1
+            continue
+        USAGE.write_text(ORIGINAL.replace(find, repl, 1), encoding="utf-8")
+        r = subprocess.run([sys.executable, "-m", "pytest", TESTS, "-qx", "--no-header", "-p", "no:randomly"],
+                           cwd=ROOT, capture_output=True, text=True)
+        if r.returncode == 0:
+            print(f"ESCAPED: {label}", flush=True)
+            escaped += 1
+        else:
+            print(f"caught:  {label}", flush=True)
+            caught += 1
+        restore()
+
+    print(f"\n{caught} caught, {escaped} escaped, {skipped} skipped, of {len(MUTATIONS)}")
+    print("SWEEP COMPLETE", flush=True)
+    return 1 if (escaped or skipped) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

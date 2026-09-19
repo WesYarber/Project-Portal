@@ -266,6 +266,17 @@ MUTATIONS: list[tuple[str, Path, str, str, str]] = [
 ]
 
 
+def anchors() -> list[tuple[Path, str]]:
+    """Every (file, exact string) this sweep mutates, for tests/test_sweep_anchors.py.
+
+    An anchor is a literal copied out of the file under test, so ordinary
+    refactoring of that file rots it. The sweep itself only notices when it is
+    run, months apart, and then prints SKIP - which the score line reads back
+    as an ordinary survivor.
+    """
+    return [(path, find) for _label, path, find, _repl, _owner in MUTATIONS]
+
+
 def run_tests() -> tuple[bool, list[str], str]:
     """(pytest produced a summary, the names it reported as failing, raw tail).
 

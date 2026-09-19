@@ -33,8 +33,6 @@ TESTS = [
     "tests/test_state_model.py",
 ]
 
-if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode != 0:
-    sys.exit("REFUSING: tree is dirty. A sweep must start from a committed tree.")
 
 ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (WK, MN, TP, JS)}
 
@@ -44,9 +42,6 @@ def restore():
         path.write_text(text, encoding="utf-8")
 
 
-atexit.register(restore)
-for sig in (signal.SIGTERM, signal.SIGINT):
-    signal.signal(sig, lambda *_: sys.exit("killed by signal"))
 
 # (path, label, find, replace). Each is one decision the code makes.
 MUTATIONS = [
@@ -100,8 +95,11 @@ MUTATIONS = [
      "        queue note\n",
      "        queue &amp; don't run\n"),
     (TP, "the green button's title no longer says it will run",
+     # The else branch grew a third case when mid-run delivery landed; the
+     # mutation is still about the note_runs_now half saying it will run.
      "title=\"{{ 'Add this note and start an agent run on it now' if note_runs_now\n"
-     "                        else 'Add this note for the agent to read on its next run' }}\"",
+     "                        else ('Add this note for the next run - use deliver mid-run to hand it to the agent already working' if agent_hears\n"
+     "                        else 'Add this note for the agent to read on its next run') }}\"",
      'title="Add this note"'),
     # --- app/static/app.js: the phone menu ---
     (JS, "the menu goes back to a hardcoded pair, offering a button that is not there",
@@ -114,25 +112,52 @@ MUTATIONS = [
      '      li.textContent = "an option";'),
 ]
 
-caught = escaped = skipped = 0
-for path, label, find, repl in MUTATIONS:
-    text = ORIGINAL[path]
-    if find not in text:
-        print(f"SKIP (pattern missing): {label}", flush=True)
-        skipped += 1
-        continue
-    path.write_text(text.replace(find, repl, 1), encoding="utf-8")
-    r = subprocess.run(
-        [sys.executable, "-m", "pytest", *TESTS, "-qx", "--no-header", "-p", "no:randomly"],
-        cwd=ROOT, capture_output=True, text=True,
-    )
-    if r.returncode == 0:
-        print(f"ESCAPED: {label}", flush=True)
-        escaped += 1
-    else:
-        print(f"caught:  {label}", flush=True)
-        caught += 1
-    restore()
 
-print(f"\n{caught} caught, {escaped} escaped, {skipped} skipped, of {len(MUTATIONS)}")
-print("SWEEP COMPLETE", flush=True)
+def anchors() -> list[tuple[Path, str]]:
+    """Every (file, exact string) this sweep mutates, for tests/test_sweep_anchors.py.
+
+    An anchor is a literal copied out of the file under test, so ordinary
+    refactoring of that file rots it. The sweep itself only notices when it is
+    run, months apart, and then prints SKIP - which the score line reads back
+    as an ordinary survivor.
+    """
+    return [(path, find) for path, _label, find, _repl in MUTATIONS]
+
+
+def main() -> int:
+    if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode != 0:
+        sys.exit("REFUSING: tree is dirty. A sweep must start from a committed tree.")
+    atexit.register(restore)
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(sig, lambda *_: sys.exit("killed by signal"))
+
+    caught = escaped = skipped = 0
+    for path, label, find, repl in MUTATIONS:
+        text = ORIGINAL[path]
+        if text.count(find) != 1:
+            # A skipped mutation never ran. Twice is as broken as never: the
+            # replace below takes the first match, so the sweep would reach a
+            # confident verdict about a line it did not mean.
+            print(f"SKIP (anchor occurs {text.count(find)}x): {label}", flush=True)
+            skipped += 1
+            continue
+        path.write_text(text.replace(find, repl, 1), encoding="utf-8")
+        r = subprocess.run(
+            [sys.executable, "-m", "pytest", *TESTS, "-qx", "--no-header", "-p", "no:randomly"],
+            cwd=ROOT, capture_output=True, text=True,
+        )
+        if r.returncode == 0:
+            print(f"ESCAPED: {label}", flush=True)
+            escaped += 1
+        else:
+            print(f"caught:  {label}", flush=True)
+            caught += 1
+        restore()
+
+    print(f"\n{caught} caught, {escaped} escaped, {skipped} skipped, of {len(MUTATIONS)}")
+    print("SWEEP COMPLETE", flush=True)
+    return 1 if (escaped or skipped) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
