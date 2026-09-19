@@ -433,14 +433,12 @@ def idle_reason() -> str:
 
 async def worker_loop() -> None:
     log.info("Worker loop started")
-    # Whatever the last process was still holding when it went down. Here and
-    # not in the app's startup handler because this is the only place that
-    # runs once per *service* start and never in a smoke test or an ad-hoc
-    # `python -c` against the live database. See app/manualqueue.py.
-    try:
-        manual_queue.restore()
-    except Exception:  # noqa: BLE001 - never let bookkeeping stop the loop
-        log.exception("Could not restore the manual run queue")
+    # Whatever the last process was still holding when it went down comes
+    # back by itself: `manual_queue` reloads from the database the first time
+    # anything touches it, which on this path is the first tick
+    # (app/manualqueue.py). There was an explicit `restore()` here for one
+    # revision; the mutation sweep proved no test could tell it from its
+    # absence, which is the definition of a line that is already covered.
     while True:
         try:
             await _tick()

@@ -945,6 +945,23 @@ def test_a_run_whose_window_has_reopened_can_be_woken(project):
     assert limitpause.wake_blocked(db.get_run(run_id)) == ""
 
 
+def test_the_button_and_the_tick_agree_at_the_exact_boundary(project):
+    """`due` wakes a run at `until <= now`, so the button must be live at
+    `until == now` too. Off by one instant in the other direction and a run
+    the tick is about to pick up shows a grayed-out button explaining that it
+    cannot be resumed yet."""
+    # Whole seconds: the hold record is written with timespec="seconds", so
+    # a sub-second offset is not a boundary the stored value even has.
+    until = (datetime.now(timezone.utc) + timedelta(hours=1)).replace(microsecond=0)
+    run_id = _pause_now(project, until)
+    row = db.get_run(run_id)
+    assert [r["id"] for r in limitpause.due(until)] == [run_id]
+    assert limitpause.wake_blocked(row, now=until) == ""
+    just_before = until - timedelta(seconds=1)
+    assert limitpause.due(just_before) == []
+    assert limitpause.wake_blocked(row, now=just_before) != ""
+
+
 def test_a_run_that_is_not_paused_cannot_be_woken(project):
     run_id = db.create_run(project["id"], "build", "opus")
     db.finish_run(run_id, "ok", "s-1", 1.0, 2, "done")
@@ -1052,6 +1069,11 @@ async def test_resume_all_wakes_the_due_ones_and_leaves_the_rest(monkeypatch):
         for p in due_projects[:2]
     ]
     not_due = _pause_now(due_projects[2], datetime.now(timezone.utc) + timedelta(hours=1))
+    # The cap is lifted out of the way deliberately: at the test database's
+    # default it alone would have held the third run back, and the sweep
+    # caught exactly that - the window guard could be deleted and this test
+    # still passed.
+    monkeypatch.setattr(worker.pacing, "parallel_cap", lambda n: 99)
     _fake_run(monkeypatch, agent_runner.RunResult(
         ok=True, session_id="s-2", cost_usd=1.0, num_turns=2, result_text="done",
     ))
@@ -1148,6 +1170,27 @@ def test_the_activity_button_is_grayed_when_nothing_is_due(project):
         page = client.get("/activity").text
     assert 'id="wake-all" disabled' in page
     assert 'action="/runs/wake-paused"' not in page
+
+
+def test_the_activity_page_hides_a_held_run_on_someone_elses_project(project):
+    """The hold card is filtered by the same membership rule the rest of the
+    board is: a run held on a project you are not on is not yours to see, let
+    alone to wake."""
+    from app import people
+    from app.main import app
+
+    karli = people.add(name="Karli")
+    hers = db.create_project("Hers", description="x", stage="active",
+                             build_approved=True, slug="hers")
+    people.set_members(hers["id"], [karli])
+    mine = _pause_now(project, datetime.now(timezone.utc) - timedelta(minutes=1))
+    theirs = _pause_now(hers, datetime.now(timezone.utc) - timedelta(minutes=1))
+
+    with TestClient(app) as client:
+        page = client.get("/activity").text
+    assert f'href="/run/{mine}"' in page
+    assert f'href="/run/{theirs}"' not in page
+    assert "resume 1 now" in page
 
 
 def test_the_activity_page_has_no_hold_card_when_nothing_is_paused(project):

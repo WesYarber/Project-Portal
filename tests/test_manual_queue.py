@@ -78,13 +78,19 @@ async def test_a_run_queued_before_the_restore_lands_is_not_lost(project):
     read back its own overwrite."""
     other = db.create_project("Other", description="x", stage="active",
                               build_approved=True, slug="other")
+    third = db.create_project("Third", description="x", stage="active",
+                              build_approved=True, slug="third")
+    # TWO saved ids, not one: with a single saved id an assignment and an
+    # append leave the same queue, and the sweep caught the weaker version of
+    # this test passing against a `restore` that threw the rest away.
     saved = manualqueue.ManualQueue()
     await saved.put(project["id"])
+    await saved.put(third["id"])
 
     after = manualqueue.ManualQueue()
     await after.put(other["id"])       # the press lands first...
-    assert after.restore() == 0        # ...and the loop's restore is a no-op
-    assert after.ids() == [project["id"], other["id"]]
+    assert after.restore() == 0        # ...and a later restore is a no-op
+    assert after.ids() == [project["id"], third["id"], other["id"]]
 
 
 @pytest.mark.asyncio
@@ -141,18 +147,15 @@ async def test_a_database_that_will_not_take_the_write_does_not_break_the_queue(
 
 
 @pytest.mark.asyncio
-async def test_the_worker_restores_on_its_first_loop(project, monkeypatch):
-    """The restore hangs off `worker_loop`, which is the one thing that runs
-    exactly once per service start - never in a smoke test, never in an
-    ad-hoc `python -c` against the live database."""
+async def test_the_worker_sees_the_restored_queue_on_its_first_tick(project, monkeypatch):
+    """What actually has to hold: the first thing the worker asks the queue
+    already knows about the run the previous process was holding. There is no
+    explicit restore step to forget - the queue reloads itself on first touch,
+    so `_start_one` checking `empty()` is enough."""
     saved = manualqueue.ManualQueue()
     await saved.put(project["id"])
-    worker.manual_queue = manualqueue.ManualQueue()
+    fresh = manualqueue.ManualQueue()
+    monkeypatch.setattr(worker, "manual_queue", fresh)
 
-    async def one_tick():
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(worker, "_tick", one_tick)
-    with pytest.raises(asyncio.CancelledError):
-        await worker.worker_loop()
-    assert worker.manual_queue.ids() == [project["id"]]
+    assert fresh.empty() is False
+    assert await fresh.get() == project["id"]
