@@ -62,6 +62,7 @@ from app import (
     quickreplies,
     quiet,
     quoting,
+    receipt,
     revert,
     rundiff,
     runlimit,
@@ -1803,14 +1804,17 @@ async def unlink_project(slug: str, other_id: int = Form(...)) -> RedirectRespon
     return RedirectResponse(url=f"/project/{slug}#related", status_code=303)
 
 
-async def _start_parallel(project) -> None:
+async def _start_parallel(project) -> bool:
     """Start a parallel run and, when it is refused, say so where Wes will see
     it. A press that produced nothing and explained nothing is the failure he
     reports most often - so the refusal goes in the journal, which is on the
-    page he lands back on."""
+    page he lands back on. Returns whether a run actually started, which is
+    the other half of the same rule: the receipt on the way out must not claim
+    a run the journal is simultaneously explaining away (app/receipt.py)."""
     started, why = await worker.start_parallel_run(project)
     if not started and why:
         db.add_journal(project["id"], "system", "status", why)
+    return bool(started)
 
 
 @app.post("/project/{slug}/note")
@@ -1843,13 +1847,19 @@ async def add_note(
         # An empty box with "and run" pressed still means "go" - it is the same
         # gesture as the run button, and refusing it would look like the button
         # is broken rather than like the note was empty.
+        # `ran` is only read for the branches whose outcome is in doubt: a
+        # manual run always queues, so note_line does not consult it there.
+        ran = False
         if then == "run":
             if db.display_state(project) != "active":
                 db.set_user_state(project, "active")
             await worker.queue_manual_run(project["id"])
         elif then == "parallel":
-            await _start_parallel(project)
-        return RedirectResponse(url=f"/project/{slug}", status_code=303)
+            ran = await _start_parallel(project)
+        return receipt.Receipt(
+            f"/project/{slug}",
+            receipt.note_line(slug, filed=False, then=then, ran=ran),
+        )
 
     stored: list[dict] = []
     errors: list[str] = []
@@ -1905,6 +1915,7 @@ async def add_note(
     # the common case and it was three controls in three different places.
     # Ordering matters: the note is already in the journal above, so the run
     # queued here cannot start without it.
+    ran = False
     if then == "run":
         if db.display_state(project) != "active":
             db.set_user_state(project, "active")
@@ -1920,7 +1931,7 @@ async def add_note(
         if audio_ids:
             transcribe.kick(audio_ids, after=_start_parallel(project))
         else:
-            await _start_parallel(project)
+            ran = await _start_parallel(project)
     elif then != "queue":
         # The plain green "add note": wake a put-down project (Wes's rule) and
         # start a run whenever one could start at all - see worker.note_arrived.
@@ -1933,10 +1944,25 @@ async def add_note(
         if audio_ids:
             transcribe.kick(audio_ids, after=worker.note_arrived(project))
         else:
-            await worker.note_arrived(project)
+            ran = await worker.note_arrived(project)
     elif audio_ids:
         transcribe.kick(audio_ids)
-    return RedirectResponse(url=f"/project/{slug}", status_code=303)
+    # The 303 carries a line saying which of those branches was taken. It is
+    # invisible to the browser that submitted the form and to `fetch`, both of
+    # which follow the redirect; it is the whole answer for an agent on
+    # another project posting this note with curl (app/receipt.py).
+    return receipt.Receipt(
+        f"/project/{slug}",
+        receipt.note_line(
+            slug,
+            filed=True,
+            files=len(stored),
+            rejected=len(errors),
+            then=then,
+            ran=ran,
+            transcribing=bool(audio_ids),
+        ),
+    )
 
 
 @app.post("/project/{slug}/note/{note_id}/edit")
