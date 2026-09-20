@@ -22,7 +22,6 @@ from fastapi.responses import (
     RedirectResponse,
     Response,
 )
-from fastapi.staticfiles import StaticFiles
 from starlette.templating import Jinja2Templates
 
 from app import (
@@ -80,6 +79,7 @@ from app import (
     transcribe,
     transcript,
     usage,
+    vendorstatic,
     verifydepth,
     webpush,
     worker,
@@ -269,7 +269,15 @@ async def service_worker() -> FileResponse:
     )
 
 
-app.mount("/static", StaticFiles(directory=str(config.BASE_DIR / "app" / "static")), name="static")
+# VersionedStatic rather than StaticFiles for one reason: files under
+# static/vendor/<name>-v<version>/ are served with a year-long immutable
+# Cache-Control, which is only safe because the version is in the directory
+# name. See app/vendorstatic.py.
+app.mount(
+    "/static",
+    vendorstatic.VersionedStatic(directory=str(config.BASE_DIR / "app" / "static")),
+    name="static",
+)
 
 templates = Jinja2Templates(directory=str(config.BASE_DIR / "app" / "templates"))
 # Self-modifying runs commit template + Python changes together, but only the

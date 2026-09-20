@@ -4,13 +4,27 @@
 
    Drop this one file into anything you build and the terminal-window styling
    comes with it: dark CRT palette, Fira Code, bracketed badges, the works.
-   No dependencies, no JS. Pair it with:
+   No dependencies, no JS. Pair it with the font, which this origin serves
+   itself - copy the whole directory next to this file and link both:
 
-     <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+     <link rel="stylesheet" href="vendor/fira-code-v27/font.css">
      <link rel="stylesheet" href="terminal-theme.css">
 
-   (Without the webfont it falls back to the system monospace and still looks
-   right.) A live gallery of every piece, with markup to copy, is served by
+   The bytes are at /static/vendor/fira-code-v27/ on the portal (a font.css
+   and seven .woff2 subsets). Take all of it: the url()s inside font.css are
+   relative, so the directory is one self-contained unit, and unicode-range
+   means a browser downloads only the subsets it has to render - dropping the
+   other six renders a non-Latin character as tofu with no error anywhere.
+   Keep the version in the directory name; that is what makes it safe to
+   serve immutable for a year, and an upgrade a new directory.
+
+   Do NOT link fonts.googleapis.com instead. That hands Google the visitor's
+   IP, user agent and the exact page URL before anything draws, makes their
+   outage your outage (a stylesheet is render-blocking), and forces two
+   third-party origins into your CSP. (Without any font file at all it falls
+   back to the system monospace and still looks right.)
+
+   A live gallery of every piece, with markup to copy, is served by
    the portal at /style, and the newest copy of this file is always at
    /static/terminal-theme.css.
 

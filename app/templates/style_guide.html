@@ -11,9 +11,14 @@
 <meta name="color-scheme" content="dark">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Dark terminal theme</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+{# Fira Code, served from this origin rather than fonts.googleapis.com. A
+   webfont <link> to Google hands them the visitor's IP, user agent and - in the
+   Referer - the exact page, before the page draws; makes their outage this
+   page's outage, since a stylesheet is render-blocking; and forces two
+   third-party origins into any CSP. Note the plain path with no ?v= : the
+   version is in the DIRECTORY name, which is what lets app/vendorstatic.py
+   serve it immutable for a year. An upgrade is a new directory, never an edit. #}
+<link rel="stylesheet" href="/static/vendor/fira-code-v27/font.css">
 <link rel="icon" type="image/svg+xml" sizes="any" href="{{ static_url('favicon.svg') }}">
 <link rel="stylesheet" href="{{ static_url('terminal-theme.css') }}">
 </head>
@@ -53,15 +58,24 @@
         <a class="btn go" href="/static/terminal-theme.css" download="terminal-theme.css">download terminal-theme.css</a>
       </p>
       <p class="small muted">Or fetch the newest copy any time from
-        <code>{{ request.url.scheme }}://{{ request.url.netloc }}/static/terminal-theme.css</code>.
-        Start a page from this skeleton:</p>
+        <code>{{ request.url.scheme }}://{{ request.url.netloc }}/static/terminal-theme.css</code>.</p>
+      <p class="small muted">The theme is set in <strong>Fira Code</strong>, and this
+        origin serves it &mdash; take the whole
+        <code>{{ request.url.scheme }}://{{ request.url.netloc }}/static/vendor/fira-code-v27/</code>
+        directory (a <code>font.css</code> and seven <code>.woff2</code> subsets) and keep it
+        intact: the <code>url()</code>s inside are relative, and the version in the directory
+        name is what makes it safe to cache for a year. Do <em>not</em> link
+        <code>fonts.googleapis.com</code> instead &mdash; that hands Google the IP and exact URL
+        of every visitor before your page draws, and their outage becomes yours. Without any
+        font file the theme still falls back to the system monospace.</p>
+      <p class="small muted">Start a page from this skeleton:</p>
       <pre class="panel scroll-cap small" id="starter">&lt;!doctype html&gt;
 &lt;html lang="en"&gt;
 &lt;head&gt;
   &lt;meta charset="utf-8"&gt;
   &lt;meta name="viewport" content="width=device-width, initial-scale=1"&gt;
   &lt;title&gt;My thing&lt;/title&gt;
-  &lt;link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&amp;display=swap" rel="stylesheet"&gt;
+  &lt;link rel="stylesheet" href="vendor/fira-code-v27/font.css"&gt;
   &lt;link rel="stylesheet" href="terminal-theme.css"&gt;
 &lt;/head&gt;
 &lt;body&gt;

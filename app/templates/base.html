@@ -13,9 +13,14 @@
 <meta name="color-scheme" content="{{ theme_stock() }}">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{% block title %}Project Portal{% endblock %}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&display=swap" rel="stylesheet">
+{# Fira Code, served from this origin rather than fonts.googleapis.com. A
+   webfont <link> to Google hands them the visitor's IP, user agent and - in the
+   Referer - the exact page, before the page draws; makes their outage this
+   page's outage, since a stylesheet is render-blocking; and forces two
+   third-party origins into any CSP. Note the plain path with no ?v= : the
+   version is in the DIRECTORY name, which is what lets app/vendorstatic.py
+   serve it immutable for a year. An upgrade is a new directory, never an edit. #}
+<link rel="stylesheet" href="/static/vendor/fira-code-v27/font.css">
 {# Two different marks on purpose. The tab gets the drawn two-portal glyph,
    which still reads at 16px; the home screen gets Wes's artwork, which is
    built to be looked at at 180px and turns to mush any smaller. The bare

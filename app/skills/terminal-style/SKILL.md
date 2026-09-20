@@ -17,7 +17,10 @@ it fresh rather than committing to memory):
 
 ```bash
 cp $PORTAL_ROOT/app/static/terminal-theme.css .
+cp -r $PORTAL_ROOT/app/static/vendor/fira-code-v27 vendor/
 ```
+
+The second line is the webfont, and it matters - see below.
 
 It is also served at `$BASE_URL/static/terminal-theme.css`, and a live
 gallery of every component - with the page skeleton to copy - is at
@@ -27,10 +30,38 @@ device actually reading it.)
 
 ## Using it
 
-One CSS file, no JS, no build step. Pair it with the Fira Code webfont link
-(see the header of the CSS file, or the /style page's starter skeleton - it
-falls back to system monospace without it). The skeleton the components
-assume:
+One CSS file, no JS, no build step. Pair it with the Fira Code webfont,
+which your own app serves:
+
+```html
+<link rel="stylesheet" href="vendor/fira-code-v27/font.css">
+<link rel="stylesheet" href="terminal-theme.css">
+```
+
+**Never link `fonts.googleapis.com` for this, even though that is what the
+one-line recipe everywhere on the web says.** A webfont `<link>` to Google
+hands them the visitor's IP, their user agent and - in the `Referer` - the
+exact page they opened, before anything draws; a stylesheet is render-blocking,
+so their outage is your page's outage; and it forces
+`style-src https://fonts.googleapis.com` and `font-src https://fonts.gstatic.com`
+into your CSP. Delete any `<link rel="preconnect">` to either host too: a
+preconnect opens a DNS lookup, a TCP connection and a TLS handshake to Google
+on every page load whether or not anything is fetched over it, so leaving one
+keeps announcing every visit after the font has gone.
+
+Where the bytes are: `$PORTAL_ROOT/app/static/vendor/fira-code-v27/`, and
+served at `$BASE_URL/static/vendor/fira-code-v27/font.css`. Copy the whole
+directory, not just the Latin `.woff2`: the `url()`s inside `font.css` are
+relative so it is one self-contained unit, and `unicode-range` means a browser
+downloads only the subsets it actually renders - the other six cost a visitor
+nothing, and dropping them turns a non-Latin character into tofu with no error
+anywhere. Keep the version in the directory name; that is what lets you serve
+`/vendor/` with a year-long `immutable` cache header, because an upgrade
+becomes a new directory rather than an edit to a path caches are entitled never
+to re-fetch. Without any font file the theme falls back to the system monospace
+and still reads correctly.
+
+The skeleton the components assume:
 
 ```html
 <div class="screen">
