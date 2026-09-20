@@ -132,6 +132,16 @@ async def shoot(url: str, out: str, js: list[str], wait: float,
                         return reply.get("result", {})
 
             await send("Page.enable")
+            # Headless chromium's window never has OS focus, so the page reports
+            # document.hasFocus() false and fires *no* focus, blur, focusin or
+            # focusout events at all - element.focus() moves activeElement and
+            # tells nobody. Anything hung off losing focus (an on-blur save, a
+            # validate-on-leave, a close-on-focus-loss menu) then looks broken
+            # here while working in every real browser: a false negative in the
+            # direction that wastes an afternoon. This makes the page agree with
+            # what a focused window reports about itself, and must be sent
+            # before the navigation the page under test arrives on.
+            await send("Emulation.setFocusEmulationEnabled", enabled=True)
             await send("Page.navigate", url=url)
             await asyncio.sleep(wait)
             for expr in js:
