@@ -73,8 +73,8 @@ MUTATIONS = [
      "    return True"),
     # --- app/main.py: the wiring ---
     (MN, "the route keeps the old behavior and only reactivates",
-     "            await worker.note_arrived(project)",
-     "            await worker.reactivate_on_note(project)"),
+     "            ran = await worker.note_arrived(project)",
+     "            ran = await worker.reactivate_on_note(project)"),
     (MN, "a voice memo's continuation reverts to the old behavior",
      "            transcribe.kick(audio_ids, after=worker.note_arrived(project))",
      "            transcribe.kick(audio_ids, after=worker.reactivate_on_note(project))"),
