@@ -366,3 +366,147 @@ def test_a_browser_with_no_tab_is_an_error_not_a_crash(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         interact.Chrome(800, 600).page_ws()
     assert "no page target" in str(exc.value)
+
+
+# --- Owning the local forward (todo #1314) -----------------------------------
+#
+# The failure being guarded is the silent one. With the local DevTools port
+# already held by a stray `ssh -L`, plain ssh printed "Address already in use"
+# to a stderr nobody reads and then kept running with no forward at all - and
+# the readiness poll happily succeeded against the stray. Every run since has
+# been driving a browser it did not start, reached over a tunnel it does not
+# own. Harmless while the stray points at the same machine; a screenshot of a
+# different machine's browser the moment $BOX is overridden, which is a lie
+# shaped exactly like evidence.
+
+
+class _FakeTunnel:
+    """An `ssh -L` that either bound the forward (alive) or did not (exited)."""
+
+    def __init__(self, alive: bool):
+        self.alive = alive
+        self.terminated = False
+
+    def poll(self):
+        return None if self.alive else 255
+
+    def terminate(self):
+        self.terminated = True
+
+
+def _chrome_with_tunnel(alive: bool) -> "interact.Chrome":
+    chrome = interact.Chrome(800, 600)
+    chrome.tunnel = _FakeTunnel(alive)
+    return chrome
+
+
+def test_the_tunnel_refuses_a_forward_that_fails_to_bind(monkeypatch):
+    """ssh must exit rather than linger forwardless - that is the whole fix."""
+    seen = {}
+
+    def fake_popen(argv, *a, **kw):
+        seen["argv"] = argv
+        return _FakeTunnel(alive=True)
+
+    monkeypatch.setattr(interact.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(
+        interact, "_ssh", lambda *cmd: _Ran(json.dumps({"webSocketDebuggerUrl": "ws://a"}))
+    )
+    monkeypatch.setattr(interact, "urlopen", _FakeTargets({"webSocketDebuggerUrl": "ws://a"}))
+    interact.Chrome(800, 600).__enter__()
+    assert "ExitOnForwardFailure=yes" in seen["argv"]
+    assert seen["argv"][seen["argv"].index("-L") + 1] == "9222:127.0.0.1:9222"
+
+
+class _Ran:
+    """A stand-in for a finished `ssh ... curl` probe."""
+
+    def __init__(self, stdout: str):
+        self.stdout = stdout
+        self.stderr = ""
+        self.returncode = 0
+
+
+def test_the_identity_is_checked_even_when_our_own_tunnel_looks_alive(monkeypatch):
+    """The race that made the first version of this useless: ssh exits
+    asynchronously on a failed forward, while a stray answers the local port
+    instantly, so the first readiness poll finds our tunnel mid-death and reads
+    it as the owner. Skipping the probe on a live-looking tunnel therefore
+    skips it exactly when a stray is present."""
+    calls = []
+    monkeypatch.setattr(
+        interact,
+        "_ssh",
+        lambda *cmd: calls.append(cmd) or _Ran(json.dumps({"webSocketDebuggerUrl": "ws://a"})),
+    )
+    _chrome_with_tunnel(alive=True)._own_the_forward({"webSocketDebuggerUrl": "ws://a"})
+    assert len(calls) == 1
+
+
+def test_a_live_looking_tunnel_over_a_strangers_forward_still_stops_the_run(monkeypatch):
+    monkeypatch.setattr(
+        interact, "_ssh", lambda *cmd: _Ran(json.dumps({"webSocketDebuggerUrl": "ws://theirs"}))
+    )
+    with pytest.raises(SystemExit):
+        _chrome_with_tunnel(alive=True)._own_the_forward({"webSocketDebuggerUrl": "ws://ours"})
+
+
+def test_no_note_is_printed_when_we_bound_the_port_ourselves(monkeypatch, capsys):
+    monkeypatch.setattr(
+        interact, "_ssh", lambda *cmd: _Ran(json.dumps({"webSocketDebuggerUrl": "ws://a"}))
+    )
+    _chrome_with_tunnel(alive=True)._own_the_forward({"webSocketDebuggerUrl": "ws://a"})
+    assert capsys.readouterr().err == ""
+
+
+def test_riding_a_stray_forward_to_the_same_browser_is_allowed(monkeypatch, capsys):
+    """Failing here would break every screenshot on the box until somebody
+    cleaned up a stray that was doing no harm."""
+    monkeypatch.setattr(
+        interact, "_ssh", lambda *cmd: _Ran(json.dumps({"webSocketDebuggerUrl": "ws://same"}))
+    )
+    _chrome_with_tunnel(alive=False)._own_the_forward({"webSocketDebuggerUrl": "ws://same"})
+    assert "riding it" in capsys.readouterr().err
+
+
+def test_a_stray_forward_to_a_different_browser_stops_the_run(monkeypatch):
+    monkeypatch.setattr(
+        interact, "_ssh", lambda *cmd: _Ran(json.dumps({"webSocketDebuggerUrl": "ws://theirs"}))
+    )
+    with pytest.raises(SystemExit) as exc:
+        _chrome_with_tunnel(alive=False)._own_the_forward({"webSocketDebuggerUrl": "ws://ours"})
+    assert "does not reach the browser" in str(exc.value)
+    assert "9222" in str(exc.value)
+
+
+def test_a_probe_that_answers_nothing_stops_the_run(monkeypatch):
+    """No answer is not the same as a matching answer. A box with no chromium
+    of ours on the port must not be read as agreement."""
+    monkeypatch.setattr(interact, "_ssh", lambda *cmd: _Ran(""))
+    with pytest.raises(SystemExit):
+        _chrome_with_tunnel(alive=False)._own_the_forward({"webSocketDebuggerUrl": "ws://ours"})
+
+
+def test_two_browsers_with_no_debugger_url_are_not_the_same_browser(monkeypatch):
+    """Both sides missing the key must not compare equal as None == None."""
+    monkeypatch.setattr(interact, "_ssh", lambda *cmd: _Ran(json.dumps({"ok": 1})))
+    with pytest.raises(SystemExit):
+        _chrome_with_tunnel(alive=False)._own_the_forward({})
+
+
+def test_a_probe_that_is_not_json_stops_the_run(monkeypatch):
+    """An ssh error message on stdout is not a browser identity."""
+    monkeypatch.setattr(interact, "_ssh", lambda *cmd: _Ran("curl: (7) Failed to connect"))
+    with pytest.raises(SystemExit):
+        _chrome_with_tunnel(alive=False)._own_the_forward({"webSocketDebuggerUrl": "ws://ours"})
+
+
+def test_the_probe_reads_the_devtools_port_on_the_render_machine(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        interact,
+        "_ssh",
+        lambda *cmd: calls.append(cmd) or _Ran(json.dumps({"webSocketDebuggerUrl": "ws://s"})),
+    )
+    _chrome_with_tunnel(alive=False)._own_the_forward({"webSocketDebuggerUrl": "ws://s"})
+    assert calls == [("curl", "-sS", "http://127.0.0.1:9222/json/version")]

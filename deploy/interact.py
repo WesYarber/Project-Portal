@@ -78,8 +78,16 @@ class Chrome:
             "--user-data-dir=$HOME/.portal-interact-profile "
             "about:blank >/dev/null 2>&1 & sleep 2"
         )
+        # ExitOnForwardFailure, because the default is the quiet disaster: with
+        # the local port already held, ssh prints "Address already in use" to a
+        # stderr nobody reads and then *keeps running* with no forward at all.
+        # The readiness poll below then succeeds against whatever else is
+        # listening, and the run drives a browser it did not start, on a
+        # machine it did not pick. An 18-day-old orphan tunnel was doing
+        # exactly that here. With the flag, ssh exits, and `_own_the_forward`
+        # gets to decide what that means.
         self.tunnel = subprocess.Popen(
-            ["ssh", "-o", "BatchMode=yes", "-N",
+            ["ssh", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-N",
              "-L", f"{PORT}:127.0.0.1:{PORT}", BOX],
         )
         # The tunnel and the browser both need a moment; poll rather than sleep
@@ -87,11 +95,58 @@ class Chrome:
         deadline = time.time() + 20
         while time.time() < deadline:
             try:
-                with urlopen(f"http://127.0.0.1:{PORT}/json/version", timeout=1):
-                    return self
+                with urlopen(f"http://127.0.0.1:{PORT}/json/version", timeout=1) as r:
+                    reached = json.loads(r.read())
+                self._own_the_forward(reached)
+                return self
+            except SystemExit:
+                raise
             except Exception:
                 time.sleep(0.5)
         raise SystemExit("chromium on the render machine never answered on the tunnel")
+
+    def _own_the_forward(self, reached: dict) -> None:
+        """Refuse to drive a browser reached through somebody else's tunnel.
+
+        The identity is read every time, and deliberately not skipped when our
+        own ssh still looks alive. `ExitOnForwardFailure` makes ssh exit
+        *asynchronously*, while a stray forward answers the local port
+        instantly - so the very first readiness poll wins that race and finds
+        our tunnel mid-death, reporting it as the owner of a forward it had
+        just failed to bind. Measured here on 2026-09-20, which is why this
+        costs one ssh round trip per run rather than none.
+
+        What is compared: chromium's /json/version carries a
+        `webSocketDebuggerUrl` with a per-browser-session id in it, so reading
+        it *directly on the render machine* over ssh says which endpoint the
+        local port really reaches. Same id, and riding whoever's forward it is
+        is harmless - say so and carry on, because failing would break every
+        screenshot on the box until somebody cleaned up a stray that was doing
+        no harm. Different id, or no answer, and the run stops: the
+        alternative is a screenshot of the wrong machine's browser, which is a
+        lie shaped exactly like evidence.
+        """
+        probe = _ssh("curl", "-sS", f"http://127.0.0.1:{PORT}/json/version")
+        try:
+            on_box = json.loads(probe.stdout)
+        except ValueError:
+            on_box = {}
+        ours = on_box.get("webSocketDebuggerUrl")
+        if not ours or ours != reached.get("webSocketDebuggerUrl"):
+            raise SystemExit(
+                f"local port {PORT} is forwarded by another process, and it does not "
+                f"reach the browser on {BOX}. Refusing to drive it. Find the holder "
+                f"with `ss -tlnp | grep {PORT}` and kill that pid."
+            )
+        # Polled after the probe, not before it: the ssh round trip above is
+        # the grace period ssh needs to have finished exiting, so by here a
+        # dead tunnel really means we did not bind the port.
+        if self.tunnel is not None and self.tunnel.poll() is not None:
+            print(
+                f"note: local port {PORT} was already forwarded by another process; "
+                f"it reaches the same browser on {BOX}, so riding it.",
+                file=sys.stderr,
+            )
 
     def __exit__(self, *exc) -> None:
         if self.tunnel:
