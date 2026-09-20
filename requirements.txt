@@ -2,7 +2,19 @@ fastapi
 uvicorn[standard]
 jinja2
 httpx
-cryptography
+# A FLOOR, not a pin, and the difference is the whole point: a bare
+# `cryptography` is satisfied by whatever is already installed, so
+# `pip install -r requirements.txt` leaves a vulnerable 49.0.0 exactly where it
+# is and reports success. A `>=` makes the same command an upgrade, which is
+# what carries a security floor to the other installs of this portal - their
+# `deploy/update.py` reinstalls only when this file moves.
+#
+# 50.0.0 clears GHSA-g6cj-pr64-35w5 (a Bleichenbacher oracle in PKCS#7
+# EnvelopedData decryption). Nothing here decrypts PKCS#7 - `app/webpush.py`
+# uses this library for ECDSA P-256, AES-GCM and HKDF only - so the advisory
+# was never reachable from a request. The floor is here anyway because this is
+# the process holding every credential on the box and running every agent.
+cryptography>=50.0.0
 markdown
 pygments
 python-multipart
