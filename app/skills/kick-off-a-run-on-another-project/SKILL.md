@@ -6,9 +6,9 @@ description: When your project is blocked on work that belongs to a DIFFERENT pr
 # Kick off a run on another project
 
 $OWNER stated this on 2026-09-09: "if other projects need to kick off work, please kick
-off that work on them." $THEY does not want a hand-off todo for $THEM when one agent
-could have started the other project directly. Do this whenever the thing standing in
-your way is code, data or a decision that lives in a sibling project rather than in
+off that work on them." That rules out the hand-off todo: when one agent could have
+started the other project directly, it should have. Do this whenever the thing standing
+in your way is code, data or a decision that lives in a sibling project rather than in
 your workspace.
 
 ## Why not the obvious routes
