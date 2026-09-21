@@ -177,11 +177,31 @@ def test_requirements_parses_and_is_not_accidentally_empty():
     assert {"fastapi", "cryptography", "pytest"} <= names, names
 
 
-def test_floors_reads_the_lower_bounds_and_ignores_the_unbounded():
-    """`_floors` keeps the `>=` lines and drops the bare ones."""
+def test_the_named_floor_is_the_one_the_advisory_asked_for():
     floors = dict(_floors())
     assert floors["cryptography"] == Version("50.0.0")
-    assert "fastapi" not in floors, "a bare requirement has no floor to enforce"
+
+
+def test_every_declared_dependency_carries_a_floor():
+    """The finding install-watch filed on 2026-09-21, as a commit-time guard.
+
+    Nine of these ten lines were bare, and this environment installs into a
+    tree that already exists - so the remedy for an advisory on any of them
+    (`pip install -r requirements.txt`, which is what `deploy/update.py` runs
+    on the other installs) could not raise the version and reported success.
+    A weekly probe that reads this file is a fine second opinion; failing here
+    is better, because it fails before the file is committed rather than the
+    Monday after.
+
+    Floored at what this portal runs and this suite is green on, which is why
+    it is safe to demand it of every line: adding a dependency means saying
+    which version of it you actually tested.
+    """
+    unfloored = {req.name for req in _requirements()} - {name for name, _ in _floors()}
+    assert not unfloored, (
+        f"{sorted(unfloored)} declare no lower bound, so re-running the install "
+        "cannot upgrade them - give each one a `>=` at the version you tested"
+    )
 
 
 @pytest.mark.parametrize(

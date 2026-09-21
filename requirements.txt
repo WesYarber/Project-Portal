@@ -1,7 +1,30 @@
-fastapi
-uvicorn[standard]
-jinja2
-httpx
+# Every line here carries a `>=` floor, and that is the point of the file.
+#
+# A bare requirement name is satisfied by whatever version happens to already
+# be installed, so `pip install -r requirements.txt` against an existing tree -
+# which is exactly what `deploy/update.py` runs on the other installs of this
+# portal, and what `deploy/setup.py` runs on a rebuilt venv - leaves an old
+# version exactly where it is and exits 0. Nothing about that reads as a
+# failure anywhere. A floor turns the same command into an upgrade, which is
+# how a fix reaches every OTHER install instead of the one machine somebody
+# typed on.
+#
+# Site-wide tools' install-watch graded this file on 2026-09-21 and found nine
+# of the ten lines unbounded - the only such file on the estate, because every
+# other python environment here either installs into a fresh image or is
+# pinned with `==`. The floors below are the versions this portal is running
+# and its suite is green on, so they are a statement about what is proven
+# rather than a guess. `tests/test_requirements_floors.py` enforces every one
+# of them against the interpreter running the suite, and fails a commit that
+# declares a floor this venv does not meet.
+#
+# Raising a floor is the whole remedy for the next advisory: change the number
+# here, and the install on every box follows on its next update.
+
+fastapi>=0.139.2
+uvicorn[standard]>=0.51.0
+jinja2>=3.1.6
+httpx>=0.28.1
 # A FLOOR, not a pin, and the difference is the whole point: a bare
 # `cryptography` is satisfied by whatever is already installed, so
 # `pip install -r requirements.txt` leaves a vulnerable 49.0.0 exactly where it
@@ -15,11 +38,11 @@ httpx
 # was never reachable from a request. The floor is here anyway because this is
 # the process holding every credential on the box and running every agent.
 cryptography>=50.0.0
-markdown
-pygments
-python-multipart
-pytest
+markdown>=3.10.2
+pygments>=2.20.0
+python-multipart>=0.0.32
+pytest>=9.1.1
 # Not optional: pytest.ini passes `-n 8`, so a venv with pytest and without
 # this one fails at startup with "unrecognized arguments: -n" rather than
 # running the suite serially.
-pytest-xdist
+pytest-xdist>=3.8.0
