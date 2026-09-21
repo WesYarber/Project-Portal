@@ -41,14 +41,17 @@ from app import config
 REQUIREMENTS = Path(config.BASE_DIR) / "requirements.txt"
 
 
-def _requirements() -> list[Requirement]:
+def parse_requirements(text: str) -> list[Requirement]:
     """Every real requirement line, with comments and blanks dropped.
 
-    A `#` only opens a comment at the start of a line or after whitespace, so
-    this does not have to cope with one inside a marker or a URL.
+    Takes the text rather than reading the file, because the interesting
+    inputs are ones `requirements.txt` does not currently contain - a trailing
+    comment, two lower bounds on one line - and a parser is only worth testing
+    on those. A `#` opens a comment at the start of a line or after
+    whitespace, which is pip's own rule.
     """
     out = []
-    for raw in REQUIREMENTS.read_text().splitlines():
+    for raw in text.splitlines():
         line = raw.split(" #", 1)[0].strip()
         if not line or line.startswith("#"):
             continue
@@ -56,10 +59,15 @@ def _requirements() -> list[Requirement]:
     return out
 
 
-def _floors() -> list[tuple[str, Version]]:
-    """The requirements carrying a `>=` or `==` lower bound, name and bound."""
+def floors_in(text: str) -> list[tuple[str, Version]]:
+    """The requirements carrying a lower bound, as (name, that bound).
+
+    Where a line declares more than one, the *strongest* wins: `>=1,>=2` means
+    2 is required, and taking the weaker of the two would let a vulnerable
+    version through the one line someone wrote carefully.
+    """
     out = []
-    for req in _requirements():
+    for req in parse_requirements(text):
         bounds = [
             Version(spec.version)
             for spec in req.specifier
@@ -68,6 +76,59 @@ def _floors() -> list[tuple[str, Version]]:
         if bounds:
             out.append((req.name, max(bounds)))
     return out
+
+
+def names_pkcs7(text: str) -> bool:
+    """Whether a source file goes near the PKCS#7 API surface.
+
+    Case-insensitive: `cryptography` spells it `PKCS7` in class names
+    (`PKCS7SignatureBuilder`) and `pkcs7` in module paths, so a
+    case-sensitive check finds one and misses the other.
+    """
+    return "pkcs7" in text.lower()
+
+
+def _requirements() -> list[Requirement]:
+    return parse_requirements(REQUIREMENTS.read_text())
+
+
+def _floors() -> list[tuple[str, Version]]:
+    return floors_in(REQUIREMENTS.read_text())
+
+
+def test_parse_requirements_drops_comments_and_keeps_specifiers():
+    """Fed the shapes `requirements.txt` does not currently have."""
+    parsed = parse_requirements(
+        "# a whole-line comment\n"
+        "\n"
+        "fastapi\n"
+        "uvicorn[standard]\n"
+        "cryptography>=50.0.0  # trailing comment naming an advisory\n"
+        "   \n"
+    )
+    assert [req.name for req in parsed] == ["fastapi", "uvicorn", "cryptography"]
+    # The trailing comment must not end up inside the specifier.
+    assert str(parsed[-1].specifier) == ">=50.0.0"
+
+
+def test_floors_in_takes_the_strongest_bound_and_ignores_upper_ones():
+    assert floors_in("pkg>=1.0,>=2.0\n") == [("pkg", Version("2.0"))]
+    assert floors_in("pkg==3.1\n") == [("pkg", Version("3.1"))]
+    assert floors_in("pkg\n") == [], "a bare requirement declares no floor"
+    assert floors_in("pkg<9.0\n") == [], "an upper bound is not a floor"
+
+
+@pytest.mark.parametrize(
+    "text, expected",
+    [
+        ("from cryptography.hazmat.primitives.serialization import pkcs7", True),
+        ("PKCS7SignatureBuilder()", True),  # the API is spelled uppercase
+        ("envelope = _enveloped(report)", False),  # this repo's own envelopes
+        ("from cryptography.hazmat.primitives.kdf.hkdf import HKDF", False),
+    ],
+)
+def test_names_pkcs7_is_case_insensitive_and_not_fooled_by_envelopes(text, expected):
+    assert names_pkcs7(text) is expected
 
 
 def unmet(floors, lookup) -> list[str]:
@@ -207,7 +268,7 @@ def test_nothing_here_decrypts_pkcs7():
     offenders = [
         path.relative_to(root)
         for path in searched
-        if "pkcs7" in path.read_text().lower()
+        if names_pkcs7(path.read_text())
     ]
     assert not offenders, (
         f"PKCS#7 handling appeared in {offenders}; re-grade "
