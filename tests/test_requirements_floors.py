@@ -56,8 +56,8 @@ def _requirements() -> list[Requirement]:
     return out
 
 
-def _floors() -> list[tuple[Requirement, Version]]:
-    """The requirements carrying a `>=` or `==` lower bound, with that bound."""
+def _floors() -> list[tuple[str, Version]]:
+    """The requirements carrying a `>=` or `==` lower bound, name and bound."""
     out = []
     for req in _requirements():
         bounds = [
@@ -66,18 +66,90 @@ def _floors() -> list[tuple[Requirement, Version]]:
             if spec.operator in (">=", "==")
         ]
         if bounds:
-            out.append((req, max(bounds)))
+            out.append((req.name, max(bounds)))
     return out
 
 
-def test_requirements_parses_and_is_not_accidentally_empty():
-    """Guards the two tests below from passing on a file this stopped reading.
+def unmet(floors, lookup) -> list[str]:
+    """The floors `lookup` does not satisfy, described. Empty means all met.
 
-    Both iterate over what `_requirements` returns, so a parser that silently
+    Pure on purpose. The comparison here is the decision the whole file turns
+    on, and reading it only through the real venv would make it untestable in
+    the one direction that matters: a version of this that always returns `[]`
+    - comparing a floor against itself, say - is indistinguishable from a
+    correct one on a machine that is already up to date, which is every
+    machine right after someone runs the upgrade. Taking `lookup` as an
+    argument is what lets the tests below hand it a 49.0.0 that is not there.
+
+    `lookup` returns the installed version string for a name, or None when the
+    package is absent.
+    """
+    complaints = []
+    for name, floor in floors:
+        raw = lookup(name)
+        if raw is None:
+            complaints.append(f"{name} is in requirements.txt but not installed")
+            continue
+        if Version(raw) < floor:
+            complaints.append(
+                f"{name} {raw} is installed, below the {floor} floor in "
+                "requirements.txt - run `venv/bin/pip install -r "
+                "requirements.txt` from the repo root"
+            )
+    return complaints
+
+
+def _installed(name: str) -> str | None:
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+
+
+def test_requirements_parses_and_is_not_accidentally_empty():
+    """Guards the tests below from passing on a file this stopped reading.
+
+    They iterate over what `_requirements` returns, so a parser that silently
     yielded nothing would turn them green while enforcing nothing at all.
     """
     names = {req.name for req in _requirements()}
     assert {"fastapi", "cryptography", "pytest"} <= names, names
+
+
+def test_floors_reads_the_lower_bounds_and_ignores_the_unbounded():
+    """`_floors` keeps the `>=` lines and drops the bare ones."""
+    floors = dict(_floors())
+    assert floors["cryptography"] == Version("50.0.0")
+    assert "fastapi" not in floors, "a bare requirement has no floor to enforce"
+
+
+@pytest.mark.parametrize(
+    "installed, complains",
+    [
+        ("49.0.0", True),  # the version the watch actually reported
+        ("50.0.0", False),  # exactly the floor is met
+        ("50.0.1", False),  # what the upgrade landed on
+        ("51.2.0", False),
+        ("9.0.0", True),  # sorts ABOVE "50.0.0" as a string, below as a version
+        (None, True),  # absent is not satisfied
+    ],
+)
+def test_unmet_compares_versions_not_strings(installed, complains):
+    """The comparison itself, driven with versions this machine does not have.
+
+    `"9.0.0" > "50.0.0"` is True for strings and False for versions, so that
+    row is the one that fails a plausible implementation which forgot to parse.
+    """
+    floors = [("cryptography", Version("50.0.0"))]
+    assert bool(unmet(floors, lambda _name: installed)) is complains
+
+
+def test_unmet_names_the_package_and_the_remedy():
+    """A failure has to say what to run, since it fires on a machine mid-setup."""
+    (complaint,) = unmet([("cryptography", Version("50.0.0"))], lambda _n: "49.0.0")
+    assert "cryptography" in complaint
+    assert "49.0.0" in complaint and "50.0.0" in complaint
+    assert "pip install -r requirements.txt" in complaint
 
 
 def test_the_running_venv_satisfies_every_floor():
@@ -86,16 +158,7 @@ def test_the_running_venv_satisfies_every_floor():
     This is what makes a raised floor self-enforcing: it fails on the install
     whose `pip install -r` never ran, rather than on the next weekly watch.
     """
-    for req, floor in _floors():
-        try:
-            installed = Version(version(req.name))
-        except PackageNotFoundError:  # pragma: no cover - a broken venv
-            pytest.fail(f"{req.name} is in requirements.txt but not installed")
-        assert installed >= floor, (
-            f"{req.name} {installed} is installed, below the "
-            f"{floor} floor in requirements.txt - run "
-            f"`venv/bin/pip install -r requirements.txt` from the repo root"
-        )
+    assert unmet(_floors(), _installed) == []
 
 
 def test_cryptography_floor_clears_the_bleichenbacher_advisory():
@@ -107,7 +170,7 @@ def test_cryptography_floor_clears_the_bleichenbacher_advisory():
     this process holds every credential on the box, which is the reason the
     floor is worth carrying anyway.
     """
-    floors = {req.name: floor for req, floor in _floors()}
+    floors = dict(_floors())
     assert "cryptography" in floors, (
         "the cryptography floor is gone; a bare `cryptography` line lets "
         "pip resolve back to a version with GHSA-g6cj-pr64-35w5"
@@ -125,14 +188,19 @@ def test_nothing_here_decrypts_pkcs7():
     does add PKCS#7 handling, the grading of the next advisory against this
     library changes, and this failing is the notice.
 
-    Deliberately narrow: it looks for the PKCS#7 API surface, not the string
-    "enveloped", which this codebase already uses for its own report envelopes.
+    Deliberately narrow in two ways. It looks for the PKCS#7 API surface, not
+    the string "enveloped", which this codebase already uses for its own report
+    envelopes. And it skips `scripts/sweep_*.py`: a sweep's mutation table
+    quotes the code it mutates, so this file's own sweep names the API in a
+    label without any code going near it - which it did, and which failed this
+    test the first time it ran.
     """
     root = Path(config.BASE_DIR)
     searched = [
         path
         for folder in ("app", "deploy", "scripts")
         for path in (root / folder).rglob("*.py")
+        if not path.name.startswith("sweep_")
     ]
     assert len(searched) > 20, "the sweep found almost no source files"
 
