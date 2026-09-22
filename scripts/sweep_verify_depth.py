@@ -18,9 +18,14 @@ commit b1dcd35 made: a CAUGHT here is conclusive, while an ESCAPED only means
 these files do not hold the line and has to be re-checked more widely.
 """
 import atexit, signal, subprocess, sys
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 VD = ROOT / "app" / "verifydepth.py"
 AR = ROOT / "app" / "agent_runner.py"
 CF = ROOT / "app" / "config.py"
@@ -28,12 +33,11 @@ TP = ROOT / "app" / "templates" / "settings.html"
 TESTS = ["tests/test_verify_depth.py", "tests/test_settings_form.py"]
 
 
-ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (VD, AR, CF, TP)}
+ORIGINAL = sweeplib.capture((VD, AR, CF, TP))
 
 
 def restore():
-    for path, text in ORIGINAL.items():
-        path.write_text(text, encoding="utf-8")
+    sweeplib.restore(ORIGINAL)
 
 
 

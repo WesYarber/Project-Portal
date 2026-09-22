@@ -23,6 +23,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweeplib  # noqa: E402  (beside this script, not on the path)
+
 ROOT = Path(__file__).resolve().parents[1]
 SIDEBAR = ROOT / "app" / "sidebar.py"
 MAIN = ROOT / "app" / "main.py"
@@ -41,13 +44,11 @@ SUITE = [
 ]
 
 FILES = (SIDEBAR, MAIN, BASE, CSS)
-ORIGINAL: dict[Path, str] = {p: p.read_text(encoding="utf-8") for p in FILES}
+ORIGINAL = sweeplib.capture(FILES)
 
 
 def restore_all() -> None:
-    for path, text in ORIGINAL.items():
-        if path.read_text(encoding="utf-8") != text:
-            path.write_text(text, encoding="utf-8")
+    sweeplib.restore(ORIGINAL)
 
 
 atexit.register(restore_all)
@@ -231,7 +232,9 @@ def main() -> int:
         try:
             code, names, ok = run_suite()
         finally:
-            path.write_text(text, encoding="utf-8")
+            # Content AND clock, every iteration - a bare write_text here puts
+            # the bytes back and leaves the file looking freshly deployed.
+            restore_all()
         if not ok:
             print(f"{i:2d}. SKIPPED (pytest crashed): {label}", flush=True)
             skipped.append(label)

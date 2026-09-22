@@ -14,6 +14,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweeplib  # noqa: E402  (beside this script, not on the path)
+
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = ROOT / "app" / "config.py"
 TESTS = ["tests/test_models.py"]
@@ -138,7 +141,8 @@ def run_tests() -> bool:
 
 
 def main() -> int:
-    original = TARGET.read_text()
+    captured = sweeplib.capture((TARGET,))
+    original = captured[TARGET]
     caught, escaped, broken = 0, [], []
     try:
         # Prove the suite can be green before trusting any red.
@@ -159,9 +163,9 @@ def main() -> int:
             else:
                 caught += 1
                 print(f"  caught   {name}")
-            TARGET.write_text(original)
+            sweeplib.restore(captured)
     finally:
-        TARGET.write_text(original)
+        sweeplib.restore(captured)
 
     total = len(MUTATIONS) - len(broken)
     print(f"\n{caught}/{total} caught")

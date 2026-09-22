@@ -22,6 +22,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweeplib  # noqa: E402  (beside this script, not on the path)
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "app" / "static" / "app.js"
 PY = ROOT / "venv" / "bin" / "python"
@@ -37,13 +40,11 @@ TEMPLATE = ROOT / "app" / "templates" / "oneoff.html"
 
 # Read - and the restore hook armed - before anything can go wrong, so a death
 # anywhere below still puts both files back (rule 1).
-ORIGINAL = {p: p.read_text() for p in (APP_JS, TEMPLATE)}
+ORIGINAL = sweeplib.capture((APP_JS, TEMPLATE))
 
 
 def restore() -> None:
-    for path, text in ORIGINAL.items():
-        if path.read_text() != text:
-            path.write_text(text)
+    sweeplib.restore(ORIGINAL)
 
 
 atexit.register(restore)

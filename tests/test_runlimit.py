@@ -539,6 +539,32 @@ def test_the_service_unit_refuses_to_die_with_its_children():
     assert "OOMPolicy=continue" in unit.read_text(encoding="utf-8")
 
 
+def test_the_start_limit_is_off_and_lands_in_the_section_that_reads_it():
+    """`StartLimitIntervalSec` is a `[Unit]` key. Put under `[Service]` it
+    parses, `systemd-analyze verify` says nothing, the unit starts normally -
+    and the value reaches nothing at all, which is how fourteen units on this
+    estate believed they were covered and were not (2026-09-21).
+
+    It matters here because whether the limit bites is arithmetic: systemd
+    refuses a unit that has started `StartLimitBurst` (default 5) times inside
+    the window (default 10s), and this unit restarts every 2s, so a crash loop
+    fits six starts and trips it - leaving the portal permanently `failed`
+    with `Restart=always` still set and nothing to bring it back.
+
+    Parsed rather than grepped, because a grep for the line is exactly the
+    check that passed on all fourteen of the broken ones.
+    """
+    import configparser
+
+    unit = Path(__file__).resolve().parent.parent / "deploy" / "project-portal.service"
+    parser = configparser.ConfigParser(strict=False)
+    parser.optionxform = str  # systemd keys are case-sensitive
+    parser.read_string(unit.read_text(encoding="utf-8"))
+
+    assert parser.get("Unit", "StartLimitIntervalSec", fallback=None) == "0"
+    assert "StartLimitIntervalSec" not in parser["Service"]
+
+
 def test_the_spawn_isolates_its_process_group():
     """The flag the cancel test above proves is load-bearing. Pinned separately
     because it lives in `run_claude`, far from anything about memory, and its

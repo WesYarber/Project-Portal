@@ -22,18 +22,19 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 RC = ROOT / "app" / "receipt.py"
 MN = ROOT / "app" / "main.py"
 SUITE = ["tests/test_note_receipt.py"]
 
-ORIGINAL: dict[Path, str] = {}
+ORIGINAL = sweeplib.Originals()
 
 
 def restore_all() -> None:
-    for path, text in ORIGINAL.items():
-        if path.read_text(encoding="utf-8") != text:
-            path.write_text(text, encoding="utf-8")
-            print(f"  restored {path.name}", flush=True)
+    sweeplib.restore(ORIGINAL)
 
 
 # (file, find, replace, label)
@@ -237,7 +238,7 @@ def main() -> int:
     if subprocess.run(["git", "diff", "--quiet", "HEAD"], cwd=ROOT).returncode != 0:
         sys.exit("REFUSING: tree is dirty. A sweep must start from a committed tree.")
     for path in {p for p, _f, _r, _l in MUTATIONS}:
-        ORIGINAL[path] = path.read_text(encoding="utf-8")
+        ORIGINAL.remember(path)
     atexit.register(restore_all)
     for sig in (signal.SIGTERM, signal.SIGINT):
         signal.signal(sig, lambda *_: sys.exit("killed by signal"))

@@ -14,17 +14,23 @@ a CAUGHT here is conclusive, but an ESCAPED only means *this file* does not hold
 the line, and has to be re-checked against the whole suite before it is believed.
 """
 import atexit, signal, subprocess, sys
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 USAGE = ROOT / "app" / "usage.py"
 TESTS = "tests/test_breakdown.py"
 
 
-ORIGINAL = USAGE.read_text(encoding="utf-8")
+CAPTURED = sweeplib.capture((USAGE,))
+ORIGINAL = CAPTURED[USAGE]
 
 def restore():
-    USAGE.write_text(ORIGINAL, encoding="utf-8")
+    sweeplib.restore(CAPTURED)
 
 
 # (label, find, replace). Each is one decision the code makes.

@@ -24,18 +24,20 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 LEAK = ROOT / "app" / "leakscan.py"
 SETUP = ROOT / "deploy" / "setup.py"
 PUBLISH = ROOT / "deploy" / "publish.py"
 TEST_FILES = ["tests/test_leakscan.py", "tests/test_setup.py", "tests/test_publish.py"]
 
-ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (LEAK, SETUP, PUBLISH)}
+ORIGINAL = sweeplib.capture((LEAK, SETUP, PUBLISH))
 
 
 def restore_all() -> None:
-    for path, text in ORIGINAL.items():
-        if path.read_text(encoding="utf-8") != text:
-            path.write_text(text, encoding="utf-8")
+    sweeplib.restore(ORIGINAL)
 
 
 atexit.register(restore_all)
@@ -332,7 +334,8 @@ def main() -> int:
         try:
             summarized, names, tail = run_tests()
         finally:
-            path.write_text(text, encoding="utf-8")
+            # Content AND clock, every iteration - see deploy/sweeplib.
+            restore_all()
         if not summarized:
             print(f"{index:2}. CRASH   {label} - pytest emitted no summary, no data point\n{tail}")
             skipped.append(label)

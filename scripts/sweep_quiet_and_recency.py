@@ -31,23 +31,21 @@ from pathlib import Path
 # Derived, not written out: tests/test_leakscan.py fails this tree while any
 # source file names a personal path, and that guard covers untracked files too.
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 QU = ROOT / "app" / "quiet.py"
 SB = ROOT / "app" / "sidebar.py"
 DB = ROOT / "app" / "db.py"
 WK = ROOT / "app" / "worker.py"
 SF = ROOT / "app" / "settings_form.py"
 
-ORIGINAL: dict[Path, str] = {}
+ORIGINAL = sweeplib.Originals()
 
 
 def restore_all() -> None:
-    for path, text in ORIGINAL.items():
-        try:
-            if path.read_text(encoding="utf-8") != text:
-                path.write_text(text, encoding="utf-8")
-                print(f"  restored {path.name}", flush=True)
-        except OSError as exc:  # noqa: PERF203
-            print(f"  COULD NOT RESTORE {path}: {exc}", flush=True)
+    sweeplib.restore(ORIGINAL)
 
 
 def _die(signum, _frame):
@@ -239,7 +237,7 @@ def run_suite() -> tuple[int, list[str]]:
 
 def main() -> int:
     for path in (QU, SB, DB, WK, SF):
-        ORIGINAL[path] = path.read_text(encoding="utf-8")
+        ORIGINAL.remember(path)
     atexit.register(restore_all)
     signal.signal(signal.SIGTERM, _die)
     signal.signal(signal.SIGINT, _die)

@@ -28,6 +28,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweeplib  # noqa: E402  (beside this script, not on the path)
+
 ROOT = Path(__file__).resolve().parents[1]
 APP_JS = ROOT / "app" / "static" / "app.js"
 WINDOW = ROOT / "app" / "journalwindow.py"
@@ -57,13 +60,11 @@ TARGETS = (APP_JS, WINDOW, MAIN, PROJECT_HTML, STYLE)
 
 # Read - and the restore hook armed - before anything can go wrong, so a death
 # anywhere below still puts every file back (rule 1).
-ORIGINAL = {p: p.read_text() for p in TARGETS}
+ORIGINAL = sweeplib.capture(TARGETS)
 
 
 def restore() -> None:
-    for path, text in ORIGINAL.items():
-        if path.read_text() != text:
-            path.write_text(text)
+    sweeplib.restore(ORIGINAL)
 
 
 atexit.register(restore)

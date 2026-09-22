@@ -243,6 +243,156 @@ def test_a_symlink_out_of_the_workspace_is_not_followed(temp_data_dir, preview_c
     assert "not yours" not in resp.text
 
 
+# --------------------------------------------------------------------------
+# What the preview server will not hand out
+#
+# A workspace is an agent's whole working directory, not a docroot, and this
+# port has no login. On 2026-09-22 the commander-case-custom-lid agent measured
+# its own `.secrets/makerworld-cookie.txt` - Wes's live signed-in MakerWorld
+# session - answering 200 from the LAN, along with `.git/HEAD` and `server.ts`.
+# These are the tests of the allowlist that closed it.
+# --------------------------------------------------------------------------
+
+def test_a_secret_in_the_workspace_is_not_served(temp_data_dir, preview_client):
+    root = _workspace("lidmaker", "index.html")
+    (root / ".secrets").mkdir()
+    (root / ".secrets" / "makerworld-cookie.txt").write_text("bbl_device_id=live")
+    resp = preview_client.get("/lidmaker/.secrets/makerworld-cookie.txt")
+    assert resp.status_code == 404
+    assert "bbl_device_id" not in resp.text
+
+
+def test_the_git_history_inside_a_workspace_is_not_served(temp_data_dir, preview_client):
+    root = _workspace("lidmaker", "index.html")
+    (root / ".git").mkdir()
+    (root / ".git" / "HEAD").write_text("ref: refs/heads/master")
+    assert preview_client.get("/lidmaker/.git/HEAD").status_code == 404
+
+
+def test_the_projects_own_source_is_not_served(temp_data_dir, preview_client):
+    root = _workspace("lidmaker", "index.html")
+    (root / "server.ts").write_text("const TOKEN = 'hunter2'")
+    resp = preview_client.get("/lidmaker/server.ts")
+    assert resp.status_code == 404
+    assert "hunter2" not in resp.text
+
+
+@pytest.mark.parametrize("name", [
+    "notes.md", "portal.db", "run.log", "key.pem", ".env",
+    "requirements.txt", "Makefile", "backup.bak", "dump.sql", "app.py",
+])
+def test_nothing_a_browser_does_not_render_is_served(
+    temp_data_dir, preview_client, name
+):
+    root = _workspace("lidmaker", "index.html")
+    (root / name).write_text("private")
+    resp = preview_client.get(f"/lidmaker/{name}")
+    assert resp.status_code == 404, name
+    assert "private" not in resp.text
+
+
+def test_head_is_refused_through_the_same_door_as_get(temp_data_dir, preview_client):
+    # The classic way to ship half a fix: guard do_GET and leave HEAD, which
+    # confirms the file exists and its size to anybody who asks.
+    root = _workspace("lidmaker", "index.html")
+    (root / "server.ts").write_text("const TOKEN = 'hunter2'")
+    assert preview_client.head("/lidmaker/server.ts").status_code == 404
+    assert preview_client.head("/lidmaker/index.html").status_code == 200
+
+
+def test_a_refused_file_is_indistinguishable_from_a_missing_one(
+    temp_data_dir, preview_client
+):
+    # A refusal that says "403" is an existence oracle: it tells a stranger
+    # which secrets this workspace holds even while refusing to send them.
+    root = _workspace("lidmaker", "index.html")
+    # Not a real key block: the tree's own leak scan would flag the literal,
+    # and what is being proved is that these bytes never leave, not what
+    # they say.
+    (root / "key.pem").write_text("PRIVATE-KEY-BYTES")
+    refused = preview_client.get("/lidmaker/key.pem")
+    missing = preview_client.get("/lidmaker/nothing-here.pem")
+    assert refused.status_code == missing.status_code == 404
+    assert refused.text == missing.text
+
+
+def test_a_dotted_directory_beats_an_allowed_suffix(temp_data_dir, preview_client):
+    # `.json` is on the allowlist because Wes's apps fetch their rules as JSON.
+    # A dotted segment refuses it anyway, which is why the allowlist can afford
+    # to carry `.json` at all.
+    root = _workspace("lidmaker", "index.html")
+    (root / ".secrets").mkdir()
+    (root / ".secrets" / "tokens.json").write_text('{"token": "live"}')
+    resp = preview_client.get("/lidmaker/.secrets/tokens.json")
+    assert resp.status_code == 404
+    assert "live" not in resp.text
+
+
+def test_a_symlink_inside_the_workspace_is_judged_by_what_it_points_at(
+    temp_data_dir, preview_client
+):
+    # The check is on the RESOLVED path, so dressing a key up as a picture does
+    # not get it past a suffix test on the request string.
+    root = _workspace("lidmaker", "index.html")
+    # Not a real key block: the tree's own leak scan would flag the literal,
+    # and what is being proved is that these bytes never leave, not what
+    # they say.
+    (root / "key.pem").write_text("PRIVATE-KEY-BYTES")
+    (root / "logo.png").symlink_to(root / "key.pem")
+    resp = preview_client.get("/lidmaker/logo.png")
+    assert resp.status_code == 404
+    assert "PRIVATE-KEY-BYTES" not in resp.text
+
+
+def test_the_page_and_its_assets_still_load(temp_data_dir, preview_client):
+    root = _workspace("lidmaker", "index.html")
+    (root / "app.js").write_text("console.log(1)")
+    (root / "style.css").write_text("body{color:red}")
+    (root / "rules.json").write_text('{"ok": true}')
+    (root / "logo.svg").write_text("<svg/>")
+    (root / "fira.woff2").write_bytes(b"wOF2")
+    for rel in ("", "app.js", "style.css", "rules.json", "logo.svg", "fira.woff2"):
+        assert preview_client.get(f"/lidmaker/{rel}").status_code == 200, rel
+
+
+def test_a_page_one_directory_down_still_resolves_to_its_index(
+    temp_data_dir, preview_client
+):
+    # Directories have to pass the allowlist untouched or html-mode never gets
+    # the chance to turn `/about/` into `/about/index.html`.
+    _workspace("lidmaker", "index.html", "about/index.html")
+    resp = preview_client.get("/lidmaker/about/")
+    assert resp.status_code == 200
+    assert "about/index.html" in resp.text
+
+
+def test_an_uppercase_suffix_is_matched_the_same_way(temp_data_dir):
+    root = config.PROJECTS_DIR / "lidmaker"
+    assert preview.is_servable(root / "LOGO.PNG", root) is True
+    assert preview.is_servable(root / "KEY.PEM", root) is False
+
+
+@pytest.mark.parametrize("rel,servable", [
+    ("index.html", True),
+    ("assets/app.js", True),
+    ("sub/dir/pic.jpeg", True),
+    ("server.ts", False),
+    ("Makefile", False),
+    (".env", False),
+    (".git/HEAD", False),
+    ("nested/.secrets/token.json", False),
+    ("data/bundle.json", True),
+])
+def test_is_servable_is_the_whole_policy(temp_data_dir, rel, servable):
+    root = config.PROJECTS_DIR / "lidmaker"
+    assert preview.is_servable(root / rel, root) is servable
+
+
+def test_a_path_outside_the_web_root_is_never_servable(temp_data_dir):
+    root = config.PROJECTS_DIR / "lidmaker"
+    assert preview.is_servable(config.PROJECTS_DIR / "other" / "x.png", root) is False
+
+
 def test_a_project_that_gains_a_page_is_served_without_a_restart(
     temp_data_dir, preview_client
 ):

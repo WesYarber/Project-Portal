@@ -18,6 +18,18 @@
 ;   Restart=always     `on-failure` does not cover a clean-but-unintended exit,
 ;                      which would otherwise leave the portal simply gone.
 ;   RestartSec=2       The default 10s is 10s of error page after a crash.
+;   StartLimitIntervalSec=0
+;                      Off, and it MUST be a [Unit] key - under [Service] it
+;                      parses, `systemd-analyze verify` says nothing, the unit
+;                      starts, and the value reaches nothing at all. Whether
+;                      the limit bites is arithmetic: systemd refuses a unit
+;                      that has started StartLimitBurst times inside the
+;                      window, so with the 10s/5 default and RestartSec=2 a
+;                      crash loop fits six starts and trips it - leaving the
+;                      portal permanently `failed` with Restart=always still
+;                      set. Read the loaded value back, never the file:
+;                      systemctl --user show project-portal.service \
+;                        -p StartLimitIntervalUSec -p StartLimitBurst
 ;   OOMPolicy=continue The default is `stop`: if the kernel OOM-kills ANY
 ;                      process in this unit's cgroup, systemd stops the whole
 ;                      unit. Every agent run is a descendant of this unit, so
@@ -30,6 +42,7 @@
 [Unit]
 Description=Project Portal - agentic project idea tracker
 After=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 WorkingDirectory=%h/project-portal

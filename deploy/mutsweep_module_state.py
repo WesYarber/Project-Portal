@@ -19,16 +19,18 @@ import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweeplib  # noqa: E402  (beside this script, not on the path)
+
 ROOT = Path(__file__).resolve().parent.parent
 MS = ROOT / "tests" / "module_state.py"
 CF = ROOT / "tests" / "conftest.py"
 
-ORIGINAL = {p: p.read_text() for p in (MS, CF)}
+ORIGINAL = sweeplib.capture((MS, CF))
 
 
 def restore_all() -> None:
-    for path, text in ORIGINAL.items():
-        path.write_text(text)
+    sweeplib.restore(ORIGINAL)
 
 
 atexit.register(restore_all)
@@ -148,7 +150,8 @@ def main() -> None:
         try:
             rc, failed, ok = run_suite(targets)
         finally:
-            path.write_text(text)
+            # Content AND clock, every iteration - see deploy/sweeplib.
+            restore_all()
 
         if not ok:
             print(f"SKIP (pytest crashed rc={rc}): {label}", flush=True)

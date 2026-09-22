@@ -29,12 +29,32 @@ isolation without breaking the apps.
 server, a thermal-printer daemon) cannot be served as static files, so
 `projects.preview_url` overrides the scan. Wes can type it, and an agent can
 set it from its report - it is the agent who knows which port it just bound.
+
+**Only what a browser renders leaves the workspace.** This port has no login
+and answers to anybody on the LAN, and a workspace is not a docroot: it is an
+agent's whole working directory, holding its `.git` history, its source, its
+data files and - because agents are told to keep secrets *in their own
+workspace* - its credentials. Serving it by name published all of that. On
+2026-09-22 the agent on commander-case-custom-lid measured its own workspace
+answering 200 on `.secrets/makerworld-cookie.txt`, which is Wes's live
+signed-in MakerWorld session, and on `.git/HEAD` and `server.ts` besides.
+
+The fix is an allowlist, not a denylist of `.secrets` and `.git`: a denylist
+leaves every file a future run invents. `is_servable()` is the whole policy -
+a suffix a page can actually load, and no dotted path segment - and it is
+applied to the **resolved** path inside `lookup_path`, which is the one choke
+point every response goes through. Not `__call__`, and never a check in an
+ASGI branch that only GET reaches: HEAD leaked the same bytes' existence
+through the same door, and both arrive at `get_response`.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import stat
+from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -130,6 +150,90 @@ def link_for(project: Any, scheme: str = "http", host: str = "") -> Optional[dic
 
 _MOUNTS: dict[str, StaticFiles] = {}
 
+# What a page in a preview is allowed to ask for: the things a browser renders,
+# and nothing else. Anything absent from this set is refused, so a workspace
+# cannot publish a file by having one - a `.ts` server, a `.pem` key, a `.db`,
+# a `.log`, a `README.md`, a file with no suffix at all.
+#
+# `.json` is the one entry that carries real weight, and it is here because
+# most of Wes's projects are a rules engine with a thin DOM renderer: taking it
+# out would break the previews this server exists for. The dotted-segment rule
+# below is what keeps that from mattering - a secret an agent was told to keep
+# in `.secrets/` is refused whatever it is called.
+SERVABLE_SUFFIXES = frozenset({
+    # markup, style, behavior
+    ".html", ".htm", ".css", ".js", ".mjs", ".wasm", ".map",
+    # data a page fetches
+    ".json", ".webmanifest", ".csv", ".xml",
+    # pictures
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".avif", ".ico", ".bmp",
+    # type
+    ".woff2", ".woff", ".ttf", ".otf",
+    # media
+    ".mp3", ".m4a", ".wav", ".ogg", ".oga", ".opus",
+    ".mp4", ".m4v", ".webm", ".mov", ".vtt",
+})
+
+
+def is_servable(full_path: Path, root: Path) -> bool:
+    """May the preview server hand this resolved file to a browser?
+
+    `full_path` is what the filesystem says the request really means - symlinks
+    followed, `..` collapsed - so a `logo.png` symlinked at a `.pem` beside it
+    is judged as the `.pem`, which is the point of checking here rather than at
+    the request string.
+
+    Two rules, and both are refusals:
+
+    1. **No dotted path segment.** `.git`, `.secrets`, `.env`, `.portal`,
+       `.claude` - none of them is ever an asset of a page, and every one of
+       them is somewhere an agent puts something it would not publish.
+    2. **A suffix on the allowlist**, matched case-insensitively because a
+       filesystem that is not case-sensitive would otherwise take `.PEM`
+       straight past a lowercase comparison.
+    """
+    try:
+        rel = full_path.relative_to(root)
+    except ValueError:
+        # Outside the web root entirely. StaticFiles refuses this already; a
+        # second opinion costs nothing and the failure mode is a leak.
+        return False
+    if any(part.startswith(".") for part in rel.parts):
+        return False
+    return full_path.suffix.lower() in SERVABLE_SUFFIXES
+
+
+class AllowlistedFiles(StaticFiles):
+    """StaticFiles that answers only for the files `is_servable` allows.
+
+    The hook is `lookup_path` because it is where the resolved path first
+    exists and because *everything* goes through it: the requested path, the
+    `index.html` html-mode falls back to, the `404.html` after that - and GET
+    and HEAD alike, since both are `get_response`.
+
+    A refusal is returned as `("", None)`, the same shape `lookup_path` uses
+    for a file that is not there. That is deliberate: a refused path and a
+    missing one answer identically, so the preview server does not confirm
+    that `.secrets/makerworld-cookie.txt` exists.
+    """
+
+    def __init__(self, *, directory: str, **kwargs: Any) -> None:
+        super().__init__(directory=directory, **kwargs)
+        # The same realpath StaticFiles compares against, so `is_servable`
+        # measures the relative path the same way the traversal guard does.
+        self._allow_root = Path(os.path.realpath(directory))
+
+    def lookup_path(self, path: str) -> tuple[str, Optional[os.stat_result]]:
+        full_path, stat_result = super().lookup_path(path)
+        if stat_result is None or not stat.S_ISREG(stat_result.st_mode):
+            # A directory still has to pass, or html-mode never gets the chance
+            # to resolve it to its index.html.
+            return full_path, stat_result
+        if is_servable(Path(full_path), self._allow_root):
+            return full_path, stat_result
+        log.info("preview refused %s (not a servable asset)", full_path)
+        return "", None
+
 
 def _mount_for(slug: str) -> Optional[StaticFiles]:
     """A StaticFiles rooted at one project's web root.
@@ -145,7 +249,7 @@ def _mount_for(slug: str) -> Optional[StaticFiles]:
     key = f"{slug}:{directory}"
     mount = _MOUNTS.get(key)
     if mount is None:
-        mount = StaticFiles(directory=str(directory), html=True)
+        mount = AllowlistedFiles(directory=str(directory), html=True)
         _MOUNTS[key] = mount
     return mount
 

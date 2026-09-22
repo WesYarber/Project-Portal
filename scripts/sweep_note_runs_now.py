@@ -19,9 +19,14 @@ b1dcd35 made: a CAUGHT here is conclusive, while an ESCAPED only means these
 files do not hold the line and has to be re-checked more widely.
 """
 import atexit, signal, subprocess, sys
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+
+sys.path.insert(0, str(ROOT / "deploy"))
+import sweeplib  # noqa: E402  (a sibling script, not on the path)
+
 WK = ROOT / "app" / "worker.py"
 MN = ROOT / "app" / "main.py"
 TP = ROOT / "app" / "templates" / "project.html"
@@ -34,12 +39,11 @@ TESTS = [
 ]
 
 
-ORIGINAL = {p: p.read_text(encoding="utf-8") for p in (WK, MN, TP, JS)}
+ORIGINAL = sweeplib.capture((WK, MN, TP, JS))
 
 
 def restore():
-    for path, text in ORIGINAL.items():
-        path.write_text(text, encoding="utf-8")
+    sweeplib.restore(ORIGINAL)
 
 
 
