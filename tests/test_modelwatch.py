@@ -18,7 +18,7 @@ import urllib.error
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, db, modelwatch, notify, settings_form, worker
+from app import config, db, modeladopt, modelwatch, notify, settings_form, worker
 from app.main import app
 
 # A shape-faithful slice of the real payload, including the keys the parser is
@@ -51,6 +51,16 @@ def client():
 
 def _models(payload=PAYLOAD):
     return modelwatch.parse_models(payload)
+
+
+# Bound before any test can monkeypatch `modelwatch.check`, so a stub built
+# from it cannot end up calling itself.
+_REAL_CHECK = modelwatch.check
+
+
+def _fold(models):
+    """What `check()` returns for a given catalog, for tests that stub it out."""
+    return _REAL_CHECK(models)
 
 
 # --------------------------------------------------------------------------
@@ -245,7 +255,38 @@ def test_the_announcement_names_the_id_and_the_release_date():
     assert "2026-11-01" in body
 
 
-def test_a_new_model_files_a_one_tap_question_on_the_meta_project(monkeypatch):
+def test_the_announcement_says_so_when_the_portal_adopted_it():
+    title, body = modelwatch.announcement(
+        {"id": "claude-opus-6", "display_name": "Claude Opus 6", "created_at": ""},
+        {"adopted": True, "gated": False},
+    )
+    assert title == "New model adopted: Claude Opus 6"
+    assert "now spawning it" in body
+
+
+def test_a_gated_adoption_names_both_versions_and_the_command(monkeypatch):
+    # The one wording that must not be fudged: "adopted" while every run still
+    # spawns the previous model is true and useless on its own.
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.258", raising=False)
+    title, body = modelwatch.announcement(
+        {"id": "claude-opus-5-5", "display_name": "Claude Opus 5.5", "created_at": ""},
+        {"adopted": True, "gated": True, "required_cli": "2.1.280"},
+    )
+    assert title == "New model adopted: Claude Opus 5.5"
+    assert "2.1.258" in body and "2.1.280" in body
+    assert "claude update" in body
+
+
+def test_an_unadopted_model_says_why_not():
+    _, body = modelwatch.announcement(
+        {"id": "gpt-9", "display_name": "GPT-9", "created_at": ""},
+        {"adopted": False, "reason": "not a newer model of a family the portal spawns"},
+    )
+    assert "Not adopted: not a newer model" in body
+
+
+def test_a_new_model_no_longer_files_a_question(monkeypatch):
+    # Wes, 2026-09-23: "Always adopt the new models - no need to ask."
     project = db.create_project(title="Project Portal", description="", kind="software")
     db.update_project(project["id"], slug=config.META_PROJECT_SLUG)
     monkeypatch.setattr(config, "META_PROJECT_SLUG", db.get_project(project["id"])["slug"])
@@ -253,55 +294,80 @@ def test_a_new_model_files_a_one_tap_question_on_the_meta_project(monkeypatch):
     sent = []
 
     async def fake_notify(title, message, **kw):
-        sent.append((title, message, kw))
+        sent.append((title, message))
 
     monkeypatch.setattr(notify, "notify", fake_notify)
     asyncio.run(modelwatch.announce(
-        {"id": "claude-opus-6", "display_name": "Claude Opus 6", "created_at": ""}
+        {"id": "claude-opus-6", "display_name": "Claude Opus 6", "created_at": ""},
+        {"adopted": True, "gated": False},
     ))
-
-    open_qs = db.open_questions()
-    assert len(open_qs) == 1
-    assert "Claude Opus 6" in open_qs[0]["question"]
-    # One tap either way, rather than typing an answer at the bot.
-    assert json.loads(open_qs[0]["quick_options"]) == modelwatch.QUESTION_OPTIONS
-    # And it reached the phone, carrying the question so a reply can route back.
-    assert sent and sent[0][2]["question_id"] == open_qs[0]["id"]
+    assert db.open_questions() == []
+    assert sent and sent[0][0] == "New model adopted: Claude Opus 6"
 
 
-def test_a_failed_notification_still_leaves_the_question_filed(monkeypatch):
-    project = db.create_project(title="Project Portal", description="", kind="software")
-    db.update_project(project["id"], slug=config.META_PROJECT_SLUG)
-    monkeypatch.setattr(config, "META_PROJECT_SLUG", db.get_project(project["id"])["slug"])
-
+def test_a_failed_notification_still_journals_the_release(monkeypatch):
     async def boom(*a, **k):
         raise RuntimeError("ntfy is down")
 
     monkeypatch.setattr(notify, "notify", boom)
     asyncio.run(modelwatch.announce({"id": "x", "display_name": "X", "created_at": ""}))
-    assert len(db.open_questions()) == 1
+    entries = db.list_journal(limit=5)
+    assert any("New model available: X" in e["content_md"] for e in entries)
 
 
-def test_announcing_with_no_meta_project_still_notifies(monkeypatch):
+def test_run_check_adopts_a_new_model_and_says_it_did(monkeypatch):
+    modelwatch.check(_models())  # seed
+    later = _models() + [{"id": "claude-opus-6", "display_name": "Claude Opus 6",
+                          "created_at": "2026-11-01T00:00:00Z"}]
+    monkeypatch.setattr(modelwatch, "check", lambda *a, **k: _fold(later))
+    monkeypatch.setattr(modeladopt, "probe", lambda model_id, **k: {
+        "ok": True, "required_cli": "", "error": ""})
+
     sent = []
 
     async def fake_notify(title, message, **kw):
         sent.append(title)
 
     monkeypatch.setattr(notify, "notify", fake_notify)
-    asyncio.run(modelwatch.announce({"id": "x", "display_name": "X", "created_at": ""}))
-    assert sent == ["New model available: X"]
-    assert db.open_questions() == []
+    out = asyncio.run(modelwatch.run_check())
+
+    assert [v["model_id"] for v in out["adopted"]] == ["claude-opus-6"]
+    assert modeladopt.pins()["opus"] == "claude-opus-6"
+    assert sent == ["New model adopted: Claude Opus 6"]
+    # And the picker stops naming the model it used to spawn.
+    assert dict(config.model_choices())["opus"] == "Opus 6"
 
 
-def test_the_watcher_never_changes_which_model_runs_spawn(monkeypatch):
-    # A new id on the list is NOT proof the CLI can spawn it - Opus 5 sat on
-    # this list for a day while `claude --model opus` still billed 4.8. So
-    # adoption is a decision Wes takes, never a side effect of the check.
-    project = db.create_project(title="Project Portal", description="", kind="software")
-    db.update_project(project["id"], slug=config.META_PROJECT_SLUG)
-    monkeypatch.setattr(config, "META_PROJECT_SLUG", db.get_project(project["id"])["slug"])
+def test_run_check_announces_a_gated_adoption_going_live_later(monkeypatch):
+    # The third notification: he was told "waiting on claude update", so the
+    # loop has to close when the wait ends.
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.258", raising=False)
+    modeladopt.record("opus", "claude-opus-5-5", "2.1.280", label="Opus 5.5")
+    assert modeladopt.gated() == {"opus": "claude-opus-5-5"}
+
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.280", raising=False)
+    monkeypatch.setattr(modelwatch, "check", lambda *a, **k: _fold(_models()))
+
+    sent = []
+
+    async def fake_notify(title, message, **kw):
+        sent.append((title, message))
+
+    monkeypatch.setattr(notify, "notify", fake_notify)
+    asyncio.run(modelwatch.run_check())
+
+    assert sent and sent[0][0] == "Opus 5.5 is live"
+    assert "claude-opus-5-5" in sent[0][1]
+    # Announced exactly once: the gate entry is consumed.
+    assert modeladopt.gated() == {}
+
+
+def test_the_watcher_changes_no_alias_any_run_is_pinned_to(monkeypatch):
+    # Adoption moves what an alias POINTS AT, after a probe. It never moves a
+    # project or the worker off the alias somebody chose.
     db.set_setting("worker_model", "haiku")
+    monkeypatch.setattr(modeladopt, "probe", lambda model_id, **k: {
+        "ok": True, "required_cli": "", "error": ""})
 
     async def fake_notify(*a, **k):
         return None
@@ -310,7 +376,8 @@ def test_the_watcher_never_changes_which_model_runs_spawn(monkeypatch):
     modelwatch.check(_models())
     later = _models() + [{"id": "claude-opus-9", "display_name": "Claude Opus 9",
                           "created_at": "2027-01-01T00:00:00Z"}]
-    asyncio.run(modelwatch.announce(modelwatch.check(later)["new"][0]))
+    fresh = modelwatch.check(later)["new"][0]
+    asyncio.run(modelwatch.announce(fresh, modeladopt.adopt(fresh, later)))
     assert db.get_setting("worker_model") == "haiku"
 
 

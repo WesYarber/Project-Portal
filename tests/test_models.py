@@ -103,18 +103,25 @@ def test_an_unreadable_cli_version_degrades_rather_than_400s(monkeypatch):
 
 
 def test_an_ungated_pin_is_not_held_back_by_an_ancient_cli(monkeypatch):
-    # opus is pinned but carries no MODEL_MIN_CLI entry, so no version can
-    # withhold it. A gate that applied to every pin would silently downgrade
-    # every run on this portal to whatever `--model opus` happens to mean.
+    # A pin carrying no MODEL_MIN_CLI entry can be withheld by no version at
+    # all. A gate that applied to every pin would silently downgrade every run
+    # on this portal to whatever the bare alias happens to mean.
+    #
+    # Stated with a pin of its own rather than by naming whichever shipped
+    # alias is ungated this month: opus used to be the example here and became
+    # gated the day Opus 5.5 was adopted, which made this test fail for a
+    # reason that had nothing to do with the property it exists to hold.
+    monkeypatch.setitem(config.CLI_MODEL_IDS, "sonnet", "claude-sonnet-5")
+    assert "sonnet" not in config.MODEL_MIN_CLI
+
     _at_cli_version(monkeypatch, "0.0.1")
-    assert "opus" not in config.MODEL_MIN_CLI
-    assert config.cli_model("opus") == "claude-opus-5"
+    assert config.cli_model("sonnet") == "claude-sonnet-5"
     # Not even an unreadable version may withhold an ungated pin. cli_version()
     # regex-checks its output before returning it, so this should be
     # unreachable today - but the gate must not lean on that, since an empty
-    # parse sorts BELOW every requirement and would strip opus from every run.
+    # parse sorts BELOW every requirement and would strip the pin from every run.
     _at_cli_version(monkeypatch, "garbage")
-    assert config.cli_model("opus") == "claude-opus-5"
+    assert config.cli_model("sonnet") == "claude-sonnet-5"
 
 
 def test_an_unpinned_alias_passes_through_untouched(monkeypatch):

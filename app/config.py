@@ -60,12 +60,50 @@ SUGGESTIONS_MD = MEMORY_DIR / "suggestions.md"
 # whatnot. Just let it be Opus 4.8, etc.") - the blurbs made every picker as
 # wide as its longest sales pitch.
 MODEL_CHOICES: list[tuple[str, str]] = [
-    ("opus", "Opus 5"),
+    ("opus", "Opus 5.5"),
     ("fable", "Fable 5.1"),
     ("sonnet", "Sonnet 5"),
     ("haiku", "Haiku 4.5"),
 ]
 MODEL_VALUES = [value for value, _ in MODEL_CHOICES]
+
+
+def model_choices() -> list[tuple[str, str]]:
+    """The picker's (value, label) pairs, with any adopted label over the top.
+
+    A list, freshly built, rather than the constant: once the portal adopts a
+    release by itself (`app/modeladopt.py`) the shipped label names the model
+    it used to spawn. Fails open to the constant - a settings page is not the
+    place to discover the settings table is unreadable.
+    """
+    try:
+        from app import modeladopt  # lazy: app.db imports this module
+
+        names = modeladopt.labels()
+    except Exception:  # noqa: BLE001 - see above
+        return list(MODEL_CHOICES)
+    return [(value, names.get(value, label)) for value, label in MODEL_CHOICES]
+
+
+class _LiveModelChoices:
+    """`MODEL_CHOICES` for a Jinja global, re-read on every iteration.
+
+    Templates do `{% for value, label in MODEL_CHOICES %}`, and a Jinja global
+    is bound once at startup, so a plain list would freeze the labels at boot
+    and an adoption would not show until the service restarted.
+    """
+
+    def __iter__(self):
+        return iter(model_choices())
+
+    def __len__(self) -> int:
+        return len(MODEL_CHOICES)
+
+    def __repr__(self) -> str:  # pragma: no cover - debugging aid
+        return repr(model_choices())
+
+
+LIVE_MODEL_CHOICES = _LiveModelChoices()
 DEFAULT_MODEL = "opus"
 
 # The string actually handed to `claude --model` for each internal alias. The
@@ -73,19 +111,25 @@ DEFAULT_MODEL = "opus"
 # by days, which is long enough to matter twice now:
 #
 #   opus   - CLI 2.1.215's `opus` still meant claude-opus-4-8 after Opus 5 shipped
-#            (verified live 2026-07-25). By 2.1.258 the alias had caught up and
-#            `--model opus` bills claude-opus-5, so this pin is now belt and
-#            braces. It STAYS anyway: `modelwatch` exists so Wes decides when the
-#            portal moves to a new model, and an alias that auto-tracks would
-#            move every run onto Opus 6 the day it ships without him being asked.
-#            Pinning is what makes his answer to that question mean anything.
+#            (verified live 2026-07-25), and 2.1.258's still means claude-opus-5
+#            now that 5.5 has shipped (verified live 2026-09-23). The alias has
+#            never once been current on the day it mattered, which is the whole
+#            case for pinning: the explicit id is the only way to reach a
+#            release in the days before the CLI catches up.
+#
+#            Wes, 2026-09-23: "Always adopt the new models - no need to ask." So
+#            this pin is no longer the thing that waits for his answer; it is the
+#            floor a fresh install starts from, and `app/modeladopt.py` raises it
+#            by itself as releases land. An adoption is stored as a setting, not
+#            written back here, because it is decided by probing THIS machine's
+#            CLI and the other installs have their own.
 #   fable  - `--model fable` still means claude-fable-5 on CLI 2.1.258 (verified
 #            live 2026-09-02, after Wes answered "adopt it" to Fable 5.1), so
 #            reaching 5.1 at all requires the explicit id.
 #
 # Keep this in step with MODEL_MIN_CLI below when adding a pin.
 CLI_MODEL_IDS: dict[str, str] = {
-    "opus": "claude-opus-5",
+    "opus": "claude-opus-5-5",
     "fable": "claude-fable-5-1",
 }
 
@@ -102,6 +146,12 @@ CLI_MODEL_IDS: dict[str, str] = {
 # An alias with no entry here is assumed to work on any CLI.
 MODEL_MIN_CLI: dict[str, str] = {
     "fable": "2.1.251",
+    # Opus 5.5, read out of the CLI's own refusal on 2026-09-23:
+    #   API Error: 400 Claude Code 2.1.258 does not support this model;
+    #   version 2.1.280 or newer is required.
+    # Until the CLI is updated `cli_model("opus")` degrades to the bare alias,
+    # which on 2.1.258 bills claude-opus-5 - a release behind, but running.
+    "opus": "2.1.280",
 }
 
 
@@ -125,6 +175,10 @@ def cli_model(alias: str) -> str:
     Unknown aliases (and the ones whose CLI alias is already current) pass
     through unchanged, so this is safe to wrap every `--model` argument with.
 
+    Pins and version gates adopted at runtime (`app/modeladopt.py`, which moves
+    the portal onto a new model the day it ships) layer over the constants
+    above, so an adoption takes effect without a code change or a restart.
+
     A pinned id whose CLI requirement the installed CLI does not meet degrades
     to the bare alias, which every CLI understands - an older model, but a
     running one. Fails open: when the version cannot be read at all,
@@ -132,10 +186,21 @@ def cli_model(alias: str) -> str:
     entry in MODEL_MIN_CLI, so an undetectable CLI also degrades rather than
     spawning an id it may not support.
     """
-    pinned = CLI_MODEL_IDS.get(alias)
+    pins, gates = CLI_MODEL_IDS, MODEL_MIN_CLI
+    try:
+        # Lazy: app.db imports this module, so the adoption layer cannot be a
+        # top-level import here. Fails open to the shipped pins - a spawn is
+        # not the place to discover the settings table is unreadable.
+        from app import modeladopt
+
+        pins, gates = modeladopt.pins(), modeladopt.min_cli()
+    except Exception:  # noqa: BLE001 - see above
+        pass
+
+    pinned = pins.get(alias)
     if pinned is None:
         return alias
-    required = MODEL_MIN_CLI.get(alias)
+    required = gates.get(alias)
     if required and _version_tuple(cli_version()) < _version_tuple(required):
         return alias
     return pinned

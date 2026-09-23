@@ -168,10 +168,14 @@ def test_model_labels_name_a_version():
     assert labels["haiku"].startswith("Haiku 4.5")
 
 
-def test_opus_alias_resolves_to_opus_5_at_the_cli():
-    # CLI 2.1.215's own `opus` alias still bills claude-opus-4-8, so the portal
-    # pins opus to the explicit Opus 5 id at the spawn boundary.
-    assert config.cli_model("opus") == "claude-opus-5"
+def test_opus_alias_resolves_to_the_pinned_opus_at_the_cli(monkeypatch):
+    # The CLI's own `opus` alias has never been current on the day it mattered
+    # - 2.1.215's billed Opus 4.8 after Opus 5 shipped, 2.1.258's bills Opus 5
+    # after 5.5 shipped - so the portal pins the explicit id at the spawn
+    # boundary. Asserted at a CLI new enough to clear the gate, because the
+    # suite otherwise runs at DEFAULT_CLI_VERSION (see tests/conftest.py).
+    monkeypatch.setattr(config, "_cli_version_cache", "9.9.9", raising=False)
+    assert config.cli_model("opus") == "claude-opus-5-5"
     assert "opus-4-8" not in config.cli_model("opus")
 
 

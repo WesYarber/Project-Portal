@@ -31,16 +31,26 @@ records the eleven models that exist today silently. Announcing them would be
 eleven notifications about nothing, and would teach him to ignore the next one,
 which is the only one that matters.
 
-After that, an id that was not in the catalog is news, and gets:
+After that, an id that was not in the catalog is news, and the portal **adopts
+it and then tells him**.
 
-- a notification, so it reaches the phone; and
-- an open question on the meta-project with one-tap options, because "Opus 6 is
-  out - adopt it?" is a decision, and the portal already knows how to turn a
-  tap into a woken project and a run (see app/quickreplies.py). Answering is
-  what makes the adoption happen; the watcher itself changes no settings. It
-  cannot: a new id in the catalog is not proof the CLI can spawn it, as Opus
-  5 demonstrated, so switching the default model automatically would have
-  pointed every run at a model that 404s.
+Wes, 2026-09-23, answering the adoption question this module used to file:
+*"Always adopt the new models- no need to ask. Send me a notification maybe
+still, though, as it's cool to know when they drop!"*
+
+That retires the question and the one-tap options with it. It does NOT retire
+the reason they existed - a new id in the catalog is still not proof the CLI
+can spawn it, which `claude-opus-5-5` proved again on the very day he answered
+by 400ing on CLI 2.1.258. "No need to ask" says who decides, not that the
+check is optional, so the adoption itself runs through `app/modeladopt.py`:
+family, version, and a real probe before anything is pinned. A model the CLI
+cannot spawn yet is still adopted, behind its version gate, so runs keep using
+the previous release until `claude update` catches up and then switch with no
+further decision.
+
+The notification says which of those two happened, and a third one fires later
+when a gated adoption goes live - otherwise "waiting on claude update" would be
+the last thing he ever heard about it.
 
 Fails open and quiet throughout: no credentials, a 500 from Anthropic, a
 garbled payload - the catalog is simply not updated that day. A watcher that
@@ -56,7 +66,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from app import config, db, limits, notify, quickreplies
+from app import config, db, limits, modeladopt, notify
 
 log = logging.getLogger("portal.modelwatch")
 
@@ -72,12 +82,6 @@ SETTING_ENABLED = "model_watch"
 
 # Checked once a day. A model launch is a thing that happens a few times a
 # year; polling it more often would be noise on someone else's server.
-QUESTION_CONTEXT = (
-    "The portal watches the model list your Claude subscription can reach and "
-    "noticed this is new. Adopting means pointing the portal's default agent at "
-    "it - which is a small code change, because the CLI's own short alias often "
-    "lags the release by days and the explicit model id has to be pinned."
-)
 
 
 def enabled() -> bool:
@@ -230,104 +234,122 @@ def check(models: Optional[list[dict]] = None) -> dict:
     return {"ok": True, "seeded": False, "new": fresh, "error": ""}
 
 
-def announcement(model: dict) -> tuple[str, str]:
-    """The (title, body) for one new model. Pure, so the wording is pinned."""
+def announcement(model: dict, verdict: Optional[dict] = None) -> tuple[str, str]:
+    """The (title, body) for one new model. Pure, so the wording is pinned.
+
+    Three outcomes, three different things worth saying. The one that must not
+    be fudged is the gated case: telling him a model is adopted while every run
+    keeps spawning the previous one would be true and useless, so the body
+    names both versions and the one command that closes the gap.
+    """
     name = model.get("display_name") or model["id"]
+    verdict = verdict or {}
+    created = model.get("created_at") or ""
+    released = f" Released {created[:10]}." if created else ""
+
+    if verdict.get("adopted") and verdict.get("gated"):
+        required = verdict.get("required_cli") or "a newer version"
+        return (
+            f"New model adopted: {name}",
+            f"`{model['id']}` is out and the portal is pinned to it. This "
+            f"machine's Claude CLI is {config.cli_version()} and it needs "
+            f"{required}, so runs keep using the previous model until "
+            f"`claude update` runs - then it switches by itself.{released}",
+        )
+    if verdict.get("adopted"):
+        return (
+            f"New model adopted: {name}",
+            f"`{model['id']}` is out and the portal is now spawning it. "
+            f"Nothing to do.{released}",
+        )
+
     title = f"New model available: {name}"
     body = (
         f"`{model['id']}` ({name}) is now on the model list your Claude "
         f"subscription can reach."
     )
-    created = model.get("created_at") or ""
-    if created:
-        body += f" Released {created[:10]}."
-    return title, body
+    reason = verdict.get("reason") or ""
+    if reason:
+        body += f" Not adopted: {reason}."
+    return title, body + released
 
 
-def question_text(model: dict) -> str:
-    name = model.get("display_name") or model["id"]
-    return f"{name} (`{model['id']}`) is out. Want the portal to move onto it?"
-
-
-QUESTION_OPTIONS = ["adopt it", "not yet"]
-
-
-def meta_project() -> Optional[db.sqlite3.Row]:
-    """The portal's own project - where a "should we adopt this?" question
-    belongs, because acting on the answer is a change to the portal."""
-    try:
-        return db.get_project_by_slug(config.META_PROJECT_SLUG)
-    except Exception:  # noqa: BLE001 - defensive; a missing meta project is fine
-        return None
-
-
-def file_question(model: dict) -> Optional[db.sqlite3.Row]:
-    """Raise the adoption decision as a real question with one-tap options.
-
-    A question rather than a bare notification because it needs an answer, and
-    because every channel Wes already answers on - the project page, the
-    questions page, a tap in Telegram - works on questions for free.
-    """
-    project = meta_project()
-    if project is None:
-        return None
-    text = question_text(model)
-    filing = db.file_question(
-        project["id"],
-        text,
-        context=QUESTION_CONTEXT,
-        quick_options=quickreplies.encode(QUESTION_OPTIONS),
+def live_announcement(cleared: dict) -> tuple[str, str]:
+    """The (title, body) for a gated adoption that has just gone live."""
+    label = cleared.get("label") or cleared["model_id"]
+    return (
+        f"{label} is live",
+        f"The Claude CLI on this machine is new enough now, so runs are "
+        f"spawning `{cleared['model_id']}`.",
     )
-    # None, not the matched row: `announce` only sends a notification when it
-    # gets a question back, so this is how a model whose adoption question is
-    # already open stops re-pinging him. The seen-set means this should only
-    # ever fire for two releases that read alike, which the mark check in
-    # qdedupe is there to keep apart - so treat it as belt and braces.
-    return filing.row if filing.created else None
 
 
-async def announce(model: dict) -> None:
-    """Tell Wes about one new model. Best effort in both halves: a failed
-    notification must not stop the question being filed, and a failed question
-    must not stop the notification going out."""
-    title, body = announcement(model)
-    question = None
+async def _send(title: str, body: str, model_id: str = "") -> None:
+    """Notification plus journal line, each best effort and independent."""
     try:
-        question = file_question(model)
+        await notify.notify(title, body)
     except Exception:  # noqa: BLE001
-        log.exception("Could not file the adoption question for %s", model.get("id"))
+        log.exception("Could not notify about %s", model_id)
     try:
-        await notify.notify(
-            title,
-            body,
-            question_id=question["id"] if question else None,
-            question_slot=question["slot"] if question else None,
-            project_title="Project Portal" if question else None,
-        )
+        db.add_journal(None, "system", "status", f"{title}. {body}")
     except Exception:  # noqa: BLE001
-        log.exception("Could not notify about %s", model.get("id"))
-    try:
-        db.add_journal(
-            question["project_id"] if question else None,
-            "system", "status", f"{title}. {body}",
-        )
-    except Exception:  # noqa: BLE001
-        log.exception("Could not journal the new model %s", model.get("id"))
+        log.exception("Could not journal the new model %s", model_id)
+
+
+async def announce(model: dict, verdict: Optional[dict] = None) -> None:
+    """Tell Wes about one new model and what the portal did about it."""
+    title, body = announcement(model, verdict)
+    await _send(title, body, model.get("id", ""))
 
 
 async def run_check() -> dict:
-    """The whole daily job: fetch, fold in, announce anything new.
+    """The whole daily job: fetch, fold in, adopt anything new, say so.
 
-    The fetch is a blocking urllib call, so it goes to a thread; everything
-    after it is cheap. Never raises.
+    The fetch and every probe are blocking subprocess/urllib calls, so they go
+    to a thread. Never raises.
     """
     if not enabled():
-        return {"ok": False, "seeded": False, "new": [], "error": "model watch is off"}
+        return {"ok": False, "seeded": False, "new": [], "adopted": [], "error": "model watch is off"}
     try:
         result = await asyncio.to_thread(check)
     except Exception:  # noqa: BLE001 - a broken watcher must not stop the worker
         log.exception("Model watch check failed")
-        return {"ok": False, "seeded": False, "new": [], "error": "check failed"}
+        return {"ok": False, "seeded": False, "new": [], "adopted": [], "error": "check failed"}
+
+    models = catalog().get("models") or []
+    adopted: list[dict] = []
+
     for model in result.get("new", []):
-        await announce(model)
+        try:
+            verdict = await asyncio.to_thread(modeladopt.adopt, model, models)
+        except Exception:  # noqa: BLE001 - never let an adoption stop the news
+            log.exception("Could not adopt %s", model.get("id"))
+            verdict = {"adopted": False, "reason": "the adoption check failed"}
+        if verdict.get("adopted"):
+            adopted.append(verdict)
+        await announce(model, verdict)
+
+    # A model whose probe reached no verdict last time. Silent unless it lands:
+    # he has already been told this model exists, so only the adoption is news.
+    try:
+        retried = await asyncio.to_thread(modeladopt.retry_pending, models)
+    except Exception:  # noqa: BLE001
+        log.exception("Could not retry pending model adoptions")
+        retried = []
+    for verdict in retried:
+        if not verdict.get("adopted"):
+            continue
+        adopted.append(verdict)
+        model = next((m for m in models if m["id"] == verdict["model_id"]), None)
+        await announce(model or {"id": verdict["model_id"]}, verdict)
+
+    # And an adoption that was waiting on `claude update`, now that it is not.
+    try:
+        for cleared in modeladopt.cleared_gates():
+            title, body = live_announcement(cleared)
+            await _send(title, body, cleared["model_id"])
+    except Exception:  # noqa: BLE001
+        log.exception("Could not announce a cleared model gate")
+
+    result["adopted"] = adopted
     return result
