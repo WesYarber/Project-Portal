@@ -464,3 +464,16 @@ def test_the_settings_page_shows_the_watch_toggle_and_the_catalog(client):
     assert 'name="model_watch"' in html
     assert "Watch for new models" in html
     assert "claude-opus-5" in html
+
+
+def test_the_settings_copy_describes_adopting_not_asking(client):
+    # This help text told Wes the portal "never switches the default agent by
+    # itself" for a full release after he asked it to do exactly that. Copy
+    # that describes withdrawn behavior is a defect he reads before the code.
+    html = client.get("/settings").text
+    assert "adopted automatically" in html
+    assert "one-tap question" not in html
+    assert "never switches the default agent by itself" not in html
+    # ...and it still says what happens when the CLI is too old, which is the
+    # half a person would otherwise report as the adoption not working.
+    assert "claude update" in html
