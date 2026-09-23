@@ -308,6 +308,21 @@ def test_a_gate_superseded_while_it_waited_is_dropped_silently(monkeypatch):
     assert modeladopt.gated() == {}
 
 
+def test_a_gate_naming_a_model_the_alias_no_longer_points_at_is_not_announced(monkeypatch):
+    # The two settings rows can disagree: `pin_overrides()` reads as empty when
+    # its row is corrupt (see the corrupt-JSON test above), while GATED_KEY
+    # survives intact. The gate must then be dropped, not announced - saying
+    # "Opus 6 is live" about a model no alias points at is a notification about
+    # nothing, and it would repeat on every check.
+    monkeypatch.setattr(config, "_cli_version_cache", "9.9.9", raising=False)
+    db.set_setting(modeladopt.GATED_KEY, '{"opus": "claude-opus-6"}')
+    db.set_setting(modeladopt.PINS_KEY, "{not json")
+    assert modeladopt.pins()["opus"] != "claude-opus-6"
+
+    assert modeladopt.cleared_gates() == []
+    assert modeladopt.gated() == {}
+
+
 def test_recording_a_gated_pin_on_a_cli_that_already_meets_it_is_not_gated(monkeypatch):
     monkeypatch.setattr(config, "_cli_version_cache", "3.0.0", raising=False)
     modeladopt.record("opus", "claude-opus-6", "2.1.280")
