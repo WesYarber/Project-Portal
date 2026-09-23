@@ -104,6 +104,13 @@ def temp_data_dir(tmp_path, monkeypatch):
     # tests/test_models.py has a `_at_cli_version` helper for it.
     monkeypatch.setattr(config, "_cli_version_cache", config.DEFAULT_CLI_VERSION,
                         raising=False)
+    # The daily model check re-reads the version on purpose (a gate released by
+    # `claude update` under a long-running portal), which would walk straight
+    # past the pin above and shell out for real. Pinned to whatever the cache
+    # currently holds, so a test that sets a version keeps it.
+    monkeypatch.setattr(config, "refresh_cli_version",
+                        lambda: config._cli_version_cache,  # noqa: SLF001
+                        raising=False)
 
     if db._CONN is not None:  # noqa: SLF001
         db._CONN.close()  # noqa: SLF001

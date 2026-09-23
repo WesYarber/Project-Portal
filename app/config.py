@@ -804,6 +804,21 @@ def cli_version() -> str:
     return version
 
 
+def refresh_cli_version() -> str:
+    """Forget the memoized CLI version and read it again.
+
+    `cli_version()` caches for the life of the process, which is right for
+    something consulted at every spawn and wrong exactly once a day: an
+    adoption held behind a `MODEL_MIN_CLI` gate is released by `claude update`
+    running *underneath* a portal that has been up for a week, and a frozen
+    version means the gate never opens and the "it switches by itself" the
+    notification promised never happens. Called from the daily model check.
+    """
+    global _cli_version_cache
+    _cli_version_cache = None
+    return cli_version()
+
+
 def usage_user_agent() -> str:
     """The User-Agent the usage poller must send to look like the real client."""
     return f"claude-cli/{cli_version()} (external, cli)"

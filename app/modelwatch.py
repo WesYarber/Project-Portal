@@ -310,6 +310,14 @@ async def run_check() -> dict:
     """
     if not enabled():
         return {"ok": False, "seeded": False, "new": [], "adopted": [], "error": "model watch is off"}
+    # Re-read the CLI version before anything consults a version gate: this
+    # process may have been up since before `claude update` ran, and a gate
+    # that can never open would make the adoption notification a lie.
+    try:
+        await asyncio.to_thread(config.refresh_cli_version)
+    except Exception:  # noqa: BLE001 - a stale version is not a reason to skip the check
+        log.exception("Could not re-read the CLI version")
+
     try:
         result = await asyncio.to_thread(check)
     except Exception:  # noqa: BLE001 - a broken watcher must not stop the worker

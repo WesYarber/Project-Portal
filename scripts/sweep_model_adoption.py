@@ -158,6 +158,12 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
         "    result = probe(model_id)",
     ),
     (
+        "the daily check never re-reads the CLI version, so a gate never opens",
+        "app/modelwatch.py",
+        "        await asyncio.to_thread(config.refresh_cli_version)",
+        "        pass",
+    ),
+    (
         "(control) a comment-only edit changes nothing",
         "app/modeladopt.py",
         "# What the probe asks for. Short enough that the spawn costs approximately",

@@ -362,6 +362,24 @@ def test_run_check_announces_a_gated_adoption_going_live_later(monkeypatch):
     assert modeladopt.gated() == {}
 
 
+def test_the_daily_check_re_reads_the_cli_version_before_judging_a_gate(monkeypatch):
+    # A portal up since before `claude update` ran would otherwise hold every
+    # gated adoption shut forever, because cli_version() memoizes for the life
+    # of the process - and the notification has already promised it switches by
+    # itself.
+    calls = []
+    monkeypatch.setattr(config, "refresh_cli_version",
+                        lambda: calls.append(1) or "2.1.280")
+    monkeypatch.setattr(modelwatch, "check", lambda *a, **k: _fold(_models()))
+
+    async def fake_notify(*a, **k):
+        return None
+
+    monkeypatch.setattr(notify, "notify", fake_notify)
+    asyncio.run(modelwatch.run_check())
+    assert calls == [1]
+
+
 def test_the_watcher_changes_no_alias_any_run_is_pinned_to(monkeypatch):
     # Adoption moves what an alias POINTS AT, after a probe. It never moves a
     # project or the worker off the alias somebody chose.
