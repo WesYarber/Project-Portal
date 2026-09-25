@@ -99,6 +99,7 @@ def test_a_busy_project_is_skipped_for_the_next_in_the_queue():
 def test_the_build_gate_does_not_block_a_burst():
     """A burst writes RESEARCH.md and no code, so an unapproved project - the
     kind most worth reading about - is fair game."""
+    db.set_setting("require_build_approval", "1")  # the gate is off by default
     project = db.create_project("Unapproved", stage="active")
     db.update_project(project["id"], build_approved=0, build_requested=1)
     assert worker.build_gated(db.get_project(project["id"])) is True

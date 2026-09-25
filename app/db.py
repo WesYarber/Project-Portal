@@ -1403,6 +1403,30 @@ def build_approved(project: sqlite3.Row) -> bool:
         return False
 
 
+# Off by default since 2026-09-08. Wes: "There should be no need to confirm
+# the plan from the user after onboarding a new project. Just start building."
+# Onboarding - taking an idea off the backlog - is the decision; with the gate
+# off, the first run on an active project builds. The gate itself stays for an
+# install that wants the explicit OK (Settings > agent > "Ask before building").
+BUILD_APPROVAL_DEFAULT = "0"
+
+
+def require_build_approval() -> bool:
+    """Whether writing code needs an explicit OK first. Off by default.
+
+    Lives here rather than in the worker because the prompt has to read the
+    same answer the scheduler does: the scheduler handed an unapproved project
+    a BUILD task while the prompt, reading `build_approved` alone, told the
+    agent in the same breath that it was "NOT yet approved" - so new projects
+    sat asking for an OK there was no button to give (Wes, 2026-09-25)."""
+    return (get_setting("require_build_approval") or BUILD_APPROVAL_DEFAULT) == "1"
+
+
+def build_allowed(project: sqlite3.Row) -> bool:
+    """May a run on this project write code? Approval, or the gate switched off."""
+    return build_approved(project) or not require_build_approval()
+
+
 def build_requested(project: sqlite3.Row) -> bool:
     return bool(_row_get(project, "build_requested", 0))
 
@@ -1929,11 +1953,7 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
         return "paused"
     if stage != "active":
         return stage
-    gate_wait = (
-        build_requested(project)
-        and not build_approved(project)
-        and (get_setting("require_build_approval") or "1") == "1"
-    )
+    gate_wait = build_requested(project) and not build_allowed(project)
     if gate_wait or open_questions:
         return "paused"
     return "active"

@@ -300,9 +300,20 @@ def _apply(project, **report):
 
 @pytest.mark.anyio
 async def test_the_new_shape_request_build(temp_data_dir):
+    db.set_setting("require_build_approval", "1")
     p = db.create_project("Fridge", slug="fridge", stage="active")
     after = _apply(db.get_project(p["id"]), request_build=True)
     assert after["build_requested"] == 1
+
+
+@pytest.mark.anyio
+async def test_request_build_is_a_no_op_with_the_gate_off(temp_data_dir):
+    """Off is the default: there is nobody to ask, so nothing is recorded and
+    no "needs your OK" badge can appear."""
+    p = db.create_project("Fridge", slug="fridge", stage="active")
+    after = _apply(db.get_project(p["id"]), request_build=True)
+    assert after["build_requested"] == 0
+    assert after["stage"] == "active"
 
 
 @pytest.mark.anyio

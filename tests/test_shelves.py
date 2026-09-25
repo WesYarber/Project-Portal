@@ -120,6 +120,7 @@ def test_anything_that_stops_the_whole_project_folds_to_the_paused_shelf():
     in the paused/backlog section!" An active project that cannot proceed at all
     without Wes - his pause, an unanswered build request, an open question - is
     folded away."""
+    db.set_setting("require_build_approval", "1")  # the gate is off by default
     p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
     assert db.project_shelf(db.get_project(p["id"])) == "paused"
@@ -233,6 +234,7 @@ def test_asking_and_gated_projects_sit_in_the_paused_shelf(client):
     tasks are still in the top section with the building stuff. Even if they
     need user input or something, I don't care - I want them in the
     paused/backlog section!" Nobody-running + nothing-can-proceed = folded."""
+    db.set_setting("require_build_approval", "1")  # the gate is off by default
     _project("Live One", "live")
     gated = _project("Gated", "gated", build_approved=False)
     db.update_project(gated["id"], build_requested=1)

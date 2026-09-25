@@ -190,10 +190,12 @@ available in your session, write the same JSON to a file at
   done and it is $OWNERS turn to look; "active" is how a triage pass promotes an
   idea out of the backlog. Never "done" or "abandoned" - only $OWNER finishes a
   project - and null is the right value on most runs.
-- "request_build": true asks to start writing code. It is a REQUEST, not a
-  decision: unless $OWNER has already approved this project for building, the
-  portal records it, badges the project "needs your OK" and asks $THEM. Never
-  treat writing code as pre-approved.
+- "request_build": true asks to start writing code. The "Build approval" line
+  in the Project section below says whether that is needed: where it says
+  approval is not needed, or already given, just build and leave this false -
+  never stop to wait for an OK there. Only where it says NOT yet approved is
+  this a real request: the portal records it, badges the project "needs your
+  OK" and asks $THEM, and until then you do not write the project's code.
 - "blocked_on": one short line naming the thing only $OWNER can do (a purchase, a
   credential, a click) that stops you. The portal wears it as a badge and
   clears it automatically when your next run reports, so restate it while it
@@ -506,6 +508,26 @@ def _row_get(row: sqlite3.Row, key: str, default=None):
     return default if value is None else value
 
 
+def _approval_line(project: sqlite3.Row, tvars: dict[str, str]) -> str:
+    """Where this project stands on writing code, read from the same
+    `db.build_allowed` the scheduler picks the task with. Reading the
+    `build_approved` column alone told every new project it was "NOT yet
+    approved" on an install with the gate off - while its task said BUILD and
+    no approve button existed - so agents asked for an OK nobody could give."""
+    if _row_get(project, "build_approved", 0):
+        return f"{tvars['OWNER']} has approved building this - write code."
+    if db.build_allowed(project):
+        return (
+            "not needed on this install - taking the idea off the backlog was "
+            "the decision to build it. Once you have the information and plan "
+            "you need, write code; do not ask for an OK or wait for one."
+        )
+    return (
+        "NOT yet approved for building. Triage, plan and research only; "
+        "ask for the OK rather than starting to write the project's code."
+    )
+
+
 def _project_section(project: sqlite3.Row, tvars: Optional[dict[str, str]] = None) -> str:
     """The project header of the prompt.
 
@@ -538,13 +560,7 @@ def _project_section(project: sqlite3.Row, tvars: Optional[dict[str, str]] = Non
         f"- Slug: {project['slug']}",
         f"- Kind: {project['kind']}",
         f"- Status: {db.display_state(project)}",
-        "- Build approval: "
-        + (
-            f"{tvars['OWNER']} has approved building this - write code."
-            if _row_get(project, "build_approved", 0)
-            else "NOT yet approved for building. Triage, plan and research only; "
-            "ask for the OK rather than starting to write the project's code."
-        ),
+        "- Build approval: " + _approval_line(project, tvars),
     ]
     if db.blocked_on(project):
         lines.append(

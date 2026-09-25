@@ -269,10 +269,11 @@ DEFAULT_SETTINGS: dict[str, str] = {
     # portal stops just short of the wall instead of discovering it mid-run.
     # Manual runs ignore it. See app/pacing.py.
     "limit_hold_percent": "90",
-    # Agents may triage and plan any project on their own, but moving one into
-    # `building` - i.e. writing code - waits for Wes. Turn this off to let a
-    # finished plan roll straight into a build.
-    "require_build_approval": "1",
+    # Off: taking an idea off the backlog is the decision to build it, and the
+    # first run plans inside itself. Turn it on to make every project wait for
+    # an explicit "approve build" before its agents write code. Must agree with
+    # db.BUILD_APPROVAL_DEFAULT - this is what a fresh install is seeded with.
+    "require_build_approval": "0",
     # How hard a build run proves its own work: "proportionate" (scale it to
     # the diff), "thorough" (full suite plus a mutation sweep every time) or
     # "light" (the owning tests only). Self-verification is ~60% of what a run

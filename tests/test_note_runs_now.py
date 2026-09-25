@@ -234,6 +234,7 @@ def test_the_auto_run_is_not_a_build_approval(client):
     """"add & run now" puts the project on the working shelf, which IS the build
     approval. The plain button must not: writing code waits for his click, and
     the run this queues gets a planning pass."""
+    db.set_setting("require_build_approval", "1")  # the gate is off by default
     p = db.create_project("Gated", slug="gated", stage="active")
     db.update_project(p["id"], build_requested=1, build_approved=0)
     row = db.get_project(p["id"])

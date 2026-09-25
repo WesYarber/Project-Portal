@@ -314,7 +314,7 @@ def test_a_manual_run_ignores_the_hold(monkeypatch):
     monkeypatch.setattr(worker, "spawn_run", lambda p, t: started.append((p["id"], t)) or 1)
     asyncio.run(worker.manual_queue.put(project["id"]))
     assert asyncio.run(worker._start_one()) is True  # noqa: SLF001
-    assert started == [(project["id"], "triage")]
+    assert started == [(project["id"], worker.task_for(project, manual=True))]
 
 
 def test_the_hold_is_the_dashboard_reason():

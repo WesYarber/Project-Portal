@@ -326,9 +326,10 @@ def test_the_idle_reason_prefers_the_cap_answer_when_only_some_are_gated(temp_da
 # --- the prompt ------------------------------------------------------------
 
 def test_the_prompt_tells_the_agent_where_it_stands(temp_data_dir):
+    db.set_setting("require_build_approval", "1")
     project = idea(stage="active")
     prompt = agent_runner.build_prompt("plan", project)
-    assert "NOT yet approved for building" in prompt
+    assert "- Build approval: NOT yet approved for building" in prompt
 
     db.approve_build(project["id"])
     prompt = agent_runner.build_prompt("build", db.get_project(project["id"]))
@@ -415,3 +416,50 @@ def test_the_first_build_run_is_told_not_to_wait_for_a_plan(temp_data_dir):
     text = agent_runner.guidance_for("build", project)
     assert "If there is no PLAN.md yet" in text
     assert "never stop to have the plan confirmed" in text
+
+
+def test_with_the_gate_off_the_prompt_does_not_call_a_new_project_unapproved(temp_data_dir):
+    """Wes, 2026-09-25: "New projects still seem to think they need approval".
+    The scheduler handed an unapproved active project a BUILD task while the
+    prompt, reading the `build_approved` column alone, told the same agent it
+    was "NOT yet approved" - and home-tunnel-to-my-tailnet kept to research
+    "because the build still isn't approved", with no button to give the OK."""
+    db.set_setting("require_build_approval", "")
+    project = idea(stage="active")
+    assert worker.task_for(project) == "build"
+    prompt = agent_runner.build_prompt("build", project)
+    line = next(l for l in prompt.splitlines() if l.startswith("- Build approval:"))
+    assert "NOT yet approved" not in line
+    assert "not needed" in line
+    assert "do not ask for an OK" in line
+
+
+def test_the_contract_does_not_forbid_building_outright(temp_data_dir):
+    """The old request_build text ended "Never treat writing code as
+    pre-approved" - true only with the gate on, and read by every agent."""
+    db.set_setting("require_build_approval", "")
+    prompt = agent_runner.build_prompt("build", idea(stage="active"))
+    assert "pre-approved" not in prompt
+    assert "never stop to wait for an OK there" in prompt
+
+
+def test_a_fresh_install_is_seeded_with_the_gate_off(temp_data_dir):
+    """init_db seeds config.DEFAULT_SETTINGS, and that seed said "1" while the
+    worker's default said "0" - so every new install came up gated."""
+    assert config.DEFAULT_SETTINGS["require_build_approval"] == db.BUILD_APPROVAL_DEFAULT == "0"
+    db.get_conn().execute("DELETE FROM settings WHERE key = 'require_build_approval'")
+    db.get_conn().commit()
+    db.init_db()
+    assert db.get_setting("require_build_approval") == "0"
+    assert worker.require_build_approval() is False
+
+
+def test_a_request_left_over_from_the_gate_does_not_pause_the_project(temp_data_dir):
+    """project_shelf had its own copy of the gate, defaulting ON: with the
+    setting empty, a project whose agent once asked to build sat on the
+    paused shelf."""
+    db.set_setting("require_build_approval", "")
+    project = idea(stage="active", requested=True)
+    assert db.project_shelf(project) == "active"
+    db.set_setting("require_build_approval", "1")
+    assert db.project_shelf(project) == "paused"

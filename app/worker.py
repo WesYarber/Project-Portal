@@ -129,22 +129,11 @@ async def _rate_limit_backoff(
     return until, why
 
 
-# Off by default since 2026-09-08. Wes: "There should be no need to confirm
-# the plan from the user after onboarding a new project. Just start building."
-# Onboarding - taking an idea off the backlog - is the decision; with the gate
-# off, the first run on an active project builds. The gate itself stays for an
-# install that wants the explicit OK (Settings > agent > "Ask before building").
-BUILD_APPROVAL_DEFAULT = "0"
-
-
-def require_build_approval() -> bool:
-    """Whether writing code needs an explicit OK first. Off by default."""
-    return (db.get_setting("require_build_approval") or BUILD_APPROVAL_DEFAULT) == "1"
-
-
-def build_allowed(project: db.sqlite3.Row) -> bool:
-    """May a run on this project write code? Approval, or the gate switched off."""
-    return db.build_approved(project) or not require_build_approval()
+# The gate's default and its two readings live in db, where the prompt reads
+# them too; re-exported so the scheduler's callers keep their names.
+BUILD_APPROVAL_DEFAULT = db.BUILD_APPROVAL_DEFAULT
+require_build_approval = db.require_build_approval
+build_allowed = db.build_allowed
 
 
 def build_gated(project: db.sqlite3.Row) -> bool:
@@ -158,11 +147,7 @@ def build_gated(project: db.sqlite3.Row) -> bool:
     projects Wes had not decided to start. Triage and planning are cheap and
     reversible; writing code waits for him.
     """
-    return (
-        require_build_approval()
-        and db.build_requested(project)
-        and not db.build_approved(project)
-    )
+    return db.build_requested(project) and not db.build_allowed(project)
 
 
 def task_for(project: db.sqlite3.Row, manual: bool = False) -> str:
