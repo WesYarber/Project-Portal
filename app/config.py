@@ -1,7 +1,9 @@
 """Paths and default settings for Project Portal."""
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -821,23 +823,70 @@ def ssh_command(slug: str) -> str:
 # Anthropic's usage endpoint sorts requests carrying an unrecognized User-Agent
 # into a punitive rate-limit bucket (hours-long 429s), so the portal's usage
 # poller must present itself as the genuine CLI - `claude-cli/<version>
-# (external, cli)` - rather than a made-up name. The version is discovered once
-# from `claude --version` and cached; the constant below is only a fallback for
-# when the CLI is somehow not on PATH.
+# (external, cli)` - rather than a made-up name. The version is read from
+# `claude --version` and memoized until the binary underneath it changes; the
+# constant below is only a fallback for when the CLI is somehow not on PATH.
 DEFAULT_CLI_VERSION = "2.1.215"
 _cli_version_cache: str | None = None
+# The `claude` the cached version was read from: (real path, mtime_ns, size), or
+# () when there was no readable binary to stamp. None means nobody has stamped
+# it - the cache was set directly, as tests/conftest.py does to fence the suite
+# off the real binary - and an unstamped cache is never second-guessed.
+_cli_binary_stamp: tuple | None = None
+
+
+def _binary_stamp() -> tuple:
+    """A fingerprint of the `claude` on PATH, cheap enough to take every call.
+
+    `shutil.which` plus one `stat` - no subprocess - so this can guard the
+    memoized version on a path walked at every spawn. `()` when there is no
+    readable binary, which is a stamp in its own right: an install that appears
+    later does not match it.
+
+    The real path matters because the native install is a symlink into
+    `~/.local/share/claude/versions/<version>`, which `claude update` repoints -
+    leaving mtime and size untouched on both the link and the old target.
+    """
+    path = shutil.which("claude")
+    if not path:
+        return ()
+    try:
+        real = os.path.realpath(path)
+        info = os.stat(real)
+    except OSError:
+        return ()
+    return (real, info.st_mtime_ns, info.st_size)
+
+
+def _cli_binary_changed() -> bool:
+    """True only when a stamp was taken with the cached version and no longer
+    matches - so `claude update` under a running portal is noticed, while a
+    cache set by hand (no stamp) is left alone."""
+    if _cli_binary_stamp is None:
+        return False
+    return _binary_stamp() != _cli_binary_stamp
 
 
 def cli_version() -> str:
-    """The installed Claude CLI version, e.g. "2.1.215", discovered once.
+    """The installed Claude CLI version, e.g. "2.1.215", read once per binary.
+
+    Memoized, but not for the life of the process: the cache is thrown away as
+    soon as the `claude` on PATH is not the one it was read from, because
+    `claude update` runs *underneath* a portal that has been up for days and
+    every `MODEL_MIN_CLI` gate is decided from this number. Before that, a
+    version frozen at boot meant an updated CLI changed nothing until the next
+    restart or the next daily model check, whichever came first - so the answer
+    to "why is this run on the older Opus when I updated the CLI?" was "the
+    portal has not looked again yet".
 
     Never raises: any failure (no CLI on PATH, unparseable output, timeout)
     falls back to DEFAULT_CLI_VERSION. A stale-but-real version is still far
     better than a generic User-Agent, which is the failure this guards against.
     """
-    global _cli_version_cache
-    if _cli_version_cache is not None:
+    global _cli_version_cache, _cli_binary_stamp
+    if _cli_version_cache is not None and not _cli_binary_changed():
         return _cli_version_cache
+    stamp = _binary_stamp()
     version = DEFAULT_CLI_VERSION
     try:
         out = subprocess.run(
@@ -853,18 +902,24 @@ def cli_version() -> str:
     except (OSError, subprocess.SubprocessError, ValueError, IndexError):
         pass
     _cli_version_cache = version
+    # Last, and from before the read: a `claude update` that lands mid-read is
+    # then a stamp mismatch on the next call rather than a version nobody looks
+    # at again.
+    _cli_binary_stamp = stamp
     return version
 
 
 def refresh_cli_version() -> str:
-    """Forget the memoized CLI version and read it again.
+    """Forget the memoized CLI version and read it again, whatever the stamp says.
 
-    `cli_version()` caches for the life of the process, which is right for
-    something consulted at every spawn and wrong exactly once a day: an
-    adoption held behind a `MODEL_MIN_CLI` gate is released by `claude update`
-    running *underneath* a portal that has been up for a week, and a frozen
-    version means the gate never opens and the "it switches by itself" the
-    notification promised never happens. Called from the daily model check.
+    `cli_version()` already drops its cache when the binary underneath it
+    changes, so this is no longer the only thing standing between a
+    `claude update` and a `MODEL_MIN_CLI` gate that opens. It stays because the
+    daily model check wants one deliberate re-read before deciding what this
+    machine can spawn, and because clearing the cache re-reads past a stamp a
+    `stat` cannot tell apart: a CLI replaced in place at the same path, the same
+    size and the same mtime to the nanosecond. The stamp itself is left alone -
+    the re-read overwrites it either way.
     """
     global _cli_version_cache
     _cli_version_cache = None

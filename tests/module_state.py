@@ -99,6 +99,11 @@ EXEMPT: dict[tuple[str, str], str] = {
         "Pinned for the length of each test by `temp_data_dir`, so that no test "
         "shells out to the real `claude --version`. Restoring it around the "
         "test would fight that monkeypatch rather than help it.",
+    ("app.config", "_cli_binary_stamp"):
+        "The other half of that pin's key. `temp_data_dir` sets the version "
+        "cache and deliberately leaves this None, which is exactly what stops "
+        "`cli_version()` re-reading the pinned value against the real binary - "
+        "so restoring it apart from the cache would fight the same monkeypatch.",
     ("app.transcribe", "_available"):
         "Pinned by `temp_data_dir` for the same reason: an unpinned value lets "
         "one test reach the real Docker daemon and start portal-whisper.",

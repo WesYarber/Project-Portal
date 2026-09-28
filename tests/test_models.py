@@ -293,3 +293,176 @@ def test_the_settings_page_stays_quiet_when_every_pin_is_live(monkeypatch, clien
 def test_the_warning_box_exists_only_while_something_is_degraded(monkeypatch, client):
     _at_cli_version(monkeypatch, "2.1.258")
     assert 'id="model-degraded"' in client.get("/settings").text
+
+
+# ---------------------------------------------------------------------------
+# The cached CLI version has to notice `claude update`
+# ---------------------------------------------------------------------------
+# Wes, 2026-09-28: "the current run used Opus 5 instead of 5.5 like I expect".
+# It had, because this machine's CLI was older than MODEL_MIN_CLI["opus"] and
+# the gate did its job. The part that is a defect is what happened next:
+# `claude update` ran, and the portal - up for three days - went on spawning
+# the older Opus, because `cli_version()` was memoized for the life of the
+# process and the only thing that re-read it was a daily check already stamped
+# for that day. So the version is memoized against the binary it was read
+# from, and a `claude` that is not that binary any more is read again.
+
+
+# `temp_data_dir` pins `refresh_cli_version` for every test, so that the daily
+# model check's deliberate re-read cannot walk past the fence and shell out to
+# the real CLI. Captured here at import, before any fixture runs, so the one
+# test that is ABOUT that function can call the genuine one.
+_REAL_REFRESH = config.refresh_cli_version
+
+
+def _fake_cli(tmp_path, version, name="claude", counter=None):
+    """A `claude` on PATH that prints a version, and optionally counts calls."""
+    home = tmp_path / "fakebin"
+    home.mkdir(exist_ok=True)
+    path = home / name
+    tally = f'echo x >> "{counter}"\n' if counter else ""
+    path.write_text(f'#!/bin/sh\n{tally}echo "{version} (Claude Code)"\n')
+    path.chmod(0o755)
+    return path
+
+
+def _unmemoized(monkeypatch, tmp_path):
+    """A fresh cache with PATH pointing only at the fake bin directory."""
+    monkeypatch.setenv("PATH", str(tmp_path / "fakebin"))
+    monkeypatch.setattr(config, "_cli_version_cache", None, raising=False)
+    monkeypatch.setattr(config, "_cli_binary_stamp", None, raising=False)
+
+
+def _one_below(version):
+    major, minor, patch = version.split(".")
+    return f"{major}.{minor}.{int(patch) - 1}"
+
+
+def test_an_updated_cli_is_read_again_without_a_restart(monkeypatch, tmp_path):
+    _fake_cli(tmp_path, "2.1.258")
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_version() == "2.1.258"
+
+    # `claude update`, underneath a process that already has an answer.
+    _fake_cli(tmp_path, "2.1.283")
+    assert config.cli_version() == "2.1.283"
+
+
+def test_the_same_binary_is_read_only_once(monkeypatch, tmp_path):
+    # The point of memoizing at all: this is consulted at every spawn and on
+    # the usage poller's path, so it must not fork `claude --version` per call.
+    counter = tmp_path / "calls"
+    _fake_cli(tmp_path, "2.1.283", counter=counter)
+    _unmemoized(monkeypatch, tmp_path)
+    for _ in range(5):
+        assert config.cli_version() == "2.1.283"
+    assert counter.read_text().count("x") == 1
+
+
+def test_a_cache_nobody_stamped_is_never_second_guessed(monkeypatch, tmp_path):
+    # tests/conftest.py fences the whole suite off the real binary by pinning
+    # `_cli_version_cache` and nothing else. If an unstamped cache were checked
+    # against whatever `claude` is on PATH, every test in the suite would shell
+    # out to the real CLI - so this holds that fence from the other side.
+    counter = tmp_path / "calls"
+    _fake_cli(tmp_path, "2.1.283", counter=counter)
+    monkeypatch.setenv("PATH", str(tmp_path / "fakebin"))
+    monkeypatch.setattr(config, "_cli_version_cache", "1.2.3", raising=False)
+    monkeypatch.setattr(config, "_cli_binary_stamp", None, raising=False)
+    assert config.cli_version() == "1.2.3"
+    assert not counter.exists(), "an unstamped cache shelled out"
+
+
+def test_a_repointed_version_symlink_is_noticed(monkeypatch, tmp_path):
+    # The shape a native install actually has: ~/.local/bin/claude is a symlink
+    # into ~/.local/share/claude/versions/<version>, and `claude update` writes
+    # a new version directory and repoints the link. The link's own mtime and
+    # size say nothing about which version it names, so the stamp has to be
+    # taken from the resolved path - here the two targets are made identical in
+    # size and mtime so the path is the ONLY thing that differs.
+    versions = tmp_path / "versions"
+    versions.mkdir()
+    old = _fake_cli(tmp_path, "2.1.258", name="old")
+    new = _fake_cli(tmp_path, "2.1.283", name="new")
+    assert old.stat().st_size == new.stat().st_size, "same size on purpose"
+    import os
+    os.utime(new, ns=(old.stat().st_mtime_ns, old.stat().st_mtime_ns))
+    link = tmp_path / "fakebin" / "claude"
+    link.symlink_to(old)
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_version() == "2.1.258"
+
+    link.unlink()
+    link.symlink_to(new)
+    assert config.cli_version() == "2.1.283"
+
+
+def test_a_cli_that_appears_later_is_noticed(monkeypatch, tmp_path):
+    # No `claude` at all is itself a stamp: the fallback version must not be
+    # kept forever once one is installed.
+    (tmp_path / "fakebin").mkdir()
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_version() == config.DEFAULT_CLI_VERSION
+
+    _fake_cli(tmp_path, "2.1.283")
+    assert config.cli_version() == "2.1.283"
+
+
+def test_refresh_re_reads_a_cli_replaced_without_a_trace(monkeypatch, tmp_path):
+    # Same path, same size, same mtime to the nanosecond - a stamp collision,
+    # which is why the daily model check's deliberate refresh still has a job.
+    import os
+    path = _fake_cli(tmp_path, "2.1.258")
+    stamp = path.stat().st_mtime_ns
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_version() == "2.1.258"
+
+    path.write_text(path.read_text().replace("2.1.258", "2.1.283"))
+    os.utime(path, ns=(stamp, stamp))
+    assert config.cli_version() == "2.1.258", "the collision this describes"
+    assert _REAL_REFRESH() == "2.1.283"
+
+
+def test_a_cli_replaced_at_the_same_instant_is_noticed_by_its_size(monkeypatch,
+                                                                   tmp_path):
+    # Path and mtime both unchanged - the size is the only thing left to see it
+    # by. A sweep survivor on 2026-09-28: every other test here differs in the
+    # path or the clock as well, so dropping size from the stamp went unnoticed.
+    import os
+    path = _fake_cli(tmp_path, "2.1.258")
+    stamp = path.stat().st_mtime_ns
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_version() == "2.1.258"
+
+    _fake_cli(tmp_path, "2.1.283.1")  # one character longer, same path
+    os.utime(path, ns=(stamp, stamp))
+    assert path.stat().st_mtime_ns == stamp, "the clock is unchanged on purpose"
+    assert config.cli_version() == "2.1.283.1"
+
+
+def test_a_binary_that_vanishes_between_which_and_stat_does_not_raise(monkeypatch,
+                                                                     tmp_path):
+    # `shutil.which` says yes, and the file is gone by the `stat` a line later.
+    # Narrow, but this runs on the path walked at every spawn, and the thing
+    # most likely to replace the binary mid-read is the `claude update` the
+    # stamp exists to notice - so it must degrade to the fallback, not raise.
+    (tmp_path / "fakebin").mkdir()
+    _unmemoized(monkeypatch, tmp_path)
+    monkeypatch.setattr(config.shutil, "which",
+                        lambda _name: str(tmp_path / "gone" / "claude"))
+    assert config._binary_stamp() == (), "a failed stat is a stamp, not a crash"
+    assert config.cli_version() == config.DEFAULT_CLI_VERSION
+
+
+def test_a_model_gate_opens_as_soon_as_the_cli_is_updated(monkeypatch, tmp_path):
+    # Wes's report, end to end. Below the gate the spawn degrades to the bare
+    # alias (an older Opus, but running); the moment `claude update` has run,
+    # the very next spawn gets the pinned id - no restart, nothing to re-read
+    # by hand, no waiting for tomorrow's model check.
+    required = config.MODEL_MIN_CLI["opus"]
+    _fake_cli(tmp_path, _one_below(required))
+    _unmemoized(monkeypatch, tmp_path)
+    assert config.cli_model("opus") == "opus"
+
+    _fake_cli(tmp_path, required)
+    assert config.cli_model("opus") == config.CLI_MODEL_IDS["opus"]
