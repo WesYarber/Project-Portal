@@ -186,24 +186,75 @@ def cli_model(alias: str) -> str:
     entry in MODEL_MIN_CLI, so an undetectable CLI also degrades rather than
     spawning an id it may not support.
     """
-    pins, gates = CLI_MODEL_IDS, MODEL_MIN_CLI
-    try:
-        # Lazy: app.db imports this module, so the adoption layer cannot be a
-        # top-level import here. Fails open to the shipped pins - a spawn is
-        # not the place to discover the settings table is unreadable.
-        from app import modeladopt
-
-        pins, gates = modeladopt.pins(), modeladopt.min_cli()
-    except Exception:  # noqa: BLE001 - see above
-        pass
-
+    pins, gates = _pins_and_gates()
     pinned = pins.get(alias)
     if pinned is None:
         return alias
-    required = gates.get(alias)
-    if required and _version_tuple(cli_version()) < _version_tuple(required):
+    if _held_back(alias, gates):
         return alias
     return pinned
+
+
+def degraded_models() -> list[dict]:
+    """Picker entries this machine spawns as something older than their label.
+
+    A pin held behind a `MODEL_MIN_CLI` gate is a silent downgrade: the
+    dropdown says Opus 5.5, `cli_model()` hands the CLI the bare `opus` alias,
+    and the run bills an older Opus. Wes hit exactly that on 2026-09-28 -
+    *"the current run used Opus 5 instead of 5.5 like I expect and is set up in
+    the settings"* - and nothing on any page of the portal could have told him
+    why, because the only thing that ever announced a gate was an adoption
+    this install made itself (`app/modeladopt.py`). This pin arrived in a code
+    update from the publishing node, which adopted it against its own newer
+    CLI, so no adoption ever ran here and nothing was ever said.
+
+    One row per affected alias: what the picker calls it, the id it is pinned
+    to, the version that would spawn it and the version actually installed.
+    Empty - the usual answer - means every pin is live.
+    """
+    pins, gates = _pins_and_gates()
+    rows: list[dict] = []
+    for alias, label in model_choices():
+        pinned = pins.get(alias)
+        if pinned is None or not _held_back(alias, gates):
+            continue
+        rows.append({
+            "alias": alias,
+            "label": label,
+            "model_id": pinned,
+            "required_cli": gates.get(alias, ""),
+            "installed_cli": cli_version(),
+        })
+    return rows
+
+
+def _pins_and_gates() -> tuple[dict[str, str], dict[str, str]]:
+    """The pins and CLI gates in force: shipped constants, adoptions over them.
+
+    Lazy: app.db imports this module, so the adoption layer cannot be a
+    top-level import here. Fails open to the shipped pins - a spawn is not the
+    place to discover the settings table is unreadable. Copies rather than the
+    constants themselves, so a caller holding the result cannot edit what
+    every future spawn reads.
+    """
+    try:
+        from app import modeladopt
+
+        return modeladopt.pins(), modeladopt.min_cli()
+    except Exception:  # noqa: BLE001 - see above
+        return dict(CLI_MODEL_IDS), dict(MODEL_MIN_CLI)
+
+
+def _held_back(alias: str, gates: dict[str, str]) -> bool:
+    """Is this alias's pin withheld because the installed CLI is too old?
+
+    The single decision behind both `cli_model()` and `degraded_models()`, so
+    the page can never disagree with the spawn about which models are
+    degraded. An alias with no gate is never held back, whatever version is
+    installed: a gate applied to every pin would downgrade every run.
+    """
+    required = gates.get(alias)
+    return bool(required) and _version_tuple(cli_version()) < _version_tuple(required)
 # Model for a research burst. Deliberately not the ordinary default: a burst
 # only runs on allowance that is about to evaporate, so it is the one place
 # where reaching for the newest, most expensive model costs nothing real.

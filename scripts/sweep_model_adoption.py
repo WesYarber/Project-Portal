@@ -130,14 +130,21 @@ MUTATIONS: list[tuple[str, str, str, str]] = [
     (
         "an adoption does not clear a stale min-CLI gate",
         "app/modeladopt.py",
-        "    else:\n        gates.pop(alias, None)",
-        "    else:\n        pass",
+        "    gates = min_cli_overrides()\n    gates[alias] = required_cli",
+        "    gates = min_cli_overrides()\n"
+        "    if required_cli:\n        gates[alias] = required_cli",
+    ),
+    (
+        "a blank gate override is filtered out instead of erasing the shipped one",
+        "app/modeladopt.py",
+        "    return {alias: required for alias, required in merged.items() if required}",
+        "    return merged",
     ),
     (
         "the adopted pin never reaches the spawn boundary",
         "app/config.py",
-        "        pins, gates = modeladopt.pins(), modeladopt.min_cli()",
-        "        pins, gates = CLI_MODEL_IDS, MODEL_MIN_CLI",
+        "        return modeladopt.pins(), modeladopt.min_cli()",
+        "        return dict(CLI_MODEL_IDS), dict(MODEL_MIN_CLI)",
     ),
     (
         "the adopted label never reaches the picker",

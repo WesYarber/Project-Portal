@@ -316,6 +316,11 @@ def test_a_failed_notification_still_journals_the_release(monkeypatch):
 
 
 def test_run_check_adopts_a_new_model_and_says_it_did(monkeypatch):
+    # On a CLI new enough for every shipped pin, so the adoption is the only
+    # news: the suite otherwise runs at DEFAULT_CLI_VERSION, which is below
+    # fable's requirement, and the check would rightly also report that pin as
+    # withheld (see test_run_check_says_when_a_shipped_pin_is_being_withheld).
+    monkeypatch.setattr(config, "_cli_version_cache", "99.0.0", raising=False)
     modelwatch.check(_models())  # seed
     later = _models() + [{"id": "claude-opus-6", "display_name": "Claude Opus 6",
                           "created_at": "2026-11-01T00:00:00Z"}]
@@ -477,3 +482,89 @@ def test_the_settings_copy_describes_adopting_not_asking(client):
     # ...and it still says what happens when the CLI is too old, which is the
     # half a person would otherwise report as the adoption not working.
     assert "claude update" in html
+
+
+def test_run_check_says_when_a_shipped_pin_is_being_withheld(monkeypatch):
+    # The case nothing used to cover: the pin arrived in a code update from
+    # the publishing node, which probed it against its own newer CLI. No
+    # adoption ever runs on a follower, so `adopt()` never records the gate
+    # and Wes is never told his runs are on an older model. He found out by
+    # reading a run's own model id on 2026-09-28.
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.215", raising=False)
+    monkeypatch.setattr(modelwatch, "check", lambda *a, **k: _fold(_models()))
+
+    sent = []
+
+    async def fake_notify(title, message, **kw):
+        sent.append((title, message))
+
+    monkeypatch.setattr(notify, "notify", fake_notify)
+    asyncio.run(modelwatch.run_check())
+
+    titles = [title for title, _ in sent]
+    assert "Fable 5.1 is not the model your runs are using" in titles
+    body = next(message for title, message in sent if title.startswith("Fable"))
+    assert "claude-fable-5-1" in body
+    assert config.MODEL_MIN_CLI["fable"] in body
+    assert "2.1.215" in body
+    assert "claude update" in body
+
+
+def test_a_withheld_pin_is_announced_once_and_then_goes_live_once(monkeypatch):
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.215", raising=False)
+    monkeypatch.setattr(modelwatch, "check", lambda *a, **k: _fold(_models()))
+
+    sent = []
+
+    async def fake_notify(title, message, **kw):
+        sent.append(title)
+
+    monkeypatch.setattr(notify, "notify", fake_notify)
+    asyncio.run(modelwatch.run_check())
+    first = [t for t in sent if t.startswith("Fable")]
+    assert len(first) == 1
+
+    # A second check on the same old CLI must not say it again. A daily
+    # repetition of "your runs are on an older model" is how a notification
+    # channel gets muted.
+    sent.clear()
+    asyncio.run(modelwatch.run_check())
+    assert [t for t in sent if t.startswith("Fable")] == []
+
+    # And when `claude update` finally runs, the loop closes exactly once.
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.280", raising=False)
+    sent.clear()
+    asyncio.run(modelwatch.run_check())
+    assert "Fable 5.1 is live" in sent
+    sent.clear()
+    asyncio.run(modelwatch.run_check())
+    assert sent == []
+
+
+def test_a_pin_this_cli_can_spawn_is_never_announced_as_withheld(monkeypatch):
+    monkeypatch.setattr(config, "_cli_version_cache", "99.0.0", raising=False)
+    assert modeladopt.note_gates() == []
+    assert modeladopt.gated() == {}
+
+
+def test_a_withheld_pin_moving_to_a_newer_model_is_announced_again(monkeypatch):
+    # The second model is a different fact: he was told fable 5.1 was being
+    # withheld, and what is withheld now is 5.2.
+    def fable_rows():
+        return [row for row in modeladopt.note_gates() if row["alias"] == "fable"]
+
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.215", raising=False)
+    assert [row["model_id"] for row in fable_rows()] == ["claude-fable-5-1"]
+    assert fable_rows() == []
+
+    # Now a code update moves the shipped pin on, exactly as `deploy/update.py`
+    # would. What is being withheld is a different model, so it is news again.
+    # (A pin moved by an ADOPTION here is not this path: `record()` files its
+    # own gate and `adopt()` announces it, so note_gates stays quiet and
+    # nobody is told twice.)
+    monkeypatch.setitem(config.CLI_MODEL_IDS, "fable", "claude-fable-5-2")
+    monkeypatch.setitem(config.MODEL_MIN_CLI, "fable", "2.1.300")
+    rows = fable_rows()
+    assert [row["model_id"] for row in rows] == ["claude-fable-5-2"]
+    assert rows[0]["required_cli"] == "2.1.300"
+    assert fable_rows() == []

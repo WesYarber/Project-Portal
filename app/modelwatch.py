@@ -274,6 +274,24 @@ def announcement(model: dict, verdict: Optional[dict] = None) -> tuple[str, str]
     return title, body + released
 
 
+def gate_announcement(row: dict) -> tuple[str, str]:
+    """The (title, body) for a pin this machine's CLI is too old to spawn.
+
+    Titled as what is wrong rather than as news about a model: this arrives on
+    an install that has been quietly running an older model for as long as the
+    pin has been there, so "a new model is out" would be the wrong story.
+    """
+    label = row.get("label") or row["model_id"]
+    required = row.get("required_cli") or "a newer version"
+    return (
+        f"{label} is not the model your runs are using",
+        f"The portal is pinned to `{row['model_id']}`, but this machine's "
+        f"Claude CLI is {config.cli_version()} and it needs {required}, so "
+        f"runs spawn the plain `{row['alias']}` alias - an older model - "
+        f"instead. Run `claude update` here and they switch by themselves.",
+    )
+
+
 def live_announcement(cleared: dict) -> tuple[str, str]:
     """The (title, body) for a gated adoption that has just gone live."""
     label = cleared.get("label") or cleared["model_id"]
@@ -350,6 +368,16 @@ async def run_check() -> dict:
         adopted.append(verdict)
         model = next((m for m in models if m["id"] == verdict["model_id"]), None)
         await announce(model or {"id": verdict["model_id"]}, verdict)
+
+    # A pin that arrived in a code update rather than from an adoption here.
+    # Nothing else in this module would ever mention it, and on a follower
+    # whose CLI is older than the publisher's it is downgrading every run.
+    try:
+        for row in modeladopt.note_gates():
+            title, body = gate_announcement(row)
+            await _send(title, body, row["model_id"])
+    except Exception:  # noqa: BLE001
+        log.exception("Could not announce a withheld model pin")
 
     # And an adoption that was waiting on `claude update`, now that it is not.
     try:

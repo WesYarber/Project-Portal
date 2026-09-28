@@ -237,13 +237,29 @@ def pins() -> dict[str, str]:
 
 
 def min_cli_overrides() -> dict[str, str]:
-    return {str(k): str(v) for k, v in _load(MIN_CLI_KEY).items() if isinstance(v, str) and v}
+    """The CLI requirement this install has recorded per alias.
+
+    A blank value is kept rather than filtered out, and means something
+    specific: *this alias needs no version at all*. Dropping blanks here was
+    how an adoption failed to clear a requirement that came from
+    `config.MODEL_MIN_CLI` - see `min_cli()`.
+    """
+    return {str(k): str(v) for k, v in _load(MIN_CLI_KEY).items() if isinstance(v, str)}
 
 
 def min_cli() -> dict[str, str]:
+    """The CLI version each alias needs: shipped requirements, adoptions over.
+
+    An adoption has to be able to *remove* a requirement, not only add one.
+    `opus` ships gated at 2.1.280 because that is what claude-opus-5-5 needs;
+    the day a probe adopts claude-opus-6 by successfully spawning it, that
+    requirement belongs to a model this alias no longer points at, and leaving
+    it in force would withhold a pin the CLI has just been observed to run.
+    So a blank override erases the shipped entry rather than merging under it.
+    """
     merged = dict(config.MODEL_MIN_CLI)
     merged.update(min_cli_overrides())
-    return merged
+    return {alias: required for alias, required in merged.items() if required}
 
 
 def label_overrides() -> dict[str, str]:
@@ -301,6 +317,43 @@ def cleared_gates() -> list[dict]:
     return live
 
 
+def note_gates() -> list[dict]:
+    """Pins withheld by this machine's CLI that nobody has been told about.
+
+    `adopt()` records a gate the moment its own probe discovers one, and
+    `cleared_gates()` closes the loop when `claude update` opens it. Neither
+    ever sees a pin that arrived in a **code update**: the publishing node
+    probed against its own newer CLI, shipped the id as a constant in
+    `config.CLI_MODEL_IDS`, and on a follower with an older CLI every run is
+    quietly downgraded with nothing said anywhere. That is how Wes came to be
+    running Opus 5 on 2026-09-28 while the settings picker read Opus 5.5.
+
+    Records each alias as it reports it, so the news goes out exactly once and
+    the entry then rides `cleared_gates()` to the "it is live now" half. A pin
+    that moves on to a newer id while withheld is announced again, because the
+    model being withheld is a different one.
+    """
+    waiting = gated()
+    fresh: list[dict] = []
+    gates = min_cli()
+    names = labels()
+    for alias, model_id in sorted(pins().items()):
+        if waiting.get(alias) == model_id:
+            continue  # already announced, still waiting on `claude update`
+        if config.cli_model(alias) == model_id:
+            continue  # live on this machine; there is nothing to say
+        waiting[alias] = model_id
+        fresh.append({
+            "alias": alias,
+            "model_id": model_id,
+            "label": names.get(alias, model_id),
+            "required_cli": gates.get(alias, ""),
+        })
+    if fresh:
+        _store(GATED_KEY, waiting)
+    return fresh
+
+
 def pending() -> dict[str, dict]:
     return {str(k): v for k, v in _load(PENDING_KEY).items() if isinstance(v, dict)}
 
@@ -333,11 +386,12 @@ def record(alias: str, model_id: str, required_cli: str = "", label: str = "") -
     blob[alias] = model_id
     _store(PINS_KEY, blob)
 
+    # Written even when blank: a pop would only remove an override and leave a
+    # shipped `config.MODEL_MIN_CLI` entry standing, which is how an adopted
+    # model that this very CLI just spawned could still be withheld from every
+    # run. The blank is the erasure; `min_cli()` reads it that way.
     gates = min_cli_overrides()
-    if required_cli:
-        gates[alias] = required_cli
-    else:
-        gates.pop(alias, None)
+    gates[alias] = required_cli
     _store(MIN_CLI_KEY, gates)
 
     if label:

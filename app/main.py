@@ -3388,6 +3388,12 @@ async def settings_page(request: Request) -> HTMLResponse:
             "nodes": nodes.view(),
             "this_install": nodes.this_install(),
             "model_catalog": modelwatch.catalog(),
+            # Models the picker above names one way and this machine spawns as
+            # something older, because the pinned id needs a newer Claude CLI
+            # than the one installed. Empty on a healthy install; when it is
+            # not, it is the only place the portal says so, and it is the
+            # answer to "why did that run use Opus 5 when I picked 5.5".
+            "model_degradations": config.degraded_models(),
             "skill_addresses": addresswatch.last_result(),
             "strays": _stray_view(),
         },

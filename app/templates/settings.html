@@ -230,6 +230,26 @@
           {% endfor %}
         </select>
       </div>
+      {% if model_degradations %}
+      {# The pins above are not always what runs. A pin whose CLI requirement
+         this machine does not meet degrades to the bare alias at the spawn
+         boundary (config.cli_model), which is a silent downgrade of every run
+         - and the picker keeps naming the model it cannot reach. This is the
+         only screen that says otherwise. #}
+      <div class="field">
+        <p class="hint warn" id="model-degraded">
+          {% for row in model_degradations %}
+          <strong>{{ row.label }}</strong> is not what runs on this machine.
+          It needs Claude CLI {{ row.required_cli }} and this one is
+          {{ row.installed_cli }}, so runs spawn the CLI's plain
+          <code>{{ row.alias }}</code> alias - an older model - instead of
+          <code>{{ row.model_id }}</code>. Run <code>claude update</code> on
+          this machine and it switches by itself.
+          {% if not loop.last %}<br>{% endif %}
+          {% endfor %}
+        </p>
+      </div>
+      {% endif %}
       <div class="field checkbox-row">
         <input type="checkbox" id="self_review" name="self_review" {{ 'checked' if (settings.self_review or '1') == '1' else '' }}>
         <label for="self_review">Self-review before surfacing for review{% call info() %}When a run says its work is finished, a read-only critic first checks the committed diff against what the run claims and the project's open todos. If it finds concrete gaps, the project stays on the <strong>active</strong> shelf with those gaps journalled for the next run, so your review queue only sees finished work. Fails open - anything uncertain surfaces as normal.{% endcall %}</label>

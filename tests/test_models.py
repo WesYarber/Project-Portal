@@ -1,7 +1,17 @@
 """Per-project agent override and the global default."""
 from __future__ import annotations
 
+import pytest
+from starlette.testclient import TestClient
+
 from app import agent_runner, config, db
+
+
+@pytest.fixture
+def client(temp_data_dir):
+    from app import main
+
+    return TestClient(main.app)
 
 
 def test_default_model_is_opus():
@@ -179,3 +189,107 @@ def test_a_two_digit_minor_version_is_newer_than_a_one_digit_one():
     # The same trap one field to the left, and the one that arrives on its own
     # the day the CLI reaches 2.10: as text "2.10.0" sorts BELOW "2.9.0".
     assert config._version_tuple("2.10.0") > config._version_tuple("2.9.0")
+
+
+# ---------------------------------------------------------------------------
+# Saying so: a pin this CLI cannot spawn is a downgrade, and it must be visible
+# ---------------------------------------------------------------------------
+# Wes, 2026-09-28: "It seems the current run used Opus 5 instead of 5.5 like I
+# expect and is set up in the settings." It had: this machine's CLI was 2.1.258
+# and `claude-opus-5-5` needs 2.1.280, so every run degraded to the bare alias.
+# The pin arrived in a code update from the publishing node rather than from an
+# adoption here, so nothing had ever announced the gate.
+
+
+def test_degraded_models_names_the_alias_the_cli_cannot_spawn(monkeypatch):
+    _at_cli_version(monkeypatch, "2.1.258")
+    rows = {row["alias"]: row for row in config.degraded_models()}
+    assert "opus" in rows
+    assert rows["opus"]["model_id"] == "claude-opus-5-5"
+    assert rows["opus"]["required_cli"] == config.MODEL_MIN_CLI["opus"]
+    assert rows["opus"]["installed_cli"] == "2.1.258"
+    assert rows["opus"]["label"] == dict(config.model_choices())["opus"]
+
+
+def test_nothing_is_degraded_on_a_cli_new_enough_for_every_pin(monkeypatch):
+    _at_cli_version(monkeypatch, "99.0.0")
+    assert config.degraded_models() == []
+
+
+def test_the_gate_closing_is_what_puts_a_row_on_the_page(monkeypatch):
+    required = config.MODEL_MIN_CLI["opus"]
+    major, minor, patch = config._version_tuple(required)
+
+    _at_cli_version(monkeypatch, f"{major}.{minor}.{patch - 1}")
+    assert "opus" in {row["alias"] for row in config.degraded_models()}
+
+    _at_cli_version(monkeypatch, required)
+    assert "opus" not in {row["alias"] for row in config.degraded_models()}
+
+
+def test_an_ungated_pin_is_never_called_degraded(monkeypatch):
+    # The mirror of test_an_ungated_pin_is_not_held_back_by_an_ancient_cli: a
+    # pin with no version requirement spawns on any CLI, so reporting it as a
+    # downgrade would put a permanent false warning on the settings page.
+    monkeypatch.setitem(config.CLI_MODEL_IDS, "sonnet", "claude-sonnet-5")
+    assert "sonnet" not in config.MODEL_MIN_CLI
+    _at_cli_version(monkeypatch, "0.0.1")
+    assert "sonnet" not in {row["alias"] for row in config.degraded_models()}
+
+
+def test_an_unpinned_alias_is_never_called_degraded(monkeypatch):
+    _at_cli_version(monkeypatch, "0.0.1")
+    aliases = {row["alias"] for row in config.degraded_models()}
+    assert "haiku" not in aliases
+
+
+def test_the_warning_and_the_spawn_can_never_disagree(monkeypatch):
+    # The property the whole thing rests on: a page claiming a model is
+    # degraded while the spawn uses the pinned id (or the reverse) is worse
+    # than no page at all. Both sides read one decision, and this holds them
+    # to it across every version that matters.
+    for version in ("0.0.1", "2.1.223", "2.1.258", "2.1.280", "99.0.0"):
+        _at_cli_version(monkeypatch, version)
+        degraded = {row["alias"] for row in config.degraded_models()}
+        for alias in config.MODEL_VALUES:
+            pinned = config.CLI_MODEL_IDS.get(alias)
+            if pinned is None:
+                assert alias not in degraded, version
+                continue
+            assert (alias in degraded) == (config.cli_model(alias) != pinned), (
+                f"{alias} at CLI {version}"
+            )
+
+
+def test_a_row_carries_the_label_an_adoption_gave_the_alias(monkeypatch):
+    from app import modeladopt
+
+    _at_cli_version(monkeypatch, "2.1.258")
+    modeladopt.record("opus", "claude-opus-5-5", "2.1.280", label="Opus 5.5")
+    rows = {row["alias"]: row for row in config.degraded_models()}
+    assert rows["opus"]["label"] == "Opus 5.5"
+
+
+def test_the_settings_page_says_a_pin_is_not_what_runs(monkeypatch, client):
+    _at_cli_version(monkeypatch, "2.1.258")
+    page = client.get("/settings").text
+    assert "is not what runs on this machine" in page
+    assert config.MODEL_MIN_CLI["opus"] in page
+    assert "2.1.258" in page
+    assert "claude-opus-5-5" in page
+    assert "claude update" in page
+
+
+def test_the_settings_page_stays_quiet_when_every_pin_is_live(monkeypatch, client):
+    _at_cli_version(monkeypatch, "99.0.0")
+    page = client.get("/settings").text
+    assert "is not what runs on this machine" not in page
+    # Not even the empty box it would live in. A warning element with no rows
+    # in it still paints - a yellow paragraph's margins on a healthy install -
+    # and asserting only on the text leaves that invisible to the suite.
+    assert 'id="model-degraded"' not in page
+
+
+def test_the_warning_box_exists_only_while_something_is_degraded(monkeypatch, client):
+    _at_cli_version(monkeypatch, "2.1.258")
+    assert 'id="model-degraded"' in client.get("/settings").text

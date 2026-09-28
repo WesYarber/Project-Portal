@@ -188,7 +188,24 @@ def test_recording_without_a_version_clears_a_gate_that_no_longer_applies():
     modeladopt.record("opus", "claude-opus-6", "2.2.0")
     assert modeladopt.min_cli()["opus"] == "2.2.0"
     modeladopt.record("opus", "claude-opus-7")
-    assert "opus" not in modeladopt.min_cli_overrides()
+    assert "opus" not in modeladopt.min_cli()
+
+
+def test_an_adoption_clears_a_requirement_that_was_shipped_in_the_code(monkeypatch):
+    # The gate that matters most is the one nobody here recorded: `opus` ships
+    # gated at MODEL_MIN_CLI["opus"] because that is what claude-opus-5-5
+    # needs. Adopt a later opus by actually spawning it, and the old model's
+    # requirement must not go on withholding the new pin from every run - an
+    # override that could only ever ADD a version could not say so, and the
+    # portal would sit on a model it had just watched run.
+    monkeypatch.setattr(config, "_cli_version_cache", "2.1.215", raising=False)
+    assert config._version_tuple("2.1.215") < config._version_tuple(
+        config.MODEL_MIN_CLI["opus"]
+    )
+    modeladopt.record("opus", "claude-opus-6")
+    assert "opus" not in modeladopt.min_cli()
+    assert config.cli_model("opus") == "claude-opus-6"
+    assert modeladopt.gated() == {}
 
 
 def test_the_label_follows_the_adoption(monkeypatch):
