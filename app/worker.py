@@ -14,7 +14,7 @@ from string import Template
 from typing import Optional
 
 from app import (
-    addresswatch, agent_runner, apiretry, config, crashloop, daycycle, db, hookguard, journalfile,
+    addresswatch, agent_runner, apiretry, claudeapp, config, crashloop, daycycle, db, hookguard, journalfile,
     limitpause, limits, manualqueue, memory, midrun, mirror, modelwatch, nodes, notes, notify, oneoff, orphans,
     pacing, people,
     portalmcp, preview, pricing, proof, quiet,
@@ -656,6 +656,12 @@ async def _start_one() -> bool:
             # request or put two agents in one workspace; the next tick that
             # finds it free will honor it.
             await manual_queue.put(manual_project_id)
+            return False
+        if claudeapp.hosted_elsewhere(db.get_project(manual_project_id)):
+            # Built in the Claude app on another machine: there is nothing here
+            # for an agent to work on, so not even a person's "run now" starts
+            # one. Dropped rather than passed on, or `_pick_project` would fall
+            # through to a scheduled pick that skipped every pacing guard.
             return False
     elif not worker_enabled:
         return False
@@ -2007,6 +2013,8 @@ async def _rerun_for_unseen_notes(project: db.sqlite3.Row) -> bool:
     if fresh is None:
         return False
 
+    if claudeapp.hosted_elsewhere(fresh):
+        return False
     parked = db.is_paused(fresh) or fresh["stage"] == "review"
     if parked:
         db.update_project(project_id, stage="active", paused=None)
@@ -2900,6 +2908,10 @@ async def reactivate_on_note(project: db.sqlite3.Row) -> bool:
     """
     if not (db.is_paused(project) or project["stage"] == "review"):
         return False
+    # Built in the Claude app elsewhere: the note waits for the next session's
+    # context instead of waking an agent here (app/claudeapp.py).
+    if claudeapp.hosted_elsewhere(project):
+        return False
     db.update_project(project["id"], stage="active", paused=None)
     db.add_journal(
         project["id"], "system", "status",
@@ -2928,6 +2940,8 @@ def can_run_now(project: db.sqlite3.Row) -> bool:
     replacing it, and a note on a parked project has always woken it up.
     """
     if str(project["stage"]) not in RUNNABLE_STAGES:
+        return False
+    if claudeapp.hosted_elsewhere(project):
         return False
     if db.is_project_running(int(project["id"])):
         return False

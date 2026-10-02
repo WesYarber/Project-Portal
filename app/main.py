@@ -29,12 +29,14 @@ from app import (
     agent_runner,
     ask,
     attachments,
+    claudeapp,
     claudelogin,
     climemory,
     config,
     crossproject,
     daycycle,
     db,
+    extapi,
     filetree,
     fileview,
     headroom,
@@ -278,6 +280,9 @@ app.mount(
     vendorstatic.VersionedStatic(directory=str(config.BASE_DIR / "app" / "static")),
     name="static",
 )
+
+# The Claude app plugin's API (app/extapi.py): JSON under /api/ext/v1/.
+app.include_router(extapi.router)
 
 templates = Jinja2Templates(directory=str(config.BASE_DIR / "app" / "templates"))
 # Self-modifying runs commit template + Python changes together, but only the
@@ -1358,6 +1363,9 @@ async def project_page(request: Request, slug: str) -> HTMLResponse:
             "journal_attachments": db.attachments_by_journal(project["id"]),
             "ssh_command": config.ssh_command(slug),
             "build_gated": worker.build_gated(project),
+            # Where else it lives and its Claude app sessions (app/claudeapp.py),
+            # or None for a project nobody has linked from the Claude app.
+            "claude_app": claudeapp.page_view(project),
             # Whether the green "add note" button will start a run on its own,
             # which is also what decides if "add & run now" is worth rendering.
             "note_runs_now": worker.can_run_now(project),

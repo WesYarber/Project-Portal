@@ -87,10 +87,10 @@ MUTATIONS = [
      ""),
     # --- app/templates/project.html: the button row ---
     (TP, "add & run now is rendered beside a green button that already runs",
-     "      {% if not note_runs_now %}",
-     "      {% if True %}"),
+     "      {% if not note_runs_now and not (claude_app and claude_app.elsewhere) %}",
+     "      {% if not (claude_app and claude_app.elsewhere) %}"),
     (TP, "add & run now is dropped even where it is the only way to run",
-     "      {% if not note_runs_now %}",
+     "      {% if not note_runs_now and not (claude_app and claude_app.elsewhere) %}",
      "      {% if False %}"),
     (TP, "the group loses the margin that right-justifies it",
      "class=\"btn secondary{{ ' note-actions' if note_runs_now }}\"",

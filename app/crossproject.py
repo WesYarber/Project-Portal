@@ -106,7 +106,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from app import config, db, filetree, people, promptbudget
+from app import claudeapp, config, db, filetree, people, promptbudget
 
 log = logging.getLogger("portal.crossproject")
 
@@ -514,9 +514,16 @@ def digest(reader_id: int, slug: str) -> str:
     shortened - a reader wants what the other project *knows*, and that is its
     description, what is on its list and what its last few runs reported.
     """
-    project = resolve(reader_id, slug)
+    return render(resolve(reader_id, slug))
+
+
+def render(project: sqlite3.Row, journal_entries: int = JOURNAL_ENTRIES) -> str:
+    """`digest` for a project already resolved - the Claude app's context
+    endpoint (app/claudeapp.py) builds on the same text, for a person rather
+    than for a reading project."""
     pid = int(project["id"])
     workspace = config.PROJECTS_DIR / str(project["slug"])
+    elsewhere = claudeapp.elsewhere_line(project)
 
     out = [
         f"# {project['title']} (`{project['slug']}`)",
@@ -524,7 +531,7 @@ def digest(reader_id: int, slug: str) -> str:
         f"**State:** {db.display_state(project)}"
         + (f" - blocked on: {db.blocked_on(project)}" if db.blocked_on(project) else ""),
         f"**Kind:** {project['kind'] or 'unspecified'}",
-        f"**Workspace:** `{workspace}`",
+        elsewhere or f"**Workspace:** `{workspace}`",
         "",
         "## What it is",
         " ".join((project["description"] or "").split()) or "(no description yet)",
@@ -536,7 +543,7 @@ def digest(reader_id: int, slug: str) -> str:
 
     out += ["", "## Its todo list", _todo_lines(pid)]
 
-    entries = db.list_journal_asc(pid, limit=JOURNAL_ENTRIES, exclude=db.SIDE_THREAD)
+    entries = db.list_journal_asc(pid, limit=journal_entries, exclude=db.SIDE_THREAD) if journal_entries > 0 else []
     out += ["", f"## Its last {len(entries)} journal entries", _journal_lines(entries)]
 
     kids = db.child_projects(pid)
@@ -547,11 +554,12 @@ def digest(reader_id: int, slug: str) -> str:
             "\n".join(f"- `{k['slug']}` - {k['title']}" for k in kids),
         ]
 
-    out += [
-        "",
-        f"Its files are in `{workspace}`. Browse them with `project_files` "
-        f"(slug `{project['slug']}`).",
-    ]
+    if not elsewhere:
+        out += [
+            "",
+            f"Its files are in `{workspace}`. Browse them with `project_files` "
+            f"(slug `{project['slug']}`).",
+        ]
     return "\n".join(out)
 
 
@@ -590,6 +598,14 @@ def _inside(reader_id: int, slug: str, path: str) -> _Resolved:
     the same rule `main._workspace_file` applies to the browser.
     """
     project = resolve(reader_id, slug)
+    elsewhere = claudeapp.elsewhere_line(project)
+    if elsewhere:
+        # Built in the Claude app on another machine: there is nothing here to
+        # read, and "no workspace" would send the reader looking for one.
+        raise Denied(
+            f"`{project['slug']}` is not built on this server, so it has no files "
+            f"here. {elsewhere} Its record is readable with `project_context`."
+        )
     workspace = (config.PROJECTS_DIR / str(project["slug"])).resolve()
     if not workspace.is_dir():
         raise Denied(f"`{project['slug']}` has no workspace on disk yet.")

@@ -365,6 +365,56 @@ CREATE TABLE IF NOT EXISTS proposals (
     decided_at TEXT,
     decided_by TEXT NOT NULL DEFAULT ''
 );
+
+-- Where a project's code lives other than this server's workspace: a folder on
+-- a Mac the Claude app plugin linked. A project with rows here and no git
+-- checkout in its workspace is "hosted elsewhere" and is never scheduled.
+-- See app/claudeapp.py. Host and path are what the plugin reported - runtime
+-- data, never literals in the source.
+CREATE TABLE IF NOT EXISTS project_locations (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    host TEXT NOT NULL,
+    path TEXT NOT NULL,
+    remote TEXT NOT NULL DEFAULT '',
+    head TEXT NOT NULL DEFAULT '',
+    last_seen TEXT NOT NULL,
+    PRIMARY KEY (project_id, host, path)
+);
+
+-- One row per Claude app session that touched a project, upserted by the
+-- plugin's own session id (it posts at start and again at end).
+CREATE TABLE IF NOT EXISTS app_sessions (
+    session_id TEXT PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    host TEXT NOT NULL DEFAULT '',
+    path TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    person_id INTEGER,
+    started_at TEXT NOT NULL,
+    ended_at TEXT,
+    -- 1 when nobody posted an end and the portal closed it after
+    -- claudeapp.SESSION_TIMEOUT_HOURS of silence.
+    timed_out INTEGER NOT NULL DEFAULT 0,
+    head_start TEXT NOT NULL DEFAULT '',
+    head_end TEXT NOT NULL DEFAULT '',
+    commits_json TEXT NOT NULL DEFAULT '[]',
+    summary TEXT,
+    updated_at TEXT NOT NULL,
+    -- The journal entry the end of this session wrote, so a second end post
+    -- edits it rather than journaling the session twice.
+    journal_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_app_sessions_project ON app_sessions(project_id);
+
+-- Starred projects, per person, in the order they were starred. They decide
+-- what the Claude app sidebar shows first on every machine.
+CREATE TABLE IF NOT EXISTS stars (
+    person_id INTEGER NOT NULL REFERENCES people(id) ON DELETE CASCADE,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    position INTEGER NOT NULL,
+    starred_at TEXT NOT NULL,
+    PRIMARY KEY (person_id, project_id)
+);
 """
 
 
@@ -1765,15 +1815,22 @@ def list_schedulable_projects() -> list[sqlite3.Row]:
     ranking: whatever has waited longest goes next. It used to be `priority
     DESC` in front of that, and taking priority out is what makes the plain
     round robin the whole rule. See `config.PROJECT_SORTS`.
+
+    A project built in the Claude app on another machine is never here
+    (app/claudeapp.py): the portal is its record, not its builder.
     """
+    from app import claudeapp  # local: claudeapp imports db
+
     conn = get_conn()
     order = "updated_at ASC"
     with _LOCK:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT * FROM projects WHERE stage = 'active' "
             "AND (paused IS NULL OR paused = '') "
             f"ORDER BY {order}",
         ).fetchall()
+    elsewhere = claudeapp.hosted_elsewhere_ids()
+    return [r for r in rows if int(r["id"]) not in elsewhere]
 
 
 def parent_id_of(project: Optional[sqlite3.Row]) -> Optional[int]:
@@ -1911,13 +1968,18 @@ def is_research_queued(project: sqlite3.Row) -> bool:
 
 def list_research_queued() -> list[sqlite3.Row]:
     """Queued projects, longest-waiting first, so a burst works through the
-    queue in the order Wes filled it rather than by project id."""
+    queue in the order Wes filled it rather than by project id. A project
+    hosted elsewhere is left out: a research run is still a run."""
+    from app import claudeapp  # local: claudeapp imports db
+
     conn = get_conn()
     with _LOCK:
-        return conn.execute(
+        rows = conn.execute(
             "SELECT * FROM projects WHERE research_queued_at IS NOT NULL "
             "AND research_queued_at != '' ORDER BY research_queued_at ASC, id ASC"
         ).fetchall()
+    elsewhere = claudeapp.hosted_elsewhere_ids()
+    return [r for r in rows if int(r["id"]) not in elsewhere]
 
 
 def count_research_queued() -> int:
@@ -3401,6 +3463,19 @@ def set_todo_done(todo_id: int, done: bool) -> Optional[sqlite3.Row]:
             "UPDATE todos SET done = ?, done_at = ?, cleared_at = ? WHERE id = ?",
             (1 if done else 0, now() if done else None, None, todo_id),
         )
+        conn.commit()
+        return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+
+
+def set_todo_text(todo_id: int, text: str) -> Optional[sqlite3.Row]:
+    """Reword an item, with the same scrub `add_todo` applies. A blank
+    rewording is refused (None) rather than emptying the item."""
+    text = re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f]+", " ", text or "")).strip()[:500]
+    if not text:
+        return None
+    conn = get_conn()
+    with _LOCK:
+        conn.execute("UPDATE todos SET text = ? WHERE id = ?", (text, todo_id))
         conn.commit()
         return conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
 

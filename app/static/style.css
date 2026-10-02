@@ -1624,6 +1624,15 @@ summary:hover { color: var(--ansi-blue); }
   color: var(--terminal-dim);
 }
 .files-sub:first-of-type { margin-top: 0.8rem; }
+/* The "Claude app" shelf: linked folders on other machines and the sessions
+   that worked in them (app/claudeapp.py). One line each, wrapping on a phone. */
+.app-locations, .app-sessions { list-style: none; margin: 0 0 0.6rem; padding: 0; }
+.app-locations li, .app-sessions li {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.2rem 0.6rem;
+  padding: 0.25rem 0; overflow-wrap: anywhere;
+}
+.app-sessions li + li { border-top: 1px solid var(--window-border); }
+.app-session-title { font-weight: 600; }
 /* The dashboard shelves sit under the live grid, so they get less air above
    them than a fold that follows a full section. */
 .shelf { margin-top: 0.9rem; }
