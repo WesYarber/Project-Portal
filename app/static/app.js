@@ -3872,6 +3872,11 @@ function reinit() {
   // the toggle needs its label and its listener back.
   if (typeof initConsoleFoldToggle === "function") initConsoleFoldToggle();
   initFoldMemory();
+  // The patch may have brought in a card the search has not judged yet.
+  if (typeof initProjectSearch === "function") {
+    initProjectSearch();
+    projectSearchApply();
+  }
   if (subtabsApply) subtabsApply();
   // The morph resets <body>'s class attribute to the server's render, so an
   // unsaved theme preview has to be re-applied or it snaps back on the next
@@ -5017,6 +5022,131 @@ document.addEventListener("DOMContentLoaded", spotlightHashTarget);
 window.addEventListener("hashchange", spotlightHashTarget);
 
 document.addEventListener("DOMContentLoaded", railChapters);
+
+// ---------------------------------------------------------------------------
+// The dashboard's project search.
+//
+// Wes, 2026-10-07: "Add a search field for searching for specific projects on
+// the dashboard."
+//
+// A filter over the cards already on the page rather than a request: the
+// dashboard has every project of yours rendered (the shut shelves included),
+// so the answer is here at the first keystroke and there is nothing to go
+// stale. Every word typed has to appear somewhere in a card's title, slug,
+// description or parent's title, in any order and any case - "case card"
+// finds Card Case. Badges and "agent working" are deliberately not searched,
+// or "agent" would match every running card.
+//
+// While a search is on, a shut shelf with a match opens and one without is
+// hidden; clearing the field puts each shelf back exactly as it was. The
+// open state it had is parked in `data-search-was`, which the live-refresh
+// morph keeps (it never removes a data-* attribute the server did not render),
+// and reinit() calls projectSearchApply() so a card the patch brings in is
+// filtered too rather than appearing in the middle of a search.
+
+// True when every whitespace-separated word of `query` is in `text`.
+function projectSearchMatches(query, text) {
+  var words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  var hay = String(text || "").toLowerCase();
+  for (var i = 0; i < words.length; i++) {
+    if (hay.indexOf(words[i]) < 0) return false;
+  }
+  return true;
+}
+
+function projectSearchText(cell) {
+  var parts = [cell.getAttribute("data-title"), cell.getAttribute("data-slug")];
+  [".cell-desc", ".cell-parent"].forEach(function (sel) {
+    var el = cell.querySelector(sel);
+    if (el) parts.push(el.textContent);
+  });
+  return parts.join(" ");
+}
+
+// Applies the field's current text to every shelf. Returns the first match in
+// page order (what Enter opens), or null.
+function projectSearchApply() {
+  var input = document.getElementById("project-search");
+  if (!input) return null;
+  var query = input.value.trim();
+  var searching = query !== "";
+  var total = 0;
+  var first = null;
+  document.querySelectorAll("[data-status-zone]").forEach(function (zone) {
+    var shown = 0;
+    zone.querySelectorAll(".project-cell").forEach(function (cell) {
+      var hit = !searching || projectSearchMatches(query, projectSearchText(cell));
+      cell.hidden = !hit;
+      if (hit) {
+        shown++;
+        if (searching && !first) first = cell;
+      }
+    });
+    total += shown;
+    // "Nothing paused" is about the shelf, not the search.
+    zone.querySelectorAll(".zone-empty").forEach(function (el) { el.hidden = searching; });
+    var gone = searching && shown === 0;
+    if (zone.tagName === "DETAILS") {
+      if (searching) {
+        if (!zone.hasAttribute("data-search-was")) {
+          zone.setAttribute("data-search-was", zone.open ? "1" : "0");
+        }
+        zone.open = shown > 0;
+      } else if (zone.hasAttribute("data-search-was")) {
+        zone.open = zone.getAttribute("data-search-was") === "1";
+        zone.removeAttribute("data-search-was");
+      }
+    }
+    zone.hidden = gone;
+    var head = document.querySelector('[data-shelf-head="' + zone.getAttribute("data-status-zone") + '"]');
+    if (head) head.hidden = gone;
+  });
+  var count = document.getElementById("project-search-count");
+  if (count) {
+    count.hidden = !searching;
+    count.textContent = total + (total === 1 ? " match" : " matches");
+  }
+  var none = document.getElementById("project-search-none");
+  if (none) none.hidden = !(searching && total === 0);
+  return first;
+}
+
+function initProjectSearch() {
+  var input = document.getElementById("project-search");
+  if (!input || input._searchBound) return;
+  input._searchBound = true;
+  input.addEventListener("input", projectSearchApply);
+  input.addEventListener("keydown", function (ev) {
+    if (ev.key === "Enter") {
+      var first = projectSearchApply();
+      if (first) {
+        ev.preventDefault();
+        window.location.href = first.getAttribute("href");
+      }
+    } else if (ev.key === "Escape" && input.value) {
+      // Clears, and the document-level Escape handler below then lets go of
+      // the field, so one press takes you back to the whole board.
+      input.value = "";
+      projectSearchApply();
+    }
+  });
+  // A value the browser restored on back-navigation is a search in effect.
+  if (input.value) projectSearchApply();
+}
+document.addEventListener("DOMContentLoaded", initProjectSearch);
+
+// "/" puts the cursor in the search, the convention from every site with one.
+// Not a jump key: those scroll to a section, and this is a field you type
+// into at the top of the board wherever you are on it.
+document.addEventListener("keydown", function (ev) {
+  if (ev.key !== "/" || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (typingInto(ev.target)) return;
+  var input = document.getElementById("project-search");
+  if (!input) return;
+  ev.preventDefault();
+  input.focus();
+  input.select();
+});
 
 // ---------------------------------------------------------------------------
 // Escape lets go of the field.

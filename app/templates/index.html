@@ -200,7 +200,27 @@
    it, then what he put down, then what he has not started, with done/abandoned
    collapsed at the end. Every section is a drop target - drag a card onto one
    and the project takes that section's state. #}
-<div class="section-head">
+{# Wes, 2026-10-07: "Add a search field for searching for specific projects
+   on the dashboard." It filters the cards already on the page, in place, as
+   you type - every shelf, the shut ones included: a shelf with a match opens
+   for the length of the search and shuts again when it is cleared, and a
+   shelf with none is hidden. Nothing goes to the server, so it answers at the
+   first keystroke. "/" puts the cursor here, Enter opens the first match and
+   Escape clears it. No `name`, so the unsaved-drafts code leaves it alone. #}
+<div class="project-search" role="search">
+  <input type="search" id="project-search" placeholder="search projects" aria-label="search projects"
+         autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="go">
+  <span class="muted small project-search-count" id="project-search-count" hidden></span>
+</div>
+{# The pointer to /everyone only where that tab exists (nav_links decides,
+   the same as for the tab itself): on a one-person board the dashboard
+   already holds every project, and the link would 404 for anyone else. #}
+<p class="empty-state project-search-none" id="project-search-none" hidden>
+  No project on your board matches that.
+  {%- if nav_links() | selectattr('key', 'equalto', 'everyone') | list %} Projects you are not on are under <a href="/everyone">everyone</a>.{% endif %}
+</p>
+
+<div class="section-head" data-shelf-head="active">
   <h2>Active</h2>
   <div class="sort-links small muted">
     sort:
@@ -216,7 +236,7 @@
   {% endfor %}
 </div>
 
-<h2>Review</h2>
+<div data-shelf-head="review"><h2>Review</h2></div>
 <div class="project-grid drop-zone" data-status-zone="review" data-zone-label="review">
   {% for p in review_projects %}{{ project_cell(p) }}
   {% else %}<p class="empty-state zone-empty">Nothing waiting for you to look at.</p>

@@ -2388,6 +2388,44 @@ button.recording svg { animation: rec-pulse 1.2s ease-in-out infinite; }
 }
 .section-head h2 { margin-bottom: 0.4rem; }
 .sort-links { letter-spacing: 0.02em; }
+
+/* The dashboard's project search: one row above the shelves, the field taking
+   what the match count leaves. Capped so on a wide window it reads as a field
+   and not as a banner. -webkit-appearance:none drops Safari's rounded native
+   search chrome so it matches every other text box here. */
+.project-search {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  max-width: 34rem;
+  margin: 1.2rem 0 0.4rem;
+}
+.project-search input[type="search"] {
+  flex: 1 1 auto;
+  min-width: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  /* The shared text-box look; the form rules above list their types by name
+     and this is the only search field in the portal. */
+  background: rgba(148, 163, 184, 0.05);
+  border: 1px solid var(--window-border);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  color: var(--terminal-fg);
+  font-family: var(--font-body);
+  font-size: 0.9rem;
+  height: var(--control-h);
+  outline: none;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+/* 16px under a finger, as for every other field (see the coarse-pointer rule
+   by the form styles): this selector outranks that one, and under 16px iOS
+   zooms the page in on focus and never back out. */
+@media (pointer: coarse) {
+  .project-search input[type="search"] { font-size: 16px; padding-top: 0.3rem; padding-bottom: 0.3rem; }
+}
+.project-search-count { white-space: nowrap; }
+.project-search-none { margin: 0.6rem 0 1rem; }
 .sort-link { color: var(--terminal-dim); text-decoration: none; }
 .sort-link:hover { color: var(--ansi-cyan); text-decoration: underline; }
 .sort-link.active { color: var(--portal-orange); font-weight: 600; }
