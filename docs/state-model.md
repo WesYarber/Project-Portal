@@ -105,7 +105,12 @@ stage active                        -> Active, whatever holds it (Wes
                                        2026-10-13: "stuff that is active and
                                        paused/blocked simultaneously, still have
                                        it show in the active projects area");
-                                       ones he paused sort to its bottom
+                                       ones he paused sort to its bottom -
+                                       except paused AND awaiting a build OK,
+                                       which is Paused (Wes 2026-10-13 03:17:
+                                       "if something is paused and needs an
+                                       ok, though, I still want it to be in
+                                       the paused section")
 paused (any other stage)            -> Paused shelf
 else stage                          -> its own shelf (backlog / review /
                                        done+abandoned fold)

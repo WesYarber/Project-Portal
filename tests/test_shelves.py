@@ -133,6 +133,43 @@ def test_an_active_project_stays_active_whatever_is_holding_it():
     assert db.project_shelf(db.get_project(p4["id"]), open_questions=1) == "active"
 
 
+def test_a_paused_active_project_waiting_on_a_build_ok_is_on_the_paused_shelf():
+    """Wes, 2026-10-13 03:17: "if something is paused and needs an ok, though,
+    I still want it to be in the paused section." Both facts at once fold it;
+    either alone, or the request already answered, leaves it on Active."""
+    db.set_setting("require_build_approval", "1")
+    p = _project("Gated", "gated", build_approved=False)
+    db.update_project(p["id"], build_requested=1)
+    assert db.project_shelf(db.get_project(p["id"])) == "active"
+    db.pause_project(p["id"])
+    assert db.project_shelf(db.get_project(p["id"])) == "paused"
+
+    # Approved: the OK is given, so only the pause is left - back on Active.
+    db.update_project(p["id"], build_approved=1)
+    assert db.project_shelf(db.get_project(p["id"])) == "active"
+
+    # The gate switched off: nothing needs an OK any more.
+    db.update_project(p["id"], build_approved=0)
+    db.set_setting("require_build_approval", "0")
+    assert db.project_shelf(db.get_project(p["id"])) == "active"
+
+    # Paused with no request outstanding stays on Active.
+    q = _project("Plain", "plain", build_approved=False)
+    db.set_setting("require_build_approval", "1")
+    db.pause_project(q["id"])
+    assert db.project_shelf(db.get_project(q["id"])) == "active"
+
+
+def test_a_run_in_flight_outranks_the_paused_needs_ok_fold():
+    db.set_setting("require_build_approval", "1")
+    p = _project("Gated", "gated", build_approved=False)
+    db.update_project(p["id"], build_requested=1)
+    db.pause_project(p["id"])
+    row = db.get_project(p["id"])
+    assert db.shelf_of(row, 0, running=False) == "paused"
+    assert db.shelf_of(row, 0, running=True) == "active"
+
+
 def test_a_paused_project_in_another_stage_is_on_the_paused_shelf():
     for stage in ("review", "backlog"):
         p = _project(stage.title(), stage, stage=stage)

@@ -2012,11 +2012,19 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
     todos are tagged so the workable ones can be found. So a blocked project is
     still work in flight, and hiding it inside a shut <details> misreported
     that. The `blocked` badge on the card is what says a part of it is stuck.
+
+    One exception, Wes an hour later the same night: "if something is paused
+    and needs an ok, though, I still want it to be in the paused section." An
+    active project he paused AND whose build request is still unanswered (the
+    `needs your OK` badge, `worker.build_gated`) is on Paused. Either fact
+    alone leaves it on Active.
     """
     stage = str(_row_get(project, "stage", "backlog"))
     if stage in config.DONE_STAGES:
         return "done"
     if stage == "active":
+        if is_paused(project) and build_requested(project) and not build_allowed(project):
+            return "paused"
         return "active"
     if is_paused(project):
         return "paused"
