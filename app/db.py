@@ -1991,41 +1991,27 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
     `paused`, `backlog` or `done`. Arithmetic, not interpretation - the third
     rewrite of this mapping was the design's whole argument.
 
-    An active project is on the Active shelf, full stop - paused by Wes,
-    waiting on a build OK or holding an open question included. Wes,
-    2026-10-13: "stuff that is active and paused/blocked simultaneously, still
-    have it show in the active projects area." That reverses his 2026-07-30
-    06:02 note, which folded those to Paused; the card's own badges (`paused`,
-    `needs your OK`, the question count) say what is holding it, and the
-    dashboard sorts the ones he put down to the bottom of the shelf. The Paused
-    shelf is now what he put down in any *other* stage - a paused review or
-    backlog project. Review stays Review even with questions open: that shelf
-    already means "your turn".
+    The shelf is the card's primary status - `display_state`, the one word its
+    status badge shows - and nothing else. Wes, 2026-10-13 03:24: "If
+    anything's primary status is paused, I want it to be in the paused area.
+    Only have something in the active area if it has the active primary
+    status." So a project he paused is on Paused whatever its stage, and an
+    active project he has not paused is on Active whatever else holds it: an
+    unanswered build request, an open question, `blocked_on`. Those are the
+    badges beside the status, not the status, and they used to fold an
+    "active" card onto Paused (his 2026-07-30 06:02 rule) - which is the card
+    that said "active" on one side and sat on the Paused shelf he complained
+    about. Review stays Review even with questions open: that shelf already
+    means "your turn".
 
-    `blocked_on` is the one that used to fold and no longer does, on Wes's note
-    of 2026-07-30: "Projects that are active, but blocked should stay in the
-    active category on the dashboard." That is not a reversal of the rule above,
-    it is the distinction the rest of the portal already draws. `blocked_on`
-    names one thing only Wes can do; the agent contract tells every run that
-    "being blocked does not stop future runs - they work whatever does not
-    depend on him", the scheduler keeps scheduling the project, and its blocked
-    todos are tagged so the workable ones can be found. So a blocked project is
-    still work in flight, and hiding it inside a shut <details> misreported
-    that. The `blocked` badge on the card is what says a part of it is stuck.
-
-    One exception, Wes an hour later the same night: "if something is paused
-    and needs an ok, though, I still want it to be in the paused section." An
-    active project he paused AND whose build request is still unanswered (the
-    `needs your OK` badge, `worker.build_gated`) is on Paused. Either fact
-    alone leaves it on Active.
+    `blocked_on` in particular names one thing only Wes can do; the agent
+    contract tells every run that "being blocked does not stop future runs -
+    they work whatever does not depend on him", so a blocked project is still
+    work in flight, and the `blocked` badge on the card says what is stuck.
     """
     stage = str(_row_get(project, "stage", "backlog"))
     if stage in config.DONE_STAGES:
         return "done"
-    if stage == "active":
-        if is_paused(project) and build_requested(project) and not build_allowed(project):
-            return "paused"
-        return "active"
     if is_paused(project):
         return "paused"
     return stage

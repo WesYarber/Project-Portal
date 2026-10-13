@@ -1215,10 +1215,6 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             p, question_counts.get(p["id"], 0), p["id"] in running_ids
         )
         shelves[shelf].append(p)
-    # An active project Wes put down stays on Active (db.project_shelf), but
-    # below the ones still moving: a stable sort, so each half keeps the
-    # recency order it arrived in.
-    shelves["active"].sort(key=lambda p: db.is_paused(p) and p["id"] not in running_ids)
     # Each shelf is re-ordered so a sub-project sits directly under the project
     # it was split out of, indented and labeled. Children stay real cards -
     # hiding them inside the parent would make a game an agent is actively

@@ -4,8 +4,9 @@ redesigned state model (docs/state-model.md, approved by Wes 2026-07-22).
 One user-owned `stage` (backlog | active | review | done | abandoned), an
 orthogonal `paused` timestamp only Wes sets, and agent facts (`build_requested`,
 `blocked_on`) beside it. Shelving is arithmetic: paused, awaiting a build OK or
-holding an open question no longer moves an active project off the Active shelf
-(Wes, 2026-10-13); the Paused shelf holds what he put down in any other stage.
+holding an open question no longer moves an active project off the Active shelf,
+and a project he paused is on the Paused shelf whatever its stage: the shelf is
+the card's primary status, `display_state` (Wes, 2026-10-13 03:24).
 
 `blocked_on` used to fold too. It stopped on Wes's note of 2026-07-30 -
 "Projects that are active, but blocked should stay in the active category on the
@@ -116,15 +117,11 @@ def test_every_state_lands_on_its_shelf():
 
 
 def test_an_active_project_stays_active_whatever_is_holding_it():
-    """Wes, 2026-10-13: "stuff that is active and paused/blocked
-    simultaneously, still have it show in the active projects area." His
-    pause, an unanswered build request and an open question all leave an
-    active project on the Active shelf; the card's badges say what holds it."""
+    """Wes, 2026-10-13 03:24: "Only have something in the active area if it
+    has the active primary status." An unanswered build request and an open
+    question are badges beside an "active" status, so they leave it on
+    Active; they used to fold it onto Paused."""
     db.set_setting("require_build_approval", "1")  # the gate is off by default
-    p = _project("Fridge", "fridge")
-    db.pause_project(p["id"])
-    assert db.project_shelf(db.get_project(p["id"])) == "active"
-
     p3 = _project("Gated", "gated", build_approved=False)
     db.update_project(p3["id"], build_requested=1)
     assert db.project_shelf(db.get_project(p3["id"])) == "active"
@@ -133,37 +130,34 @@ def test_an_active_project_stays_active_whatever_is_holding_it():
     assert db.project_shelf(db.get_project(p4["id"]), open_questions=1) == "active"
 
 
-def test_a_paused_active_project_waiting_on_a_build_ok_is_on_the_paused_shelf():
-    """Wes, 2026-10-13 03:17: "if something is paused and needs an ok, though,
-    I still want it to be in the paused section." Both facts at once fold it;
-    either alone, or the request already answered, leaves it on Active."""
+def test_the_shelf_is_the_primary_status():
+    """Wes, 2026-10-13 03:24: "If anything's primary status is paused, I want
+    it to be in the paused area." Whatever else holds it, the shelf a
+    not-running, not-finished project lands on is the word its status badge
+    shows."""
     db.set_setting("require_build_approval", "1")
     p = _project("Gated", "gated", build_approved=False)
-    db.update_project(p["id"], build_requested=1)
-    assert db.project_shelf(db.get_project(p["id"])) == "active"
+    db.update_project(p["id"], build_requested=1, blocked_on="a key")
+    for paused in (False, True):
+        if paused:
+            db.pause_project(p["id"])
+        for stage in ("active", "review", "backlog"):
+            db.update_project(p["id"], stage=stage)
+            row = db.get_project(p["id"])
+            for questions in (0, 2):
+                shelf = db.project_shelf(row, open_questions=questions)
+                assert shelf == db.display_state(row), (paused, stage, questions)
+                assert shelf == ("paused" if paused else stage)
+
+
+def test_a_paused_active_project_is_on_the_paused_shelf():
+    p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
     assert db.project_shelf(db.get_project(p["id"])) == "paused"
 
-    # Approved: the OK is given, so only the pause is left - back on Active.
-    db.update_project(p["id"], build_approved=1)
-    assert db.project_shelf(db.get_project(p["id"])) == "active"
 
-    # The gate switched off: nothing needs an OK any more.
-    db.update_project(p["id"], build_approved=0)
-    db.set_setting("require_build_approval", "0")
-    assert db.project_shelf(db.get_project(p["id"])) == "active"
-
-    # Paused with no request outstanding stays on Active.
-    q = _project("Plain", "plain", build_approved=False)
-    db.set_setting("require_build_approval", "1")
-    db.pause_project(q["id"])
-    assert db.project_shelf(db.get_project(q["id"])) == "active"
-
-
-def test_a_run_in_flight_outranks_the_paused_needs_ok_fold():
-    db.set_setting("require_build_approval", "1")
-    p = _project("Gated", "gated", build_approved=False)
-    db.update_project(p["id"], build_requested=1)
+def test_a_run_in_flight_outranks_the_pause():
+    p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
     row = db.get_project(p["id"])
     assert db.shelf_of(row, 0, running=False) == "paused"
@@ -197,14 +191,13 @@ def test_a_blocked_project_that_is_also_asking_stays_active():
     assert db.project_shelf(db.get_project(p["id"]), open_questions=1) == "active"
 
 
-def test_a_blocked_project_he_paused_stays_active_and_paused():
-    """Active on the shelf, paused in its badge: the pause itself is untouched,
-    so the scheduler still leaves it alone."""
+def test_a_blocked_project_he_paused_is_on_the_paused_shelf():
+    """Its primary status is paused, so `blocked_on` does not hold it up."""
     p = _project("Blocked", "blocked")
     db.update_project(p["id"], blocked_on="an SSH key")
     db.pause_project(p["id"])
     row = db.get_project(p["id"])
-    assert db.project_shelf(row) == "active"
+    assert db.project_shelf(row) == "paused"
     assert db.display_state(row) == "paused"
 
 
@@ -273,11 +266,9 @@ def test_a_review_project_sits_in_the_review_section_not_active(client):
     assert "Read Me" in html[html.index("<h2>Review</h2>"):]
 
 
-def test_held_active_projects_render_on_the_active_shelf(client):
-    """Wes, 2026-10-13: "stuff that is active and paused/blocked
-    simultaneously, still have it show in the active projects area." Paused,
-    gated and asking cards are all on Active, and the one he put down sits
-    below the ones still moving, wearing its paused badge."""
+def test_held_active_projects_render_by_their_primary_status(client):
+    """Wes, 2026-10-13 03:24: gated and asking cards say "active", so they are
+    on Active; the one he put down says "paused", so it is on Paused."""
     db.set_setting("require_build_approval", "1")  # the gate is off by default
     _project("Live One", "live")
     gated = _project("Gated", "gated", build_approved=False)
@@ -286,19 +277,16 @@ def test_held_active_projects_render_on_the_active_shelf(client):
     db.create_question(asking["id"], "Which color?")
     put_down = _project("Put Down", "putdown")
     db.pause_project(put_down["id"])
-    # The most recently touched project on the board, so recency alone would
-    # put it first: only the put-down sort can sink it below the live ones.
-    db.add_journal(put_down["id"], "user", "note", "latest word")
 
     html = client.get("/").text
     board = html.split("</aside>", 1)[1]
     active = board[board.index("<h2>Active</h2>"):board.index("<h2>Review</h2>")]
-    for title in ("Gated", "Asking", "Put Down", "Live One"):
+    for title in ("Gated", "Asking", "Live One"):
         assert title in active, title
+    assert "Put Down" not in active
     shelf = board[board.index('id="paused"'):board.index('id="backlog"')]
-    assert "Put Down" not in shelf
-    assert "0 put down" in shelf
-    assert active.index("Live One") < active.index("Put Down")
+    assert "Put Down" in shelf
+    assert "1 put down" in shelf
 
 
 def test_a_blocked_project_is_rendered_on_the_active_shelf(client):
@@ -377,20 +365,6 @@ def test_a_running_project_is_never_shelved(client):
     html = client.get("/").text
     # The card is up in the Active section, not folded inside the shelf.
     assert html.index("Put Down") < html.index('id="paused"')
-
-
-def test_a_paused_active_project_being_run_is_not_sunk(client):
-    """The sort sinks what is resting, and a project an agent is running on is
-    not resting whatever its pause says: it keeps its recency place."""
-    _project("Live One", "live")
-    worked = _project("Worked", "worked")
-    db.pause_project(worked["id"])
-    db.create_run(worked["id"], "build", "opus")
-    db.add_journal(worked["id"], "agent", "progress", "latest word")
-
-    board = client.get("/").text.split("</aside>", 1)[1]
-    active = board[board.index("<h2>Active</h2>"):board.index("<h2>Review</h2>")]
-    assert active.index("Worked") < active.index("Live One")
 
 
 def test_the_header_carries_no_run_count(client):

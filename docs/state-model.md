@@ -101,24 +101,17 @@ Shelving stops being interpretation and becomes arithmetic, in one place:
 
 ```
 running run                         -> top of Building (as today)
-stage active                        -> Active, whatever holds it (Wes
-                                       2026-10-13: "stuff that is active and
-                                       paused/blocked simultaneously, still have
-                                       it show in the active projects area");
-                                       ones he paused sort to its bottom -
-                                       except paused AND awaiting a build OK,
-                                       which is Paused (Wes 2026-10-13 03:17:
-                                       "if something is paused and needs an
-                                       ok, though, I still want it to be in
-                                       the paused section")
-paused (any other stage)            -> Paused shelf
-else stage                          -> its own shelf (backlog / review /
-                                       done+abandoned fold)
+paused (any stage)                  -> Paused shelf
+else stage                          -> its own shelf (active / backlog /
+                                       review / done+abandoned fold)
 ```
 
-This superseded the 06:02 rule (paused, gated or asking active projects folded
-to the Paused shelf) and the 2026-07-30 carve-out for `blocked_on`; see
-`db.project_shelf`.
+The shelf is the card's primary status (`display_state`), nothing else. Wes,
+2026-10-13 03:24: "If anything's primary status is paused, I want it to be in
+the paused area. Only have something in the active area if it has the active
+primary status." An unanswered build request, an open question or
+`blocked_on` is a badge beside the status and no longer folds an active
+project to Paused, as the 06:02 rule did; see `db.project_shelf`.
 
 Question urgency keeps tonight's rule unchanged: a *Wes-paused* or backlog
 project's questions are demoted; agent-parked (`blocked_on` / open questions)
