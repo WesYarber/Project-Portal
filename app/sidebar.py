@@ -318,7 +318,10 @@ def build(
         # answerable from a phone whatever the project's pause says. It matters
         # in recent mode, where a parked project sits in the same list as the
         # work in flight and the row has to explain why it is dimmed.
-        if not status and shelf == "paused":
+        # Keyed on the pause itself, not the shelf: since 2026-10-13 an active
+        # project Wes put down stays on Active, and still says it is paused.
+        resting = not running and (shelf == "paused" or db.is_paused(project))
+        if not status and resting:
             status, tone = "paused", "muted"
         slug = project["slug"]
         row = {
@@ -340,7 +343,7 @@ def build(
             # ends up. In shelf mode that is the "More" group, which is dimmed
             # as a group; in recent mode the row sits in the one list among
             # projects that ARE being worked, and has to say so for itself.
-            "dim": shelf not in buckets,
+            "dim": shelf not in buckets or resting,
         }
         # `recent` is everything the rail will ever show, in one list; the
         # buckets are the shelf mode's grouping of the same rows, and `extras`

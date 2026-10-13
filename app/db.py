@@ -1991,11 +1991,16 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
     `paused`, `backlog` or `done`. Arithmetic, not interpretation - the third
     rewrite of this mapping was the design's whole argument.
 
-    An active project that is waiting on Wes to *unblock the whole project* -
-    his pause, a build request he hasn't answered, an open question - folds to
-    the Paused shelf ("even if they need user input or something, I don't care -
-    I want them in the paused/backlog section"). Review stays Review even with
-    questions open: that shelf already means "your turn".
+    An active project is on the Active shelf, full stop - paused by Wes,
+    waiting on a build OK or holding an open question included. Wes,
+    2026-10-13: "stuff that is active and paused/blocked simultaneously, still
+    have it show in the active projects area." That reverses his 2026-07-30
+    06:02 note, which folded those to Paused; the card's own badges (`paused`,
+    `needs your OK`, the question count) say what is holding it, and the
+    dashboard sorts the ones he put down to the bottom of the shelf. The Paused
+    shelf is now what he put down in any *other* stage - a paused review or
+    backlog project. Review stays Review even with questions open: that shelf
+    already means "your turn".
 
     `blocked_on` is the one that used to fold and no longer does, on Wes's note
     of 2026-07-30: "Projects that are active, but blocked should stay in the
@@ -2011,14 +2016,11 @@ def project_shelf(project: sqlite3.Row, open_questions: int = 0) -> str:
     stage = str(_row_get(project, "stage", "backlog"))
     if stage in config.DONE_STAGES:
         return "done"
+    if stage == "active":
+        return "active"
     if is_paused(project):
         return "paused"
-    if stage != "active":
-        return stage
-    gate_wait = build_requested(project) and not build_allowed(project)
-    if gate_wait or open_questions:
-        return "paused"
-    return "active"
+    return stage
 
 
 def shelf_of(project: sqlite3.Row, open_questions: int = 0, running: bool = False) -> str:

@@ -172,7 +172,8 @@ async def test_an_agent_asking_to_build_records_the_request(temp_data_dir):
     assert after["stage"] == "active"  # no state hijack - it stays active
     assert after["build_requested"] == 1
     assert after["build_approved"] == 0
-    assert db.project_shelf(after) == "paused"  # but folded away, waiting on Wes
+    # Still on the Active shelf (Wes, 2026-10-13), wearing "needs your OK".
+    assert db.project_shelf(after) == "active"
     journal = [row["content_md"] for row in db.list_journal(project["id"])]
     assert any("Waiting for your OK" in text for text in journal)
 
@@ -457,9 +458,9 @@ def test_a_fresh_install_is_seeded_with_the_gate_off(temp_data_dir):
 def test_a_request_left_over_from_the_gate_does_not_pause_the_project(temp_data_dir):
     """project_shelf had its own copy of the gate, defaulting ON: with the
     setting empty, a project whose agent once asked to build sat on the
-    paused shelf."""
+    paused shelf. Since 2026-10-13 a live gate does not move it either."""
     db.set_setting("require_build_approval", "")
     project = idea(stage="active", requested=True)
     assert db.project_shelf(project) == "active"
     db.set_setting("require_build_approval", "1")
-    assert db.project_shelf(project) == "paused"
+    assert db.project_shelf(project) == "active"

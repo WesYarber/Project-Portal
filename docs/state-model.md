@@ -101,12 +101,19 @@ Shelving stops being interpretation and becomes arithmetic, in one place:
 
 ```
 running run                         -> top of Building (as today)
-paused OR blocked_on OR open q's    -> Paused shelf   (Wes 06:02: "I don't
-                                       care - I want them in the paused/backlog
-                                       section!")
-else stage                          -> its own shelf (backlog / active /
-                                       review / done+abandoned fold)
+stage active                        -> Active, whatever holds it (Wes
+                                       2026-10-13: "stuff that is active and
+                                       paused/blocked simultaneously, still have
+                                       it show in the active projects area");
+                                       ones he paused sort to its bottom
+paused (any other stage)            -> Paused shelf
+else stage                          -> its own shelf (backlog / review /
+                                       done+abandoned fold)
 ```
+
+This superseded the 06:02 rule (paused, gated or asking active projects folded
+to the Paused shelf) and the 2026-07-30 carve-out for `blocked_on`; see
+`db.project_shelf`.
 
 Question urgency keeps tonight's rule unchanged: a *Wes-paused* or backlog
 project's questions are demoted; agent-parked (`blocked_on` / open questions)

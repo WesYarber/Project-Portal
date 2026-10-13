@@ -1314,6 +1314,15 @@ body.lb-open { overflow: hidden; }
   font-size: 0.85em;
   color: var(--ansi-cyan);
 }
+/* A file the entry names, linked to its page (app/mediamd.py resolve_links):
+   the link color and a dotted underline, so it reads as clickable without
+   losing the code look. */
+.content a.journal-file code {
+  color: var(--ansi-blue);
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+.content a.journal-file:hover code { text-decoration-style: solid; }
 .content pre {
   background: rgba(0, 0, 0, 0.5);
   border: 1px solid var(--window-border);

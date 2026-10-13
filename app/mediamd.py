@@ -27,7 +27,7 @@ agents the syntax exists and to use it.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import quote
 
 # Suffixes that turn an image reference into a player. These mirror
@@ -138,5 +138,88 @@ def resolve_media(html: str, raw_base: Optional[str]) -> str:
                 f'<a class="journal-media-link" data-lightbox href="{src}" '
                 f'target="_blank" rel="noopener">{img}</a>'
             )
+    out.append(html[last:])
+    return "".join(out)
+
+
+# Wes, 2026-10-13: "I want to allow the journal, when it references files, to
+# hyperlink to them where I can click the link to open or download the file."
+#
+# Two shapes of reference, both resolved to the file page (`/file/<slug>/...`),
+# which renders the file and carries its download link - so one click opens it
+# and the page it lands on downloads it:
+#
+#   * a markdown link with a workspace-relative target, `[the plan](PLAN.md)`,
+#     which otherwise resolves against the journal page's own URL and 404s;
+#   * a path in a code span, `` `attachments/0154-SPEC.md` ``, which is how
+#     agents name files nearly every time. Only a span naming a file that
+#     really exists in the workspace becomes a link: an entry on this project
+#     names source files outside its workspace all the time, and a link that
+#     opens "File not found" is worse than plain text.
+_ANCHOR_HREF = re.compile(r'(<a\b[^>]*?\bhref=")([^"]*)(")', re.IGNORECASE)
+_CODE_SPAN = re.compile(r"<code>([^<]{1,240})</code>")
+# Path-shaped: no spaces, no entities, and either a directory separator or a
+# file extension. A trailing `:12` or `:12-40` line reference is allowed and
+# kept in the text, but the link is to the file.
+_PATHISH = re.compile(r"^([\w.~+-]+(?:/[\w.~+-]+)*)(?::\d+(?:-\d+)?)?$")
+_PRE_BEFORE = re.compile(r"<pre[^>]*>\s*$", re.IGNORECASE)
+
+
+def _workspace_path(text: str) -> Optional[str]:
+    """`text` as a workspace-relative file path, or None if it is not one."""
+    match = _PATHISH.match(text.strip())
+    if not match:
+        return None
+    path = match.group(1)
+    segments = path.split("/")
+    if ".." in segments or "." in segments:
+        return None
+    if "/" not in path and "." not in path.strip("."):
+        return None
+    return path
+
+
+def resolve_links(
+    html: str, file_base: Optional[str], exists: Optional[Callable[[str], bool]] = None
+) -> str:
+    """Point the workspace files a rendered entry names at the file page.
+
+    `file_base` is the viewer route for this workspace (`/file/<slug>`); with
+    none the HTML passes through untouched. `exists(path)` decides whether a
+    code span names a real file; without it code spans are left alone and only
+    explicit markdown links are rewritten.
+    """
+    if not html or not file_base:
+        return html
+
+    def _rewrite_href(match: re.Match) -> str:
+        return match.group(1) + resolve_src(match.group(2), file_base) + match.group(3)
+
+    # resolve_src passes absolute, rooted and fragment hrefs through, which
+    # includes the /raw links the media pass already produced.
+    html = _ANCHOR_HREF.sub(_rewrite_href, html)
+    if exists is None:
+        return html
+
+    out: list[str] = []
+    last = 0
+    for match in _CODE_SPAN.finditer(html):
+        out.append(html[last:match.start()])
+        last = match.end()
+        span = match.group(0)
+        path = _workspace_path(match.group(1))
+        # The tag just before the span: `<pre>` is a fenced block, an open
+        # `<a>` means the agent already linked it ([`x`](url)).
+        preceding = html[max(0, match.start() - 400):match.start()]
+        if (
+            path is None
+            or _PRE_BEFORE.search(preceding)
+            or _OPEN_ANCHOR_BEFORE.search(preceding)
+            or not exists(path)
+        ):
+            out.append(span)
+            continue
+        href = resolve_src(path, file_base)
+        out.append(f'<a class="journal-file" href="{href}">{span}</a>')
     out.append(html[last:])
     return "".join(out)

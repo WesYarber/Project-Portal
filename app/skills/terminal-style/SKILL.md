@@ -1,9 +1,19 @@
 ---
 name: terminal-style
-description: Apply $OWNERS dark terminal theme (dark CRT look - Fira Code, terminal window chrome, bracketed badges, ANSI accent colors) to a web page you are building. $OWNER likes this look and packaged it to reuse (the Project Portal follows it too); reach for it whenever a project needs a UI theme and none other has been asked for.
+description: Apply $OWNERS dark terminal theme (dark CRT look - Fira Code, terminal window chrome, bracketed badges, ANSI accent colors) to a web page - ONLY when a person has asked for this look by name. It is not a default: $OWNER found it worsens interfaces it is applied to unasked, so any other UI is designed from first principles for its own use and audience.
 ---
 
 # terminal-style
+
+**Not a default theme.** $OWNER, 2026-10-13: "please don't default to using
+the terminal theme for new projects, as it really seems to worsen whatever
+interface is designed. Always design the user interface from first principles
+for great usability and aesthetic for the application at hand." Use this
+skill only where a person has asked for the terminal look, or where a project
+already wears it. Everything else gets a design of its own: start from who
+uses it, on what device, and what they do most, then choose type, color,
+density and layout for that - a recipe app, a game and an admin tool should
+not look like siblings.
 
 $OWNERS dark terminal theme, packaged as a single reusable stylesheet so the
 things $THEIR agents build can share one visual language: a dark CRT terminal

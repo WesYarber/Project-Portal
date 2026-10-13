@@ -249,16 +249,17 @@ def test_paused_project_keeps_its_question_count_without_the_pulse(client):
     assert ">2</span>" in grid
 
 
-def test_an_asking_project_folds_away_but_keeps_shouting(client):
-    """Under the state model an active project holding an open question folds
-    to the Paused shelf ("even if they need user input... I want them in the
-    paused/backlog section") - but its question still counts in the nav badge,
-    because agent-parked waiting is Wes's to end."""
+def test_an_asking_project_stays_active_and_keeps_shouting(client):
+    """An active project holding an open question stays on the Active shelf
+    (Wes, 2026-10-13: active and blocked still shows with the active ones),
+    and its question still counts in the nav badge, because agent-parked
+    waiting is Wes's to end."""
     p = db.create_project("Mid build", slug="mid", stage="active", build_approved=True)
     db.create_question(p["id"], "which one?")
     html = client.get("/").text
-    shelf = html[html.index('id="paused"'):html.index('id="backlog"')]
-    assert "Mid build" in shelf
+    board = html.split("</aside>", 1)[1]
+    active = board[board.index("<h2>Active</h2>"):board.index('id="paused"')]
+    assert "Mid build" in active
     assert 'class="nav-count">1<' in html
 
 

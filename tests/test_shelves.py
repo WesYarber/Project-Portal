@@ -4,8 +4,8 @@ redesigned state model (docs/state-model.md, approved by Wes 2026-07-22).
 One user-owned `stage` (backlog | active | review | done | abandoned), an
 orthogonal `paused` timestamp only Wes sets, and agent facts (`build_requested`,
 `blocked_on`) beside it. Shelving is arithmetic: paused, awaiting a build OK or
-holding an open question folds an active project to the Paused shelf; everything
-else sits on its stage's own shelf.
+holding an open question no longer moves an active project off the Active shelf
+(Wes, 2026-10-13); the Paused shelf holds what he put down in any other stage.
 
 `blocked_on` used to fold too. It stopped on Wes's note of 2026-07-30 -
 "Projects that are active, but blocked should stay in the active category on the
@@ -115,22 +115,29 @@ def test_every_state_lands_on_its_shelf():
         assert db.project_shelf(db.get_project(p["id"])) == shelf, stage
 
 
-def test_anything_that_stops_the_whole_project_folds_to_the_paused_shelf():
-    """"Even if they need user input or something, I don't care - I want them
-    in the paused/backlog section!" An active project that cannot proceed at all
-    without Wes - his pause, an unanswered build request, an open question - is
-    folded away."""
+def test_an_active_project_stays_active_whatever_is_holding_it():
+    """Wes, 2026-10-13: "stuff that is active and paused/blocked
+    simultaneously, still have it show in the active projects area." His
+    pause, an unanswered build request and an open question all leave an
+    active project on the Active shelf; the card's badges say what holds it."""
     db.set_setting("require_build_approval", "1")  # the gate is off by default
     p = _project("Fridge", "fridge")
     db.pause_project(p["id"])
-    assert db.project_shelf(db.get_project(p["id"])) == "paused"
+    assert db.project_shelf(db.get_project(p["id"])) == "active"
 
     p3 = _project("Gated", "gated", build_approved=False)
     db.update_project(p3["id"], build_requested=1)
-    assert db.project_shelf(db.get_project(p3["id"])) == "paused"
+    assert db.project_shelf(db.get_project(p3["id"])) == "active"
 
     p4 = _project("Asking", "asking")
-    assert db.project_shelf(db.get_project(p4["id"]), open_questions=1) == "paused"
+    assert db.project_shelf(db.get_project(p4["id"]), open_questions=1) == "active"
+
+
+def test_a_paused_project_in_another_stage_is_on_the_paused_shelf():
+    for stage in ("review", "backlog"):
+        p = _project(stage.title(), stage, stage=stage)
+        db.pause_project(p["id"])
+        assert db.project_shelf(db.get_project(p["id"])) == "paused", stage
 
 
 def test_a_blocked_project_stays_on_the_active_shelf():
@@ -147,21 +154,21 @@ def test_a_blocked_project_stays_on_the_active_shelf():
     assert db.project_shelf(db.get_project(p["id"])) == "active"
 
 
-def test_a_blocked_project_that_is_also_asking_still_folds():
-    """The two facts are independent, and the question is the stronger one: an
-    unanswered question is his turn whatever else is true."""
+def test_a_blocked_project_that_is_also_asking_stays_active():
     p = _project("Blocked", "blocked")
     db.update_project(p["id"], blocked_on="an SSH key")
-    assert db.project_shelf(db.get_project(p["id"]), open_questions=1) == "paused"
+    assert db.project_shelf(db.get_project(p["id"]), open_questions=1) == "active"
 
 
-def test_a_blocked_project_he_paused_is_still_paused():
-    """His own pause outranks everything - it is the one shelving nothing an
-    agent reports may undo."""
+def test_a_blocked_project_he_paused_stays_active_and_paused():
+    """Active on the shelf, paused in its badge: the pause itself is untouched,
+    so the scheduler still leaves it alone."""
     p = _project("Blocked", "blocked")
     db.update_project(p["id"], blocked_on="an SSH key")
     db.pause_project(p["id"])
-    assert db.project_shelf(db.get_project(p["id"])) == "paused"
+    row = db.get_project(p["id"])
+    assert db.project_shelf(row) == "active"
+    assert db.display_state(row) == "paused"
 
 
 def test_a_review_project_with_a_question_stays_on_review():
@@ -171,7 +178,7 @@ def test_a_review_project_with_a_question_stays_on_review():
     assert db.project_shelf(db.get_project(p["id"]), open_questions=1) == "review"
 
 
-def test_a_wes_pause_beats_every_other_shelf():
+def test_a_wes_pause_beats_the_review_shelf():
     p = _project("Read Me", "readme", stage="review")
     db.pause_project(p["id"])
     assert db.project_shelf(db.get_project(p["id"])) == "paused"
@@ -197,7 +204,7 @@ def test_the_dashboard_splits_into_state_sections(client):
     done/abandoned collapsed at the end."""
     _project("Live One", "live")
     _project("Read Me", "readme", stage="review")
-    db.pause_project(_project("Put Down", "putdown")["id"])
+    db.pause_project(_project("Put Down", "putdown", stage="review")["id"])
     _project("Not Started", "notstarted", stage="backlog")
 
     html = client.get("/").text
@@ -205,7 +212,7 @@ def test_the_dashboard_splits_into_state_sections(client):
     assert "<h2>Review</h2>" in html
     # The put-down shelves are <details>, shut by default.
     assert 'id="paused"' in html and 'id="backlog"' in html
-    assert "1 waiting or put down" in html
+    assert "1 put down" in html
     assert "1 not started" in html
     # Everything is still on the page - folded, not dropped - in section order.
     # Read past the side rail: it is chrome that lists the same projects most
@@ -229,26 +236,32 @@ def test_a_review_project_sits_in_the_review_section_not_active(client):
     assert "Read Me" in html[html.index("<h2>Review</h2>"):]
 
 
-def test_asking_and_gated_projects_sit_in_the_paused_shelf(client):
-    """His 06:02 note, after seeing them at the top twice: "All of these paused
-    tasks are still in the top section with the building stuff. Even if they
-    need user input or something, I don't care - I want them in the
-    paused/backlog section!" Nobody-running + nothing-can-proceed = folded."""
+def test_held_active_projects_render_on_the_active_shelf(client):
+    """Wes, 2026-10-13: "stuff that is active and paused/blocked
+    simultaneously, still have it show in the active projects area." Paused,
+    gated and asking cards are all on Active, and the one he put down sits
+    below the ones still moving, wearing its paused badge."""
     db.set_setting("require_build_approval", "1")  # the gate is off by default
     _project("Live One", "live")
     gated = _project("Gated", "gated", build_approved=False)
     db.update_project(gated["id"], build_requested=1)
     asking = _project("Asking", "asking")
     db.create_question(asking["id"], "Which color?")
+    put_down = _project("Put Down", "putdown")
+    db.pause_project(put_down["id"])
+    # The most recently touched project on the board, so recency alone would
+    # put it first: only the put-down sort can sink it below the live ones.
+    db.add_journal(put_down["id"], "user", "note", "latest word")
 
     html = client.get("/").text
-    active = html[html.index("<h2>Active</h2>"):html.index("<h2>Review</h2>")]
-    assert "Gated" not in active
-    assert "Asking" not in active
-    shelf = html[html.index('id="paused"'):html.index('id="backlog"')]
-    assert "Gated" in shelf
-    assert "Asking" in shelf
-    assert "2 waiting or put down" in shelf
+    board = html.split("</aside>", 1)[1]
+    active = board[board.index("<h2>Active</h2>"):board.index("<h2>Review</h2>")]
+    for title in ("Gated", "Asking", "Put Down", "Live One"):
+        assert title in active, title
+    shelf = board[board.index('id="paused"'):board.index('id="backlog"')]
+    assert "Put Down" not in shelf
+    assert "0 put down" in shelf
+    assert active.index("Live One") < active.index("Put Down")
 
 
 def test_a_blocked_project_is_rendered_on_the_active_shelf(client):
@@ -320,13 +333,27 @@ def test_a_running_project_is_never_shelved(client):
     that shortcut became load-bearing the moment the strip started being
     filtered by run.
     """
-    paused = _project("Put Down", "putdown")
+    paused = _project("Put Down", "putdown", stage="review")
     db.pause_project(paused["id"])
     db.create_run(paused["id"], "build", "opus")
 
     html = client.get("/").text
     # The card is up in the Active section, not folded inside the shelf.
     assert html.index("Put Down") < html.index('id="paused"')
+
+
+def test_a_paused_active_project_being_run_is_not_sunk(client):
+    """The sort sinks what is resting, and a project an agent is running on is
+    not resting whatever its pause says: it keeps its recency place."""
+    _project("Live One", "live")
+    worked = _project("Worked", "worked")
+    db.pause_project(worked["id"])
+    db.create_run(worked["id"], "build", "opus")
+    db.add_journal(worked["id"], "agent", "progress", "latest word")
+
+    board = client.get("/").text.split("</aside>", 1)[1]
+    active = board[board.index("<h2>Active</h2>"):board.index("<h2>Review</h2>")]
+    assert active.index("Worked") < active.index("Live One")
 
 
 def test_the_header_carries_no_run_count(client):

@@ -111,14 +111,28 @@ def test_a_run_never_drags_a_finished_project_back_onto_a_shelf(temp_data_dir):
     assert rail["shelves"] == []
 
 
-def test_a_paused_project_is_in_the_more_tail_not_on_a_working_shelf(temp_data_dir):
-    row = _project("Parked", "parked", stage="active")
+def test_a_paused_review_project_is_in_the_more_tail_not_on_a_working_shelf(temp_data_dir):
+    row = _project("Parked", "parked", stage="review")
     db.pause_project(row["id"])
 
     rail = sidebar.build([db.get_project(row["id"])], mode="shelf")
 
     assert [s["name"] for s in rail["shelves"]] == ["more"]
     assert [r["slug"] for r in rail["shelves"][0]["rows"]] == ["parked"]
+
+
+def test_a_paused_active_project_stays_on_active_dimmed_and_saying_so(temp_data_dir):
+    """Wes, 2026-10-13: active and paused still shows with the active ones -
+    on the rail as on the board, but the row says why it is quiet."""
+    row = _project("Parked", "parked", stage="active")
+    db.pause_project(row["id"])
+
+    rail = sidebar.build([db.get_project(row["id"])], mode="shelf")
+
+    assert [s["name"] for s in rail["shelves"]] == ["active"]
+    item = rail["shelves"][0]["rows"][0]
+    assert item["status"] == "paused"
+    assert item["dim"] is True
 
 
 def test_a_paused_project_says_it_is_paused_rather_than_only_a_date(temp_data_dir):

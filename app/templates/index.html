@@ -252,7 +252,7 @@
     <span class="fold-section-label">Paused</span>
     {# Not "you put down": agent-parked and needs-input projects sit here too
        now (his 06:02 note), so the line just counts what is waiting. #}
-    <span class="muted small">{{ paused_projects|length }} waiting or put down</span>
+    <span class="muted small">{{ paused_projects|length }} put down</span>
   </summary>
   <div class="project-grid">
     {% for p in paused_projects %}{{ project_cell(p, muted=true) }}

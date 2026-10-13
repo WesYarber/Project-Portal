@@ -367,7 +367,31 @@ def markdown_media(
     base = raw_base
     if base is None and slug:
         base = f"/raw/{quote(slug)}"
-    return mediamd.resolve_media(render_markdown(text), base)
+    html = mediamd.resolve_media(render_markdown(text), base)
+    if slug:
+        # File references become links to the file page (open + download).
+        # Only a project workspace has that page; a one-off task's (which
+        # comes with a raw_base and no slug) does not.
+        html = mediamd.resolve_links(
+            html, f"/file/{quote(slug)}", _workspace_file_exists(slug)
+        )
+    return html
+
+
+def _workspace_file_exists(slug: str):
+    """A memoized "is this a file in the workspace?" for one render, with the
+    same containment rule as `_workspace_file`: a path that resolves outside
+    the workspace (a symlink out) is not linked."""
+    workspace = (config.PROJECTS_DIR / slug).resolve()
+    seen: dict[str, bool] = {}
+
+    def exists(path: str) -> bool:
+        if path not in seen:
+            candidate = (workspace / path).resolve()
+            seen[path] = candidate.is_relative_to(workspace) and candidate.is_file()
+        return seen[path]
+
+    return exists
 
 
 templates.env.filters["markdown"] = render_markdown
@@ -1191,6 +1215,10 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
             p, question_counts.get(p["id"], 0), p["id"] in running_ids
         )
         shelves[shelf].append(p)
+    # An active project Wes put down stays on Active (db.project_shelf), but
+    # below the ones still moving: a stable sort, so each half keeps the
+    # recency order it arrived in.
+    shelves["active"].sort(key=lambda p: db.is_paused(p) and p["id"] not in running_ids)
     # Each shelf is re-ordered so a sub-project sits directly under the project
     # it was split out of, indented and labeled. Children stay real cards -
     # hiding them inside the parent would make a game an agent is actively
