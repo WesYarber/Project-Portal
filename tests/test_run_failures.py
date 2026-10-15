@@ -547,6 +547,19 @@ async def test_a_busy_project_stays_queued_and_the_drain_ends(project, spawned, 
 
 
 @pytest.mark.asyncio
+async def test_manual_only_never_falls_back_to_a_scheduled_pick(
+    project, spawned, full_board, monkeypatch
+):
+    """The drain is bounded by the queue's length, so this is the guard that
+    holds if the queue empties under it: nobody asked, so nothing starts -
+    not even a queued research burst, which spawns before any later check."""
+    monkeypatch.setattr(worker, "_pick_research", lambda: project)
+    monkeypatch.setattr(worker.db, "unqueue_research", lambda pid: None)
+    assert await worker._start_one(manual_only=True) is False
+    assert spawned == []
+
+
+@pytest.mark.asyncio
 async def test_a_leased_workspace_is_waited_for_not_swapped_for_a_scheduled_pick(
     project, spawned, full_board, monkeypatch
 ):

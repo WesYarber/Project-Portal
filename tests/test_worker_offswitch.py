@@ -133,13 +133,18 @@ def test_the_compaction_still_runs_with_the_worker_on(temp_data_dir, monkeypatch
 # --- what the switch must NOT stop ----------------------------------------
 
 
-def test_a_manual_run_ignores_the_switch(temp_data_dir):
+@pytest.mark.asyncio
+async def test_a_manual_run_ignores_the_switch(temp_data_dir, monkeypatch):
     """Pressing "run now" is the request. If the switch blocked manual runs too,
     the only way to use the portal with the scheduler off would be to turn the
     scheduler on."""
-    import inspect
+    project = db.create_project("P", description="x", stage="active", build_approved=True, slug="p")
+    db.set_setting("worker_enabled", "0")
+    started: list[int] = []
+    monkeypatch.setattr(worker, "spawn_run", lambda p, t: started.append(p["id"]) or 1)
+    monkeypatch.setattr(worker, "_restarting", False)
 
-    src = inspect.getsource(worker._start_one)  # noqa: SLF001
-    # The manual branch is taken before the enabled check bites: the check sits
-    # on the `elif`, i.e. only on the scheduled path.
-    assert "elif not worker_enabled:" in src
+    assert await worker._start_one() is False  # the switch holds a scheduled run
+    await worker.manual_queue.put(project["id"])
+    assert await worker._start_one() is True
+    assert started == [project["id"]]
