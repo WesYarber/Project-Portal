@@ -1278,12 +1278,27 @@ async def dashboard(request: Request, sort: str = "") -> HTMLResponse:
 @app.post("/ideas")
 async def create_idea(
     request: Request,
-    title: str = Form(""), idea: str = Form(...), then: str = Form("")
+    title: str = Form(""),
+    idea: str = Form(""),
+    then: str = Form(""),
+    files: list[UploadFile] = File(default=[]),
 ) -> RedirectResponse:
     """Two buttons on the idea form (Wes's ask): plain "add idea" parks it in
     the backlog and no model ever sees it until he says so; "add and start
     planning" makes it active (still unapproved for code) and puts an agent on
-    it right now."""
+    it right now.
+
+    Files ride along exactly as they do on a project's note form (Wes,
+    2026-10-15: "Allow me to attach files when adding a new idea"): they become
+    the new project's first attachments, captioned with the idea and named in
+    its first journal note. A file is enough on its own - a voice memo or a
+    sketch with no words is still an idea - so the text is required only when
+    nothing was attached."""
+    uploads = [f for f in files if f and f.filename]
+    if not idea.strip() and not uploads:
+        # The textarea is no longer `required` (a file alone is allowed), so
+        # this is the empty press: nothing to file, back to the form.
+        return RedirectResponse(url="/#title", status_code=303)
     # A title Wes typed in the box is his, and locks. One he left blank is cut
     # from the first line of the idea, which is a placeholder rather than a
     # name, so that one stays open for an agent to improve. Wes, 2026-07-29:
@@ -1301,10 +1316,22 @@ async def create_idea(
         title=title, description=idea.strip(), kind="unknown", stage=stage,
         title_locked=1 if typed else 0, person_id=person_id,
     )
-    if idea.strip():
-        db.add_journal(project["id"], "user", "note", idea.strip(), person_id=person_id)
+    stored, errors = await _store_uploads(project, uploads, idea.strip())
+    body = _with_uploads(idea.strip(), stored, errors)
+    if body:
+        journal_id = db.add_journal(project["id"], "user", "note", body, person_id=person_id)
+        for a in stored:
+            db.set_attachment_journal(a["id"], journal_id)
+    # A voice memo is transcribed before the first run reads it, the same
+    # ordering add_note keeps: the memo may be the whole brief.
+    audio_ids = [a["id"] for a in stored if transcribe.wants(a["mime"])]
     if then == "plan":
-        await worker.queue_manual_run(project["id"])
+        if audio_ids:
+            transcribe.kick(audio_ids, after=worker.queue_manual_run(project["id"]))
+        else:
+            await worker.queue_manual_run(project["id"])
+    elif audio_ids:
+        transcribe.kick(audio_ids)
     return RedirectResponse(url=f"/project/{project['slug']}", status_code=303)
 
 
@@ -1857,6 +1884,48 @@ async def _start_parallel(project) -> bool:
     return bool(started)
 
 
+async def _store_uploads(
+    project: db.sqlite3.Row, uploads: list[UploadFile], note: str
+) -> tuple[list[dict], list[str]]:
+    """Store each upload against `project`, captioned with `note`. Returns the
+    stored rows and one "name: reason" line per file refused, so a bad file
+    costs only itself rather than the note it came with."""
+    stored: list[dict] = []
+    errors: list[str] = []
+    for upload in uploads:
+        data = await upload.read()
+        try:
+            stored.append(
+                attachments.store(
+                    project_id=project["id"],
+                    slug=project["slug"],
+                    orig_name=upload.filename or "upload",
+                    data=data,
+                    declared_mime=upload.content_type or "",
+                    note=note,
+                )
+            )
+        except (ValueError, OSError) as exc:
+            errors.append(f"{upload.filename}: {exc}")
+    return stored, errors
+
+
+def _with_uploads(text: str, stored: list[dict], errors: list[str]) -> str:
+    """The journal body for a note that came with files.
+
+    Named in the note body too, not only in the attachments table: the journal
+    is what a human reads back, and "see the screenshot" with no trace of a
+    screenshot is a worse record than a slightly noisier one. The block is
+    built in attachments.py because that is also where it is taken apart again
+    when a file is removed before the prompt goes."""
+    body = text
+    if stored:
+        body = f"{body}\n\n{attachments.listing_block(stored)}".strip()
+    if errors:
+        body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
+    return body
+
+
 @app.post("/project/{slug}/note")
 async def add_note(
     request: Request,
@@ -1901,34 +1970,8 @@ async def add_note(
             receipt.note_line(slug, filed=False, then=then, ran=ran),
         )
 
-    stored: list[dict] = []
-    errors: list[str] = []
-    body = quoted
-    if uploads:
-        for upload in uploads:
-            data = await upload.read()
-            try:
-                stored.append(
-                    attachments.store(
-                        project_id=project["id"],
-                        slug=slug,
-                        orig_name=upload.filename or "upload",
-                        data=data,
-                        declared_mime=upload.content_type or "",
-                        note=note,
-                    )
-                )
-            except (ValueError, OSError) as exc:
-                errors.append(f"{upload.filename}: {exc}")
-        # Named in the note body too, not only in the attachments table: the
-        # journal is what a human reads back, and "see the screenshot" with no
-        # trace of a screenshot is a worse record than a slightly noisier one.
-        # The block is built in attachments.py because that is also where it is
-        # taken apart again when a file is removed before the prompt goes.
-        if stored:
-            body = f"{quoted}\n\n{attachments.listing_block(stored)}".strip()
-    if errors:
-        body = f"{body}\n\n*Rejected: {'; '.join(errors)}*".strip()
+    stored, errors = await _store_uploads(project, uploads, note)
+    body = _with_uploads(quoted, stored, errors)
 
     # Every note waits for the agent's next run unless it was pressed as
     # "deliver mid-run", which hands it to the agent already working at its

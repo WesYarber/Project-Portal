@@ -299,7 +299,12 @@
    title, per Wes - the idea body is one Tab away. #}
 <h2 data-jump="idea" data-jump-focus="#title">New idea</h2>
 <div class="card">
-  <form method="post" action="/ideas">
+  {# multipart + data-dropzone: the project note form's attach machinery
+     (pick, drop, paste, record, the shelf to rename or remove before sending)
+     is generic over any [data-dropzone] form, so the idea form gets all of it
+     by carrying the same pieces. Wes, 2026-10-15: "Allow me to attach files
+     when adding a new idea." #}
+  <form method="post" action="/ideas" enctype="multipart/form-data" class="idea-form" data-dropzone>
     <div class="field">
       <label for="title">Title <span class="muted">(optional)</span></label>
       <input type="text" id="title" name="title" placeholder="leave blank to auto-generate">
@@ -310,16 +315,49 @@
     </div>
     <div class="field">
       <label for="idea">What's the idea?</label>
-      <textarea id="idea" name="idea" rows="4" required enterkeyhint="enter"
-                placeholder="Describe it. Add it to the backlog for later, or hand it straight to an agent to build."></textarea>
+      {# Not `required`: a file alone - a voice memo, a sketch - is an idea
+         too. An empty press with nothing attached is refused server-side. #}
+      <textarea id="idea" name="idea" rows="4" enterkeyhint="enter"
+                placeholder="Describe it, or drop in files and screenshots. Add it to the backlog for later, or hand it straight to an agent to build."></textarea>
     </div>
-    {# Two doors (Wes's ask): plain add parks it in the backlog and no model
-       sees it until he says so; the second one puts an agent on it now. The
-       green one read "add + start planning" until Wes's 2026-09-19 note; the
-       first run plans inside itself and nobody confirms a plan, so what the
-       button actually starts is the build. #}
-    <button type="submit" name="then" value="" class="secondary">add to backlog</button>
-    <button type="submit" name="then" value="plan" class="go">start building</button>
+    <div class="attach-row">
+      <label class="btn secondary file-btn">
+        attach files
+        <input type="file" name="files" multiple accept="*/*"
+               data-max-bytes="{{ max_upload_bytes }}" data-max-label="{{ max_upload }}">
+      </label>
+      <button type="button" class="btn secondary icon-btn" data-record hidden
+              title="record a voice note" aria-label="record a voice note">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="9" y="2.5" width="6" height="11" rx="3"/>
+          <path d="M5 11a7 7 0 0 0 14 0"/>
+          <line x1="12" y1="18" x2="12" y2="21.5"/>
+        </svg>
+      </button>
+      <span class="small muted" data-attach-status></span>
+      {# Two doors (Wes's ask): plain add parks it in the backlog and no model
+         sees it until he says so; the second one puts an agent on it now. The
+         green one read "add + start planning" until Wes's 2026-09-19 note; the
+         first run plans inside itself and nobody confirms a plan, so what the
+         button actually starts is the build. #}
+      {# Grouped so a phone, where the row cannot hold all three, wraps the
+         pair together to the right rather than stranding the green one. #}
+      <span class="idea-submits">
+        <button type="submit" name="then" value="" class="btn secondary">add to backlog</button>
+        <button type="submit" name="then" value="plan" class="btn go">start building</button>
+      </span>
+    </div>
+    <div class="rec-panel" data-rec-panel hidden>
+      <canvas class="rec-wave" height="36" aria-hidden="true"></canvas>
+      <span class="rec-time" data-rec-time>0:00</span>
+      <button type="button" class="btn secondary small" data-rec-pause>pause</button>
+      <button type="button" class="btn go small" data-rec-done>done</button>
+      <button type="button" class="btn danger small" data-rec-cancel
+              title="throw this recording away">discard</button>
+    </div>
+    <div class="rec-shelf" data-rec-shelf></div>
+    <div class="attach-shelf" data-attach-shelf></div>
   </form>
 </div>
 

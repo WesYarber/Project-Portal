@@ -2186,12 +2186,13 @@ input.jump-key-input {
    Files Wes drops onto a project. The note form doubles as the drop target,
    so the whole card gets the drag affordance rather than a separate box that
    would be one more thing to aim at on a phone. */
-.note-form { position: relative; transition: border-color 0.15s ease; }
-.note-form.dragging {
+/* The new-idea form on the dashboard takes drops the same way. */
+.note-form, .idea-form { position: relative; transition: border-color 0.15s ease; }
+.note-form.dragging, .idea-form.dragging {
   outline: 2px dashed var(--portal-blue);
   outline-offset: 6px;
 }
-.note-form.dragging::after {
+.note-form.dragging::after, .idea-form.dragging::after {
   content: "drop to attach";
   position: absolute;
   inset: 0;
@@ -2214,6 +2215,7 @@ input.jump-key-input {
 /* The submit trio sits right-justified ("add note" on the far right, per Wes);
    the auto margin on the first of the three is what pushes the group over. */
 .attach-row .note-actions { margin-left: auto; }
+.idea-submits { display: flex; gap: inherit; margin-left: auto; }
 /* The real input is hidden behind its own label so it can look like the other
    buttons; it stays in the DOM (not display:none on a detached node) because
    the form submit needs it.
@@ -2816,9 +2818,9 @@ button.recording svg { animation: rec-pulse 1.2s ease-in-out infinite; }
      line so a long filename cannot push the buttons apart. The ⌄ is the only
      hint the green button holds more - without it the menu is
      undiscoverable. */
-  .attach-row button[name="then"] { display: none; }
-  .attach-row button.go { margin-left: auto; }
-  .attach-row button.go::after { content: " \2304"; opacity: 0.55; }
+  .note-form .attach-row button[name="then"] { display: none; }
+  .note-form .attach-row button.go { margin-left: auto; }
+  .note-form .attach-row button.go::after { content: " \2304"; opacity: 0.55; }
   .attach-row [data-attach-status] { order: 9; flex-basis: 100%; }
   /* Measured at 390px: the card's content box is 258px and the trio at
      desktop spacing wants ~305px, so the third button wrapped. The row sheds
