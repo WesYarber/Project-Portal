@@ -355,14 +355,10 @@ def test_the_seed_never_overwrites_an_existing_memory_file(temp_data_dir):
 async def test_a_pending_restart_starts_nothing_and_keeps_the_queued_run(
     project, restart_state, monkeypatch
 ):
-    """A restart waiting to load a self-update starts nothing at all - and
-    the "run now" somebody queued is still there afterwards.
-
-    This used to be the other way round: manual runs were started through a
-    pending restart, because the queue was in memory and the restart would
-    erase it. The queue is persisted now (app/manualqueue.py), so the run
-    survives the restart and nothing has to be launched into a process that
-    is about to be killed."""
+    """A restart waiting to load a self-update, with nothing in flight,
+    fires rather than starting the queued "run now" - and that run is still
+    queued afterwards, on the row the fresh process reads, so it starts a few
+    seconds later on the new code instead of holding the update back."""
     started: list[bool] = []
 
     async def start_manual():
@@ -432,6 +428,135 @@ async def test_a_queued_run_for_a_paused_project_cannot_wedge_the_restart(
 
     assert worker._pending_restart is None
     assert len(restart_state) == 1
+    assert worker.manual_queue.ids() == [project["id"]]
+
+
+# --- "run agent now" is not held by the restart or the parallel cap ----------
+# Wes, 2026-10-15: "waiting on a project portal reset stops me from even
+# manually being able to run agents, but it should not. Clicking to run agent
+# now should always be able to override some other limit aside from being at
+# usage limits."
+
+
+@pytest.fixture
+def spawned(monkeypatch):
+    started: list[tuple[int, str]] = []
+    monkeypatch.setattr(worker, "spawn_run", lambda p, t: started.append((p["id"], t)) or 1)
+    return started
+
+
+@pytest.mark.asyncio
+async def test_a_manual_run_starts_while_a_restart_waits_on_other_runs(
+    project, restart_state, spawned, monkeypatch
+):
+    other, release = await _parked_task()
+    worker._inflight[5] = other
+    monkeypatch.setattr(worker, "_pending_restart", (project["id"], "abcdef1234"))
+    await worker.manual_queue.put(project["id"])
+    try:
+        await worker._tick()
+        assert [pid for pid, _ in spawned] == [project["id"]]
+        assert worker.manual_queue.empty()
+        # The restart still waits - for the other run, and now for this one.
+        assert restart_state == []
+        assert worker.restart_pending() is True
+    finally:
+        release.set()
+        await other
+
+
+@pytest.mark.asyncio
+async def test_a_pending_restart_still_holds_scheduled_runs(
+    project, restart_state, spawned, monkeypatch
+):
+    """Only the run somebody asked for goes past the restart."""
+    monkeypatch.setattr(worker, "_seconds_until_scheduled", lambda: 0)
+    other, release = await _parked_task()
+    worker._inflight[5] = other
+    monkeypatch.setattr(worker, "_pending_restart", (project["id"], "abcdef1234"))
+    try:
+        await worker._tick()
+        assert spawned == []
+    finally:
+        release.set()
+        await other
+
+
+@pytest.fixture
+def full_board(restart_state, monkeypatch):
+    """Every parallel slot taken, the usage window open, and the tick's
+    bookkeeping stubbed down to the part that starts runs."""
+    monkeypatch.setattr(worker, "_inflight", {})
+    monkeypatch.setattr(worker, "_restarting", False)
+    monkeypatch.setattr(worker, "_pending_restart", None)
+    monkeypatch.setattr(worker.pacing, "parallel_cap", lambda default: 1)
+    monkeypatch.setattr(worker, "_seconds_until_scheduled", lambda: 0)
+    monkeypatch.setattr(worker, "_in_backoff", lambda: False)
+    for name in ("_sweep_strays", "_maybe_spend_down", "_resume_paused_runs",
+                 "_maybe_reflect", "_maybe_compact", "_publish_mirror",
+                 "_daily_model_check", "_daily_address_check"):
+        async def nothing():
+            return None
+        monkeypatch.setattr(worker, name, nothing)
+    monkeypatch.setattr(worker, "_daily_audit_prune", lambda: None)
+    monkeypatch.setattr(worker, "_drain_parallel_branches", lambda: None)
+
+    class Busy:
+        def done(self):
+            return False
+
+    worker._inflight[99] = Busy()
+
+
+@pytest.mark.asyncio
+async def test_a_manual_run_goes_past_the_parallel_cap(project, spawned, full_board):
+    await worker.manual_queue.put(project["id"])
+    await worker._tick()
+    assert [pid for pid, _ in spawned] == [project["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_full_board_still_holds_scheduled_runs(project, spawned, full_board):
+    await worker._tick()
+    assert spawned == []
+
+
+@pytest.mark.asyncio
+async def test_the_usage_limit_still_holds_a_manual_run(
+    project, spawned, full_board, monkeypatch
+):
+    """The one limit Wes kept: a run started into a spent window just fails."""
+    monkeypatch.setattr(worker, "_in_backoff", lambda: True)
+    await worker.manual_queue.put(project["id"])
+    await worker._tick()
+    assert spawned == []
+    assert worker.manual_queue.ids() == [project["id"]]
+
+
+@pytest.mark.asyncio
+async def test_a_busy_project_stays_queued_and_the_drain_ends(project, spawned, full_board):
+    """Two agents in one workspace is not a limit anybody can override: the
+    run is put back, and putting it back must not spin the drain forever."""
+    run_id = db.create_run(project["id"], "build", "opus")
+    assert project["id"] in db.busy_project_ids()
+    await worker.manual_queue.put(project["id"])
+    await worker._start_manual_runs()
+    assert spawned == []
+    assert worker.manual_queue.ids() == [project["id"]]
+    db.finish_run(run_id, "done", "s-1", 0.0, 1, "ok")
+
+
+@pytest.mark.asyncio
+async def test_a_leased_workspace_is_waited_for_not_swapped_for_a_scheduled_pick(
+    project, spawned, full_board, monkeypatch
+):
+    """`_pick_project` falls through to a scheduled candidate when the asked-for
+    workspace is leased; that candidate must not ride the manual bypass."""
+    db.create_project("Other", description="x", stage="active", build_approved=True, slug="other")
+    monkeypatch.setattr(worker, "workspace_leased", lambda slug: slug == project["slug"])
+    await worker.manual_queue.put(project["id"])
+    await worker._start_manual_runs()
+    assert spawned == []
     assert worker.manual_queue.ids() == [project["id"]]
 
 

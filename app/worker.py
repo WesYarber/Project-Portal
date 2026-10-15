@@ -358,8 +358,9 @@ def idle_reason() -> str:
         return ""
     if _pending_restart is not None:
         return (
-            "holding new runs - a self-update is waiting to restart the "
-            "service, which happens the moment the current runs finish"
+            "holding scheduled runs - a self-update is waiting to restart the "
+            "service, which happens the moment the current runs finish "
+            "(run agent now still starts one)"
         )
     if _in_backoff():
         left = _parse_iso(db.get_setting("backoff_until") or "")
@@ -556,6 +557,17 @@ async def _tick() -> None:
             project_id, new_head = _pending_restart
             _pending_restart = None
             _fire_restart(project_id, new_head)
+            return
+        # Except a person's "run agent now". Wes, 2026-10-15: "waiting on a
+        # project portal reset stops me from even manually being able to run
+        # agents, but it should not." While other runs are holding the restart
+        # anyway, his run starts beside them and the restart waits for it too.
+        # Only then, though: with nothing in flight the restart fires above
+        # and the queued run starts a few seconds later on the new code. That
+        # ordering is also what keeps 2026-09-19 dead - the restart still
+        # waits on `_inflight` alone, and a queued run that cannot start is
+        # put back without joining it.
+        await _start_manual_runs()
         return
     await _maybe_spend_down()
     if _in_backoff():
@@ -574,6 +586,8 @@ async def _tick() -> None:
     while len(_inflight) < pacing.parallel_cap(db.max_parallel_runs()):
         if not await _start_one():
             break
+    # A person's "run agent now" is not held by the parallel cap either.
+    await _start_manual_runs()
 
     _drain_parallel_branches()
     await _maybe_reflect()
@@ -639,8 +653,26 @@ def scheduled_work_enabled() -> bool:
     return (db.get_setting("worker_enabled") or "1") == "1"
 
 
-async def _start_one() -> bool:
-    """Try to launch a single run. Returns True if one was started."""
+async def _start_manual_runs() -> None:
+    """Start every queued manual run that can start, whatever the parallel cap
+    and a pending self-update say.
+
+    Wes, 2026-10-15: pressing "run agent now" should "always be able to
+    override some other limit aside from being at usage limits". The usage
+    limit is honored by the caller - `_tick` returns on `_in_backoff()` before
+    reaching here - and the one rule a person cannot override is two agents in
+    one workspace, so a project that is busy is put back by `_start_one`.
+    Bounded by the queue's length on entry, because that put-back goes to the
+    end of the queue and an unbounded loop would spin on it.
+    """
+    for _ in range(manual_queue.qsize()):
+        await _start_one(manual_only=True)
+
+
+async def _start_one(manual_only: bool = False) -> bool:
+    """Try to launch a single run. Returns True if one was started.
+    `manual_only` starts nothing that nobody asked for: no scheduled pick, no
+    research burst."""
     if _restarting:
         # Belt and braces with the check in `_tick`: this is also reached from
         # the pending-restart branch there, which deliberately lets manual runs
@@ -663,7 +695,7 @@ async def _start_one() -> bool:
             # one. Dropped rather than passed on, or `_pick_project` would fall
             # through to a scheduled pick that skipped every pacing guard.
             return False
-    elif not worker_enabled:
+    elif manual_only or not worker_enabled:
         return False
     else:
         # The budget is counted against runs already *started*, which is why
@@ -705,6 +737,14 @@ async def _start_one() -> bool:
             return False
 
     project, is_manual = _pick_project(manual_project_id)
+    if manual_only and not is_manual:
+        # The project asked for is held by a lease outliving its process, so
+        # `_pick_project` fell through to a scheduled pick - which must not
+        # ride past the cap or the restart on somebody else's request. Wait
+        # for the lease instead.
+        if db.get_project(manual_project_id) is not None:
+            await manual_queue.put(manual_project_id)
+        return False
     if project is None:
         return False
 
@@ -2167,7 +2207,7 @@ def _schedule_self_restart(project_id: int, new_head: str, current_run_id: Optio
             f"Self-update detected (source now at `{new_head[:7]}`), but "
             f"{len(others)} other agent run(s) are still in flight and a restart "
             f"now would kill them mid-work. The restart happens as soon as they "
-            f"finish; no new runs start until then.",
+            f"finish; until then only a run you start by hand begins.",
         )
         log.info("Self-update to %s; restart deferred behind %d in-flight run(s)", new_head[:7], len(others))
         return
