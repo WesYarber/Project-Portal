@@ -627,3 +627,142 @@ def test_a_stale_open_offer_is_retired_when_its_window_passes():
     snap = snapshot(seven=30.0, seven_reset=later + timedelta(hours=5))
     assert pacing.should_offer(snap, now=later) is not None
     assert db.get_question(question["id"])["status"] == "dismissed"
+
+
+# --------------------------------------------------------------------------
+# The standing yes: "Always do this, and don't ask me each time."
+# --------------------------------------------------------------------------
+
+
+WES_ALWAYS = "Always do this, and don't ask me each time."
+
+
+@pytest.mark.parametrize("answer", [
+    WES_ALWAYS, "always", "yes, every time", "do it automatically from now on",
+    "Yes. No need to ask me", "stop asking, just do it",
+])
+def test_a_standing_answer_is_a_standing_yes(answer):
+    assert pacing.is_standing_yes(answer) is True
+    assert pacing.is_affirmative(answer) is True
+
+
+@pytest.mark.parametrize("answer", [
+    "yes", "always leave it alone", "no, not every time", "don't spend it", "",
+])
+def test_a_plain_or_negative_answer_is_not_standing(answer):
+    assert pacing.is_standing_yes(answer) is False
+
+
+def test_the_standing_answer_opens_this_window_and_turns_the_switch_on():
+    meta_project()
+    question = pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
+    db.answer_question_and_resume(question["id"], WES_ALWAYS)
+    assert pacing.settle_offer(now=NOW) is True
+    assert pacing.spending_down(now=NOW) is True
+    assert pacing.auto_enabled() is True
+
+
+def test_a_plain_yes_leaves_the_switch_off():
+    meta_project()
+    question = pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
+    db.answer_question_and_resume(question["id"], "yes")
+    pacing.settle_offer(now=NOW)
+    assert pacing.auto_enabled() is False
+
+
+def test_with_the_switch_on_a_window_opens_without_a_question():
+    project = meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    assert pacing.auto_start(due(), now=NOW) is True
+    assert pacing.active_until(now=NOW) == NOW + timedelta(hours=5)
+    assert db.count_open_questions(project["id"]) == 0
+    # Nor is the same window offered afterwards.
+    assert pacing.should_offer(due(), now=NOW) is None
+
+
+def test_with_the_switch_off_nothing_opens_by_itself():
+    meta_project()
+    assert pacing.auto_start(due(), now=NOW) is False
+    assert pacing.spending_down(now=NOW) is False
+
+
+def test_the_standing_yes_needs_a_qualifying_window():
+    meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    assert pacing.auto_start(due(hours=30), now=NOW) is False
+    assert pacing.auto_start(due(seven=95.0), now=NOW) is False
+
+
+def test_a_window_is_auto_opened_once_not_again_after_it_is_stopped():
+    meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    assert pacing.auto_start(due(), now=NOW) is True
+    db.set_setting(pacing.ACTIVE_UNTIL, "")  # stopped by hand
+    assert pacing.auto_start(due(), now=NOW) is False
+    later = NOW + timedelta(days=7)
+    snap = snapshot(seven=30.0, seven_reset=later + timedelta(hours=5))
+    assert pacing.auto_start(snap, now=later) is True
+
+
+def test_the_standing_yes_retires_an_offer_still_open():
+    project = meta_project()
+    pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    assert pacing.auto_start(due(), now=NOW) is True
+    assert db.count_open_questions(project["id"]) == 0
+    assert pacing.settle_offer(now=NOW) is None
+
+
+def test_the_standing_yes_stands_down_on_an_api_key_install(monkeypatch):
+    meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    monkeypatch.setattr(pacing.spawnauth, "paces_on_subscription", lambda: False)
+    assert pacing.auto_start(due(), now=NOW) is False
+
+
+def test_tick_opens_the_window_and_asks_nothing_under_the_standing_yes(monkeypatch):
+    meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    real_now = datetime.now(timezone.utc)
+    store(snapshot(seven=30.0, seven_reset=real_now + timedelta(hours=5), base=real_now))
+    sent = []
+
+    async def fake_notify(title, message, **kw):
+        sent.append(title)
+
+    monkeypatch.setattr(worker.notify, "notify", fake_notify)
+    asyncio.run(worker._maybe_spend_down())  # noqa: SLF001
+    assert pacing.spending_down() is True
+    assert sent == []
+    assert db.open_questions() == []
+
+
+def test_the_switch_is_settable_from_the_settings_form():
+    from fastapi.testclient import TestClient
+    from app.main import app
+    client = TestClient(app)
+    page = client.get("/settings").text
+    assert 'name="spend_down_auto"' in page
+    client.post("/settings", data={"_fields": "spend_down_auto", "spend_down_auto": "on"}, follow_redirects=False)
+    assert pacing.auto_enabled() is True
+    client.post("/settings", data={"_fields": "spend_down_auto"}, follow_redirects=False)
+    assert pacing.auto_enabled() is False
+
+
+def test_a_window_already_running_is_not_reopened_by_the_standing_yes():
+    """The standing answer opens the window through settle_offer on the same
+    tick; auto_start must not open it a second time and journal it twice."""
+    meta_project()
+    question = pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
+    db.answer_question_and_resume(question["id"], WES_ALWAYS)
+    assert pacing.settle_offer(now=NOW) is True
+    assert pacing.auto_start(due(), now=NOW) is False
+
+
+def test_turning_the_switch_off_after_an_auto_window_asks_nothing_for_it():
+    meta_project()
+    db.set_setting(pacing.AUTO_SETTING, "1")
+    pacing.auto_start(due(), now=NOW)
+    db.set_setting(pacing.AUTO_SETTING, "0")
+    db.set_setting(pacing.ACTIVE_UNTIL, "")
+    assert pacing.should_offer(due(), now=NOW) is None

@@ -124,6 +124,13 @@ HOLD_SETTING = "limit_hold_percent"
 OFFERED_FOR = "spend_down_offered_for"      # resets_at of the window already offered
 OFFER_QUESTION = "spend_down_question_id"   # the open question waiting on an answer
 ACTIVE_UNTIL = "spend_down_until"           # iso; set once Wes says yes
+# The standing yes. Wes answered this offer "yes" every single week, then on
+# 2026-10-15 "Always do this, and don't ask me each time." With it on, a
+# qualifying window is spent down without a question; AUTO_FOR is the reset
+# stamp of the window already started, so a window is opened once, not again
+# after he stops it or after it lapses.
+AUTO_SETTING = "spend_down_auto"
+AUTO_FOR = "spend_down_auto_for"
 
 # The model a spend-down routes cheaper-pinned runs up to. A spend-down burns
 # an all-model weekly window that is about to reset and otherwise be lost, and
@@ -594,6 +601,30 @@ AFFIRMATIVE = re.compile(
 NEGATIVE = re.compile(r"\b(no|nope|don't|dont|do not|leave it|skip|stop|later)\b", re.I)
 
 
+# "Always", "every time", "don't ask me" - an answer that grants the offer for
+# good rather than for this week. The "don't ask" forms are why this has to be
+# read before NEGATIVE: "Always do this, and don't ask me each time" was taken
+# for a decline, because "don't" is a no-word and nothing in it is a yes-word.
+STANDING = re.compile(
+    r"\b(always|every ?time|each time|from now on|automatically|without asking|"
+    r"(?:don't|dont|do not|never|stop|no need to)\s+(?:ask|asking)(?:\s+me)?)\b",
+    re.I,
+)
+
+
+def is_standing_yes(answer: str) -> bool:
+    """Did Wes say yes for every week to come? A standing phrase with no other
+    no-word left once it is taken out: "always leave it alone" is still a no."""
+    text = answer or ""
+    if not STANDING.search(text):
+        return False
+    return not NEGATIVE.search(STANDING.sub(" ", text))
+
+
+def auto_enabled() -> bool:
+    return (db.get_setting(AUTO_SETTING) or "0") == "1"
+
+
 def is_affirmative(answer: str) -> bool:
     """Did Wes say yes? Whichever signal comes first wins: 'no - don't spend
     it' contains 'spend' and must not read as a yes, but 'Yes, spend it down.
@@ -602,6 +633,8 @@ def is_affirmative(answer: str) -> bool:
     text = (answer or "").strip()
     if not text:
         return False
+    if is_standing_yes(text):
+        return True
     yes = AFFIRMATIVE.search(text)
     no = NEGATIVE.search(text)
     if yes and no:
@@ -754,6 +787,8 @@ def settle_offer(now: Optional[datetime] = None) -> Optional[bool]:
     db.set_setting(OFFER_QUESTION, "")
     if question["status"] != "answered" or not is_affirmative(question["answer"] or ""):
         return False
+    if is_standing_yes(question["answer"] or ""):
+        db.set_setting(AUTO_SETTING, "1")
     until = _parse_iso(db.get_setting(OFFERED_FOR) or "")
     if until is None or until <= now:
         # He said yes after the window had already turned over. Nothing to
@@ -765,6 +800,39 @@ def settle_offer(now: Optional[datetime] = None) -> Optional[bool]:
     cap = re.search(r"(\d{1,3})\s*%", question["answer"] or "")
     if cap and 10 <= int(cap.group(1)) <= 100:
         db.set_setting(SESSION_GUARD_SETTING, cap.group(1))
+    start(until)
+    return True
+
+
+def auto_start(snapshot: Optional[dict] = None, now: Optional[datetime] = None) -> bool:
+    """Under the standing yes, open a qualifying window instead of asking.
+
+    Same gates as the offer - a subscription install, nothing already running,
+    a weekly window close to reset with headroom - and once per window, so
+    turning the switch off and on mid-week does not reopen one that lapsed.
+    An offer still open from before the switch went on is retired: he has
+    already answered it, for good.
+    """
+    now = now or datetime.now(timezone.utc)
+    if not auto_enabled() or not spawnauth.paces_on_subscription():
+        return False
+    if spending_down(now):
+        return False
+    candidate = spend_down_candidate(snapshot, now)
+    if candidate is None:
+        return False
+    resets = candidate.get("resets_at") or ""
+    if _same_window(db.get_setting(AUTO_FOR) or "", resets):
+        return False
+    until = _parse_iso(resets)
+    if until is None:
+        return False
+    pending = pending_question()
+    if pending is not None and pending["status"] == "open":
+        db.dismiss_question(pending["id"])
+    db.set_setting(OFFER_QUESTION, "")
+    db.set_setting(OFFERED_FOR, resets)
+    db.set_setting(AUTO_FOR, resets)
     start(until)
     return True
 

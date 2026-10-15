@@ -200,6 +200,7 @@ def _build_registry() -> dict[str, Field]:
         # Blank on purpose: blank means "use what the portal has measured", and
         # the measurement is the point. See app/headroom.py.
         Field("session_headroom_reserve", _decimal_or_blank(high=headroom.MAX_RESERVE)),
+        Field("spend_down_auto", _text, checkbox=True),
         Field("spend_down_session_hold", _positive_int("70", low=1, high=100)),
         Field("spend_front_load", _ratio("0.75")),
         Field("saturation_max_duty", _positive_int("85", low=0, high=100)),

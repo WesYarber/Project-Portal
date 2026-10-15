@@ -180,7 +180,7 @@
 <section class="settings-panel" id="panel-agent" data-panel="agent">
   <form method="post" action="/settings">
     <input type="hidden" name="_section" value="agent">
-    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,midrun,mcp_tools,cross_project,model_watch,address_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
+    <input type="hidden" name="_fields" value="worker_enabled,require_build_approval,verification_depth,self_review,self_review_model,hook_guardrails,stop_report_nudge,hook_audit,midrun,mcp_tools,cross_project,model_watch,address_watch,worker_model,ask_model,worker_interval_min,max_parallel_runs,max_runs_per_day,project_max_runs_per_day,run_timeout_min,run_max_turns,memory_max_turns,run_max_budget_usd,run_memory_max,runs_memory_pool,day_reset_hour,cost_units,limit_hold_percent,session_headroom_reserve,spend_down_auto,spend_down_session_hold,spend_front_load,saturation_max_duty,quiet_hours_start,quiet_hours_end,quiet_hours_zone,research_model,spend_down_model,learnings_cap_kb,profile_cap_kb,prompt_learnings_kb,prompt_journal_kb,prompt_answered_kb">
     <div class="card">
       <div class="field checkbox-row">
         <input type="checkbox" id="worker_enabled" name="worker_enabled" {{ 'checked' if settings.worker_enabled == '1' else '' }}>
@@ -405,6 +405,10 @@
         <div class="field">
           <label for="session_headroom_reserve">Keep session headroom{% call info() %}Points of the 5h window left spare for the run about to start, so it isn't killed part-way through. Blank measures it from your own runs{% if headroom_samples %} &mdash; {{ headroom_samples }} measured so far{% endif %}.{% endcall %}</label>
           <input type="number" id="session_headroom_reserve" name="session_headroom_reserve" value="{{ settings.session_headroom_reserve or '' }}" placeholder="{{ headroom_reserve }}" min="0" max="{{ headroom_max }}" step="0.5">
+        </div>
+        <div class="field checkbox-row">
+          <input type="checkbox" id="spend_down_auto" name="spend_down_auto" {{ 'checked' if (settings.spend_down_auto or '0') == '1' else '' }}>
+          <label for="spend_down_auto">Spend down without asking{% call info() %}When a weekly window is a few hours from resetting with headroom left, lift the portal's own budget and pacing until the reset instead of asking first. Off asks each week.{% endcall %}</label>
         </div>
         <div class="field">
           <label for="spend_down_session_hold">Burst session guard{% call info() %}% of the 5h window a spend-down or ahead-of-pace burst may use, so it spreads across sessions.{% endcall %}</label>

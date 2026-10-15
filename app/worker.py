@@ -3394,6 +3394,9 @@ async def _maybe_spend_down() -> None:
     try:
         if pacing.settle_offer():
             log.info("Spend-down window accepted")
+        if pacing.auto_start():
+            log.info("Spend-down window opened under the standing yes")
+            return
         candidate = pacing.should_offer()
         if candidate is None:
             return
