@@ -787,9 +787,11 @@ def settle_offer(now: Optional[datetime] = None) -> Optional[bool]:
     db.set_setting(OFFER_QUESTION, "")
     if question["status"] != "answered" or not is_affirmative(question["answer"] or ""):
         return False
-    if is_standing_yes(question["answer"] or ""):
+    standing = is_standing_yes(question["answer"] or "")
+    if standing:
         db.set_setting(AUTO_SETTING, "1")
-    until = _parse_iso(db.get_setting(OFFERED_FOR) or "")
+    offered_for = db.get_setting(OFFERED_FOR) or ""
+    until = _parse_iso(offered_for)
     if until is None or until <= now:
         # He said yes after the window had already turned over. Nothing to
         # spend; do not open a window with no end.
@@ -800,6 +802,10 @@ def settle_offer(now: Optional[datetime] = None) -> Optional[bool]:
     cap = re.search(r"(\d{1,3})\s*%", question["answer"] or "")
     if cap and 10 <= int(cap.group(1)) <= 100:
         db.set_setting(SESSION_GUARD_SETTING, cap.group(1))
+    if standing:
+        # The window this answer opens is auto_start's too: stamp it, or a
+        # window he stops by hand is reopened on the next tick.
+        db.set_setting(AUTO_FOR, offered_for)
     start(until)
     return True
 

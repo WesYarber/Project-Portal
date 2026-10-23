@@ -766,3 +766,16 @@ def test_turning_the_switch_off_after_an_auto_window_asks_nothing_for_it():
     db.set_setting(pacing.AUTO_SETTING, "0")
     db.set_setting(pacing.ACTIVE_UNTIL, "")
     assert pacing.should_offer(due(), now=NOW) is None
+
+
+def test_a_window_opened_by_the_standing_answer_is_not_reopened_after_it_is_stopped():
+    """The first standing yes opens its window through settle_offer, not
+    auto_start, so that path has to stamp the window too - or stopping it by
+    hand lets the next tick's auto_start open it straight back up."""
+    meta_project()
+    question = pacing.create_offer_question(pacing.should_offer(due(), now=NOW))
+    db.answer_question_and_resume(question["id"], WES_ALWAYS)
+    assert pacing.settle_offer(now=NOW) is True
+    db.set_setting(pacing.ACTIVE_UNTIL, "")  # stopped by hand
+    assert pacing.auto_start(due(), now=NOW) is False
+    assert pacing.spending_down(now=NOW) is False
