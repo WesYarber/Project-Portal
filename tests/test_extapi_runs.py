@@ -539,6 +539,19 @@ def test_an_answer_belongs_to_its_own_question_only(client, no_background):
     assert client.get(f"{API}/asks/{second}").json()["ask"]["status"] == "pending"
 
 
+def test_a_question_left_unanswered_by_a_restart_never_takes_the_next_ones_answer(
+        client, no_background):
+    project = here()
+    first = client.post(f"{API}/projects/fridge-board/ask", json={"question": "1?"}
+                        ).json()["ask"]["id"]
+    ask._PENDING.discard(int(project["id"]))  # noqa: SLF001 - the restart
+    client.post(f"{API}/projects/fridge-board/ask", json={"question": "2?"})
+    db.add_journal(int(project["id"]), "agent", "answer", "Two.")
+    got = client.get(f"{API}/asks/{first}").json()["ask"]
+    assert got["status"] == "failed"
+    assert got["answer"] is None
+
+
 def test_a_second_ask_while_one_thinks_is_busy(client, no_background):
     here()
     first = client.post(f"{API}/projects/fridge-board/ask", json={"question": "1?"}
@@ -631,6 +644,8 @@ def test_start_true_starts_the_first_run(client, spawned):
     assert body["run"]["started_by"]["host"] == HOST
     project = db.get_project_by_slug(body["project"]["slug"])
     assert project["stage"] == "active"
+    # Created active, not parked and then moved: no shelf change to report.
+    assert not [j for j in db.list_journal(int(project["id"])) if j["kind"] == "status"]
     assert spawned == [(project["slug"], body["run"]["kind"])]
 
 

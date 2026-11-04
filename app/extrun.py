@@ -176,10 +176,12 @@ def ask_dict(entry_id: int) -> Optional[dict]:
         text = answer["content_md"] or ""
         status = "failed" if text == ask.FAILED_ANSWER else "answered"
         return {"id": int(entry_id), "status": status, "answer": text}
-    # No answer on record. In flight if the project's ask is still thinking;
-    # otherwise the process that was answering it is gone (a restart), and
-    # "pending" would be a promise nothing will keep.
-    if ask.pending(int(asked["project_id"])):
+    # No answer on record. In flight if the project's ask is still thinking
+    # and this is the question it is thinking about - the newest one; otherwise
+    # the process that was answering it is gone (a restart), and "pending"
+    # would be a promise nothing will keep.
+    project_id = int(asked["project_id"])
+    if ask.pending(project_id) and latest_ask_id(project_id) == int(entry_id):
         return {"id": int(entry_id), "status": "pending", "answer": None}
     return {"id": int(entry_id), "status": "failed", "answer": None}
 
