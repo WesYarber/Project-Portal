@@ -8,7 +8,9 @@
 <p class="small muted">
   {% if run.project_slug %}<a href="/project/{{ run.project_slug }}">{{ run.project_title }}</a>
   {% else %}{{ run.project_title }}{% endif %}
-  &middot; started {{ run.started_at|timeago }} &middot; {{ run.model }}
+  &middot; started {{ run.started_at|timeago }}{% if started_by %} from the Claude app on
+  <strong>{{ started_by.host or "another machine" }}</strong>{% if started_by.person %} by {{ started_by.person }}{% endif %}{% endif %}
+  &middot; {{ run.model }}
 </p>
 
 <div class="card">

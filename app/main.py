@@ -37,6 +37,7 @@ from app import (
     daycycle,
     db,
     extapi,
+    extrun,
     filetree,
     fileview,
     headroom,
@@ -2433,6 +2434,10 @@ def _render_run_page(request: Request, run_id: int, **extra) -> HTMLResponse:
         "limit_hold": limitpause.describe(row),
         "active_run": active_run_snapshot(),
         "landed": landed,
+        # Who started it from the Claude app, and on which machine
+        # (app/extrun.py). None for a run started here.
+        "started_by": extrun.run_dict(row)["started_by"] if row["started_by_host"]
+        or row["started_by_person_id"] else None,
         # Built from the same Landed, so the diff and the undo button can never
         # disagree about which commits this run is responsible for.
         "diff": rundiff.for_run(landed),

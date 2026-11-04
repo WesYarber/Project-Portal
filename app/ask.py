@@ -227,6 +227,10 @@ def build_command(prompt: str, model: str) -> list[str]:
         *ALLOWED_TOOLS,
         "--disallowedTools",
         *DENIED_TOOLS,
+        # No MCP servers at all, not even ones the user's own Claude config
+        # names: the portal's own server (app/portalmcp.py) can file a question
+        # on a project, and an ask must have no tool that changes anything.
+        "--strict-mcp-config",
     ]
 
 
@@ -312,7 +316,8 @@ FAILED_ANSWER = (
 )
 
 
-async def answer(project_id: int, question: str, reply_chat_id: Optional[str] = None) -> str:
+async def answer(project_id: int, question: str, reply_chat_id: Optional[str] = None,
+                 quiet: bool = False) -> str:
     """Answer an already-journalled question and journal the reply.
 
     Never raises: an ask that falls over journals a plain apology rather than
@@ -336,6 +341,10 @@ async def answer(project_id: int, question: str, reply_chat_id: Optional[str] = 
 
     body = text or FAILED_ANSWER
     db.add_journal(project_id, "agent", "answer", body)
+    if quiet:
+        # Asked by a program that polls for the answer (the Claude app,
+        # app/extrun.py): a push to Wes's phone for it would be noise.
+        return body
     try:
         if reply_chat_id:
             await notify.send_telegram_text(reply_chat_id, f"{project['title']}: {body}")
@@ -346,7 +355,8 @@ async def answer(project_id: int, question: str, reply_chat_id: Optional[str] = 
     return body
 
 
-def start(project_id: int, question: str, reply_chat_id: Optional[str] = None) -> int:
+def start(project_id: int, question: str, reply_chat_id: Optional[str] = None,
+          quiet: bool = False) -> int:
     """Journal the question now, answer it in the background.
 
     The question is written synchronously so the page that triggered it renders
@@ -356,7 +366,7 @@ def start(project_id: int, question: str, reply_chat_id: Optional[str] = None) -
     question = (question or "").strip()
     journal_id = db.add_journal(project_id, "user", "ask", question)
     _PENDING.add(project_id)  # before the task starts, so the redirect sees it
-    task = asyncio.create_task(answer(project_id, question, reply_chat_id))
+    task = asyncio.create_task(answer(project_id, question, reply_chat_id, quiet=quiet))
     _TASKS.add(task)
     task.add_done_callback(_TASKS.discard)
     return journal_id

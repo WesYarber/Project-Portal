@@ -168,7 +168,7 @@ def test_a_quoted_ask_journals_and_prompts_with_the_passage(client, monkeypatch)
     p = _project()
     seen: dict = {}
 
-    async def fake_answer(project_id, question, reply_chat_id=None):
+    async def fake_answer(project_id, question, reply_chat_id=None, quiet=False):
         seen["question"] = question
         return "ok"
 

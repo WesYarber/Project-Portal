@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from string import Template
-from typing import Optional
+from typing import Callable, Optional
 
 from app import (
     addresswatch, agent_runner, apiretry, claudeapp, config, crashloop, daycycle, db, hookguard, journalfile,
@@ -2858,6 +2858,11 @@ async def run_now(project: db.sqlite3.Row, via: str = "") -> None:
     planning pass", and running one must not open the gate - approving is its
     own click. The stage moves before the run is queued so the run's prompt
     already sees the project active."""
+    _reactivate_for_run(project, via)
+    await queue_manual_run(project["id"])
+
+
+def _reactivate_for_run(project: db.sqlite3.Row, via: str = "") -> None:
     was = db.display_state(project)
     if was != "active":
         db.update_project(project["id"], stage="active", paused=None)
@@ -2865,7 +2870,104 @@ async def run_now(project: db.sqlite3.Row, via: str = "") -> None:
             project["id"], "user", "status",
             f"Status changed{via}: `{was}` -> `active` (run agent now)",
         )
-    await queue_manual_run(project["id"])
+
+
+# What a run started from outside the portal's pages may ask to be. `auto` is
+# whatever "run agent now" would have chosen.
+REQUESTED_KINDS = ("auto", "build", "plan", "research")
+
+
+@dataclass
+class StartRefused:
+    """Why a requested run did not start. `reason` is a fixed word for a
+    program to branch on; `message` is the sentence for the person; `run_id`
+    the run in the way, when there is one."""
+    reason: str
+    message: str
+    run_id: Optional[int] = None
+
+
+def start_requested_run(
+    project: db.sqlite3.Row, kind: str = "auto", via: str = "",
+    before_spawn: Optional[Callable[[db.sqlite3.Row], None]] = None,
+) -> "int | StartRefused":
+    """Start a run now on somebody's request from outside the portal's own
+    pages (the Claude app, app/extrun.py), with "run agent now"'s rules.
+
+    Run Now queues the project and lets the next tick start it; a caller over
+    an API needs a run id back, or the one sentence saying why there is none,
+    so this starts it here - and therefore has to apply, itself, every rule
+    the tick would have applied to a manual run:
+
+    * never a project whose code lives on another machine;
+    * never inside the usage-limit backoff - the one throttle a person's
+      request does not override (Wes, 2026-10-15);
+    * never while the service is about to restart under it;
+    * never a second agent in a workspace, whether the other one holds a run
+      row (running, or parked for the usage window) or only the lease;
+    * a `build` only where building is allowed - the approval gate. `auto`
+      under the gate gets the plan/triage pass Run Now would.
+
+    The daily budget, pacing and the parallel cap are not checked, because
+    Run Now does not check them: a person asked.
+
+    `before_spawn` runs after every refusal is ruled out and before the run
+    row exists - where instructions are filed as a note, so the run's prompt
+    reads them and a refused request files nothing.
+    """
+    kind = (kind or "auto").strip().lower()
+    if kind not in REQUESTED_KINDS:
+        return StartRefused("bad_kind", f"`kind` must be one of {', '.join(REQUESTED_KINDS)}.")
+    fresh = db.get_project(int(project["id"]))
+    if fresh is None:
+        return StartRefused("missing", "That project no longer exists.")
+    if claudeapp.hosted_elsewhere(fresh):
+        return StartRefused(
+            "hosted_elsewhere",
+            "This project's code lives on another machine, so the portal never runs an "
+            "agent on it; work on it there.",
+        )
+    if _in_backoff():
+        return StartRefused(
+            "usage_limit",
+            f"The Claude usage limit is spent until {db.get_setting('backoff_until')}; "
+            "no run can start before then.",
+        )
+    if _restarting:
+        return StartRefused(
+            "restarting", "The portal is restarting to load new code; try again in a minute."
+        )
+    held = db.running_runs_for_project(int(fresh["id"])) or [
+        r for r in db.paused_runs() if r["project_id"] == fresh["id"]
+    ]
+    if held:
+        run = held[-1]
+        if run["status"] == "paused":
+            return StartRefused(
+                "paused",
+                f"Run #{run['id']} on this project is parked for the usage window and comes "
+                "back to this workspace when it reopens.", int(run["id"]),
+            )
+        return StartRefused(
+            "busy", f"Run #{run['id']} is already working on this project.", int(run["id"]),
+        )
+    if workspace_leased(fresh["slug"]):
+        return StartRefused(
+            "busy",
+            "An agent from before the last restart still holds this project's workspace.",
+        )
+    if kind == "build" and not build_allowed(fresh):
+        return StartRefused(
+            "needs_approval",
+            "Building this project needs your OK first (the portal's build-approval "
+            "setting is on); approve it on the project page, or ask for a plan run.",
+        )
+    _reactivate_for_run(fresh, via)
+    fresh = db.get_project(int(fresh["id"])) or fresh
+    task = task_for(fresh, manual=True) if kind == "auto" else kind
+    if before_spawn is not None:
+        before_spawn(fresh)
+    return spawn_run(fresh, task)
 
 
 def max_agents_per_project() -> int:

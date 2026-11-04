@@ -221,6 +221,9 @@ EXEMPT: tuple[tuple[str, str, str], ...] = (
             "app/agent_runner.py", "app/worker.py", "app/usage.py", "app/config.py",
             "app/static/style.css", "app/templates/activity.html", "app/preview.py",
             "app/orphans.py", "app/telegram_bot.py", "app/persona.py",
+            # The Claude app plugin's contract (SPEC-runs.md) names the status
+            # `cancelled` on the wire, the same word as the stored value.
+            "app/extrun.py", "tests/test_extapi_runs.py",
             "tests/test_cancel.py", "tests/test_breakdown.py", "tests/test_oneoffs.py",
             "tests/test_limitpause.py",
             "tests/test_parallel.py", "tests/test_runlimit.py", "tests/test_telegram.py",

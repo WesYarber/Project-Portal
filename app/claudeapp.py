@@ -596,3 +596,28 @@ def create(title: str, description: str, parent: Optional[sqlite3.Row], host: st
         person_id=person_id,
     )
     return db.get_project(pid)
+
+
+def create_here(title: str, brief: str, description: str, parent: Optional[sqlite3.Row],
+                host: str, person_id: Optional[int], start: bool = False) -> sqlite3.Row:
+    """A project the portal builds in its own workspace, created from the
+    Claude app (SPEC-runs.md) - the same thing as an idea typed into /ideas:
+    the brief is its first note and its description, the title is the
+    person's and locks. Parked in the backlog unless it is being started, as
+    "add idea" versus "add and start planning" on the form."""
+    project = db.create_project(
+        title=title, description=(description or brief).strip(), kind="unknown",
+        stage="active" if start else "backlog",
+        parent_id=int(parent["id"]) if parent is not None else None,
+        title_locked=True, person_id=person_id,
+    )
+    pid = int(project["id"])
+    if parent is not None:
+        from app import people
+
+        for member in people.member_ids(int(parent["id"])):
+            people.add_member(pid, member)
+    where = f" on `{host}`" if host else ""
+    db.add_journal(pid, "user", "note", f"**From the Claude app{where}:**\n\n{brief.strip()}",
+                   person_id=person_id)
+    return db.get_project(pid)

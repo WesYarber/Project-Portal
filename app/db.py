@@ -720,7 +720,16 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         # See app/headroom.py.
         ("session_percent_start", "REAL"),
         ("session_percent_end", "REAL"),
+        # Who started this run from outside the portal's own pages, and from
+        # which machine - the Claude app plugin's `X-Portal-Host` (app/extrun.py).
+        # NULL on every run started by the scheduler or a button here.
+        ("started_by_person_id", "INTEGER"),
+        ("started_by_host", "TEXT"),
     ],
+    # The project a one-off task was started about, when the Claude app named
+    # one (app/extrun.py). NULL for a task typed into /tasks, which is about
+    # nothing in particular.
+    "oneoff_tasks": [("project_id", "INTEGER")],
 }
 
 
@@ -2697,6 +2706,30 @@ def is_side_thread(author: str, kind: str) -> bool:
     return (author, kind) in SIDE_THREAD
 
 
+def ask_answer_for(entry_id: int) -> Optional[sqlite3.Row]:
+    """The answer to one ask, by the journal id of its question: the first
+    `agent/answer` after it on the same project, provided no later question
+    came first. An ask is answered one at a time per project (app/ask.py), so
+    that pairing is exact."""
+    conn = get_conn()
+    with _LOCK:
+        asked = conn.execute(
+            "SELECT * FROM journal WHERE id = ? AND author = 'user' AND kind = 'ask'",
+            (entry_id,),
+        ).fetchone()
+        if asked is None:
+            return None
+        row = conn.execute(
+            "SELECT * FROM journal WHERE project_id = ? AND id > ? AND "
+            "((author = 'agent' AND kind = 'answer') OR (author = 'user' AND kind = 'ask')) "
+            "ORDER BY id LIMIT 1",
+            (asked["project_id"], entry_id),
+        ).fetchone()
+    if row is None or row["author"] != "agent":
+        return None
+    return row
+
+
 def ask_thread(project_id: int, limit: int = ASK_THREAD_LIMIT) -> list[sqlite3.Row]:
     """The ask conversation on a project, oldest first.
 
@@ -3630,6 +3663,30 @@ def create_run(
         return int(cur.lastrowid)
 
 
+def set_run_started_by(run_id: int, person_id: Optional[int], host: str) -> None:
+    """Attribute a run to whoever started it from the Claude app, and where."""
+    conn = get_conn()
+    with _LOCK:
+        conn.execute(
+            "UPDATE runs SET started_by_person_id = ?, started_by_host = ? WHERE id = ?",
+            (person_id, (host or None), run_id),
+        )
+        conn.commit()
+
+
+def questions_between(project_id: int, start: str, end: Optional[str]) -> list[int]:
+    """Ids of the questions filed on a project inside a run's window - the
+    questions that run asked, since a question row does not name its run."""
+    conn = get_conn()
+    sql = "SELECT id FROM questions WHERE project_id = ? AND ts >= ?"
+    args: list = [project_id, start]
+    if end:
+        sql += " AND ts <= ?"
+        args.append(end)
+    with _LOCK:
+        return [int(r["id"]) for r in conn.execute(sql + " ORDER BY id", args).fetchall()]
+
+
 def running_runs_for_project(project_id: int) -> list[sqlite3.Row]:
     """Every run in flight on one project - more than one only when somebody
     asked for a parallel run (app/parallel.py)."""
@@ -4514,6 +4571,14 @@ def create_oneoff(text: str) -> sqlite3.Row:
         )
         conn.commit()
         return conn.execute("SELECT * FROM oneoff_tasks WHERE id = ?", (task_id,)).fetchone()
+
+
+def set_oneoff_project(task_id: int, project_id: Optional[int]) -> None:
+    conn = get_conn()
+    with _LOCK:
+        conn.execute("UPDATE oneoff_tasks SET project_id = ? WHERE id = ?",
+                     (project_id, task_id))
+        conn.commit()
 
 
 def get_oneoff(task_id: int) -> Optional[sqlite3.Row]:

@@ -69,6 +69,23 @@ def _messages_block(messages: list[sqlite3.Row]) -> str:
     )
 
 
+def _project_section(task: sqlite3.Row) -> str:
+    """The project a task was started about (the Claude app can name one), so
+    the agent knows where to look. Context only: the task keeps its own
+    workspace, and the project's files are somebody else's to change."""
+    project_id = db._row_get(task, "project_id")  # noqa: SLF001 - same package
+    project = db.get_project(int(project_id)) if project_id else None
+    if project is None:
+        return ""
+    path = config.PROJECTS_DIR / str(project["slug"])
+    description = (project["description"] or "").strip() or "(no description)"
+    return (
+        f"## The project this is about\n\n**{project['title']}** (`{project['slug']}`): "
+        f"{description}\n\nIts files are at `{path}`. Read them as you need to; this "
+        f"task's own workspace is where you write."
+    )
+
+
 def build_prompt(task: sqlite3.Row, pending: list[sqlite3.Row]) -> str:
     """The prompt for the next run on this task.
 
@@ -81,6 +98,9 @@ def build_prompt(task: sqlite3.Row, pending: list[sqlite3.Row]) -> str:
     if not task["cli_session_id"]:
         parts = [ONEOFF_CONTRACT,
                  f"## The task, from {config.SITE.owner}\n\n{_messages_block(pending)}"]
+        about = _project_section(task)
+        if about:
+            parts.append(about)
         skills_txt = agent_runner._skills_section()  # noqa: SLF001 - same package
         if skills_txt:
             parts.append(skills_txt)
