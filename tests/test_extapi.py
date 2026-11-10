@@ -80,7 +80,7 @@ def test_root_lists_every_feature(client):
     assert r.status_code == 200
     assert r.json() == {"api": 1, "features": [
         "projects", "context", "link", "sessions", "journal", "todos", "questions", "stars",
-        "runs", "tasks", "ask"]}
+        "runs", "tasks", "ask", "mcp"]}
     assert client.get(API).json()["api"] == 1
 
 

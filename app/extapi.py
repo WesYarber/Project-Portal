@@ -24,7 +24,7 @@ from app import ask, claudeapp, db, extrun, midrun, notify, people, quickreplies
 
 API_VERSION = 1
 FEATURES = ("projects", "context", "link", "sessions", "journal", "todos", "questions", "stars",
-            "runs", "tasks", "ask")
+            "runs", "tasks", "ask", "mcp")
 
 router = APIRouter(prefix="/api/ext/v1")
 

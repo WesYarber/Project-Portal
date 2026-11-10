@@ -1088,6 +1088,20 @@ The suite is green, so the change is in.</pre>
   {# Other installs of the portal - the one at the office, the one at home
      seen from there. Probed every two minutes (app/nodes.py); what is shown
      here is the cache, never a live request to another building. #}
+  {# Claude Code on another machine (app/extmcp.py). Wes, 2026-11-10: point
+     Claude Code on his Mac at a project by its link or name, send notes, read
+     context, create a project. One command is the whole setup. #}
+  <div class="card" id="claude-code-card">
+    <h2 id="claude-code">claude code on another machine{% call info() %}Claude Code talks
+      to the portal over MCP: it can find a project by its link, slug or name, read its
+      context and files, send its agent notes with markdown files attached, log what it did,
+      manage todos, start a run, ask the project's agent a question and create a project when
+      none fits. A folder linked to a project is recognized in every later session there.
+      Nothing to install - the server is this portal.{% endcall %}</h2>
+    <p class="hint">Run this once in a terminal on the Mac, then ask Claude Code about any project.</p>
+    <pre class="setup-command"><code>{{ claude_code_command }}</code></pre>
+  </div>
+
   <div class="card" id="nodes-card">
     <h2 id="nodes">this portal and the others{% call info() %}The first row is
       the install you are looking at: which source commit it runs, whether

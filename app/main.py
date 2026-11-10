@@ -37,6 +37,7 @@ from app import (
     daycycle,
     db,
     extapi,
+    extmcp,
     extrun,
     filetree,
     fileview,
@@ -283,6 +284,9 @@ app.mount(
 )
 
 # The Claude app plugin's API (app/extapi.py): JSON under /api/ext/v1/.
+# Claude Code on another machine (app/extmcp.py): the same, as an MCP server.
+# Ahead of extapi's router, whose catch-all would otherwise answer its path.
+app.include_router(extmcp.router)
 app.include_router(extapi.router)
 
 templates = Jinja2Templates(directory=str(config.BASE_DIR / "app" / "templates"))
@@ -3352,6 +3356,7 @@ async def settings_page(request: Request) -> HTMLResponse:
         "settings.html",
         {
             "settings": settings,
+            "claude_code_command": extmcp.setup_command(),
             "usage": usage_snapshot(),
             # How runs are paid for: this is the page that owns the per-run
             # ceiling, and what an unset ceiling *means* depends on the mode.
